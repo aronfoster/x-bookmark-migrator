@@ -74,6 +74,8 @@ def test_pilot_exact_strings_and_private_full_payload(store):
     assert "note_post" in calls[1].url.params["post.fields"]
     assert summary["has_next_page"] and summary["records"] == 1
     assert store.read(summary["private_file"])["response"] == body
+    assert summary["includes"] == ["media"]
+    assert summary["media_fields"] == ["type", "variants"]
     assert "SECRET" not in json.dumps(summary) and "synthetic" not in json.dumps(summary)
     assert (store.root / summary["private_file"]).stat().st_mode & 0o777 == 0o600
 
@@ -201,7 +203,7 @@ def test_partial_errors_preserved_but_not_accepted(store):
     )
     with pytest.raises(PilotError, match="NOT accepted"):
         pilot(api, budget(store), OWNER)
-    assert len(list(store.root.glob("pilot-*"))) == 1
+    assert len(list(store.root.glob("read-*"))) == 2
 
 
 def test_store_rejects_git_and_permissive_directory(tmp_path):
@@ -234,6 +236,8 @@ def test_refresh_failure_does_not_read_or_replace_token(store):
     "body",
     [
         {},
+        {"meta": None},
+        {"data": [], "includes": {"media": None}},
         {"data": [{"id": 123, "text": "x"}]},
         {"data": [], "meta": {"next_token": 9}},
         {"data": [], "meta": {"result_count": 2}},
@@ -249,6 +253,8 @@ def test_malformed_bookmark_response(store, body):
     )
     with pytest.raises(PilotError):
         pilot(api, budget(store), OWNER)
+    saved = [store.read(p.name) for p in store.root.glob("read-*")]
+    assert any(record["response"] == body for record in saved)
 
 
 def test_legacy_profile_and_empty_page(store):
@@ -282,3 +288,49 @@ def test_wrong_grant_rejected(store):
     with pytest.raises(PilotError, match="exactly"):
         api.token({"grant_type": "authorization_code"})
     assert not store.read("tokens.private.json")
+
+
+@pytest.mark.parametrize("status,body", [(200, "not-json PRIVATE"), (429, "PRIVATE error")])
+def test_failed_read_evidence_and_rate_limits(store, status, body):
+    tokens(store)
+    api = client(
+        store,
+        lambda req: httpx.Response(
+            status,
+            text=body,
+            headers={
+                "x-rate-limit-limit": "100",
+                "x-rate-limit-remaining": "0",
+                "x-rate-limit-reset": "1700000000",
+                "set-cookie": "SECRET",
+            },
+        ),
+    )
+    with pytest.raises(PilotError) as error:
+        api.get("/2/users/me", {}, budget(store).reserve)
+    assert "PRIVATE" not in str(error.value) and "SECRET" not in str(error.value)
+    assert "x-rate-limit-remaining" in str(error.value)
+    record = store.read(api.observations[0]["private_file"])
+    assert record["response_text"] == body and record["status"] == status
+    assert record["rate_limits"]["x-rate-limit-limit"] == "100"
+    assert "set-cookie" not in record
+
+
+def test_successful_rate_limits_in_summary(store):
+    tokens(store)
+    api = client(
+        store,
+        lambda req: httpx.Response(
+            200,
+            headers={"x-rate-limit-limit": "100", "x-rate-limit-remaining": "PRIVATE"},
+            json=(
+                {"data": {"id": OWNER}}
+                if req.url.path.endswith("me")
+                else {"data": [], "meta": {"result_count": 0}}
+            ),
+        ),
+    )
+    summary = pilot(api, budget(store), OWNER)
+    assert len(summary["reads"]) == 2
+    assert all(r["rate_limits"] == {"x-rate-limit-limit": "100"} for r in summary["reads"])
+    assert "PRIVATE" not in json.dumps(summary)

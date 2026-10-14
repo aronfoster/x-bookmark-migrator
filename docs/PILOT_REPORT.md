@@ -28,10 +28,14 @@
 - Returned record count / continuation present (do not paste token):
 - Observed text, note_post/note_tweet, article, references, authors, media variants:
 - Long-form body completeness / missing sample:
-- Rate-limit header observations (manually collected if available):
+- Rate-limit observations from summary.reads (missing headers are omitted):
 - Observed bookmark/identity/expanded-resource charges:
 - Folder/write pricing checked in Console (not exercised by this CLI):
 - Remaining owner action / entitlement issue:
 
 M1 stays open until an actual authorized read and sanitized billing/coverage report
 exist. Archive/category verification and any unbookmarking remain later milestones.
+
+Review follow-up: current post.fields/note_post documentation rechecked on 2026-10-14;
+live field support remains unverified. Completed GET evidence now survives malformed
+responses; summaries include expansion/media field coverage and numeric rate limits.

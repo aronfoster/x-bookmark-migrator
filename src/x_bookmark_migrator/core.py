@@ -127,6 +127,7 @@ def decode(response):
 
 class Client:
     def __init__(self, store, http, client_id, client_secret=None):
+        self.observations = []
         self.store, self.http = store, http
         self.client_id, self.client_secret = client_id, client_secret
 
@@ -207,7 +208,38 @@ class Client:
                 "Authorization": "Bearer " + token["access_token"],
             },
         )
-        return decode(response)
+        # Persist every completed GET before HTTP/JSON/schema validation. Never token responses.
+        name = "read-" + secrets.token_hex(12) + ".private.json"
+        rate_limits = {}
+        for header in ("x-rate-limit-limit", "x-rate-limit-remaining", "x-rate-limit-reset"):
+            value = response.headers.get(header)
+            if value is not None and re.fullmatch(r"[0-9]{1,20}", value):
+                rate_limits[header] = value
+        try:
+            payload = {"response": response.json()}
+        except ValueError:
+            payload = {"response_text": response.text}
+        observation = {
+            "status": response.status_code,
+            "rate_limits": rate_limits,
+            "private_file": name,
+        }
+        self.store.write(
+            name,
+            {
+                **payload,
+                **observation,
+                "endpoint": path,
+                "request": params,
+                "retrieved_at": datetime.now(UTC).isoformat(),
+                "not_an_archive": True,
+            },
+        )
+        self.observations.append(observation)
+        try:
+            return decode(response)
+        except PilotError as exc:
+            raise PilotError(str(exc) + " Read evidence: " + json.dumps(observation)) from None
 
 
 class Budget:
@@ -268,7 +300,10 @@ def pilot(client, budget, owner_id, dialect="post"):
     else:
         raise PilotError("Unknown field dialect.")
     body = client.get(f"/2/users/{owner_id}/bookmarks", params, budget.reserve)
-    if "data" not in body and body.get("meta", {}).get("result_count") != 0:
+    meta = body.get("meta", {})
+    if not isinstance(meta, dict):
+        raise PilotError("Malformed pagination metadata; private response saved.")
+    if "data" not in body and meta.get("result_count") != 0:
         if not body.get("errors"):
             raise PilotError("Missing bookmark data and empty-page metadata.")
     data = body.get("data", [])
@@ -280,25 +315,18 @@ def pilot(client, budget, owner_id, dialect="post"):
         exact_id(item.get("id"))
         if "author_id" in item:
             exact_id(item["author_id"])
-    meta = body.get("meta", {})
-    if not isinstance(meta, dict) or (
-        "next_token" in meta and (not isinstance(meta["next_token"], str) or not meta["next_token"])
-    ):
+    if "next_token" in meta and (not isinstance(meta["next_token"], str) or not meta["next_token"]):
         raise PilotError("Malformed pagination metadata.")
     if "result_count" in meta and (
         type(meta["result_count"]) is not int or meta["result_count"] != len(data)
     ):
         raise PilotError("Result count does not match records.")
-    name = "pilot-" + secrets.token_hex(12) + ".private.json"
-    client.store.write(
-        name,
-        {
-            "response": body,
-            "request": params,
-            "retrieved_at": datetime.now(UTC).isoformat(),
-            "not_an_archive": True,
-        },
-    )
+    includes = body.get("includes", {})
+    if not isinstance(includes, dict):
+        raise PilotError("Malformed includes; private response saved.")
+    media = includes.get("media", [])
+    if not isinstance(media, list) or any(not isinstance(item, dict) for item in media):
+        raise PilotError("Malformed media expansion; private response saved.")
     summary = {
         "records": len(data),
         "has_next_page": bool(meta.get("next_token")),
@@ -306,7 +334,10 @@ def pilot(client, budget, owner_id, dialect="post"):
         "field_dialect": dialect,
         "estimated_reserved_usd": str(budget.used),
         "observed_charge": "unverified",
-        "private_file": name,
+        "private_file": client.observations[-1]["private_file"],
+        "reads": client.observations,
+        "includes": sorted(includes),
+        "media_fields": sorted({key for item in media for key in item}),
         "fields": sorted({k for item in data for k in item}),
     }
     if body.get("errors"):

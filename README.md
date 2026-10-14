@@ -66,10 +66,18 @@ account-wide meter or X billing-cycle meter. **Console's hard limit is the backs
 actual billing and expansion costs must be measured. There is no billing API call.
 
 Stdout contains only counts, field names, pagination presence, estimated reservation,
-and the generated private filename. Full JSON (including expansion objects and
+expanded-data/media field names, rate-limit headers for both reads, and the generated
+private filename. Missing/non-numeric rate-limit headers are omitted. Full JSON (including expansion objects and
 opaque continuation token) is stored privately, never printed. These records are a
 pilot snapshot, not a verified archive; missing categories/media/full text remain
 unresolved. A response with partial errors is saved but exits unsuccessfully.
+Every completed GET response is saved before HTTP/JSON/schema validation, including
+malformed JSON and HTTP failures, in a unique `read-*.private.json`. Evidence includes
+status, request parameters, and numeric rate-limit headers. OAuth token responses
+are never included in these diagnostic files. On failure, inspect the latest private
+read files; do not rerun a paid request just to recover diagnostics. Partial or malformed
+responses still fail validation. Field presence is evidence of coverage, not proof of
+complete long-form text or media archival.
 All HTTP errors stop, with no raw bodies in stderr. 401 requires reauthorization;
 403 requires entitlement/scope investigation; 429 requires waiting before a manual
 rerun. Expiring tokens are refreshed before reads; rotated tokens are saved atomically.
@@ -103,3 +111,11 @@ made here. No claim of all-history coverage or unbookmark behavior is made.
 
 Official references: [OAuth PKCE](https://docs.x.com/fundamentals/authentication/oauth-2-0/authorization-code),
 [pricing](https://docs.x.com/x-api/getting-started/pricing).
+
+## Network environment
+
+The CLI deliberately uses `trust_env=False`: `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`,
+`SSL_CERT_FILE`, and `SSL_CERT_DIR` are not used. Run this pilot from a host with direct
+HTTPS access and standard trusted certificates. Proxy/custom-CA support must be
+configured and tested explicitly before deployment to a runtime requiring it; the
+current OpenClaw network environment has not been validated.
