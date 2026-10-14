@@ -55,9 +55,19 @@ def main():
                 )
                 print(json.dumps(pilot(client, budget, args.app_owner_id, args.field_dialect)))
     except PilotError as exc:
+        if exc.summary is not None:
+            print(json.dumps(exc.summary))
         print(str(exc), file=sys.stderr)
         return 1
-    except (httpx.HTTPError, OSError, ValueError, KeyError, TypeError, InvalidOperation):
+    except (
+        httpx.HTTPError,
+        OSError,
+        ValueError,
+        KeyError,
+        TypeError,
+        AttributeError,
+        InvalidOperation,
+    ):
         # Never expose remote error bodies, callback codes, tokens, or local data.
         print(
             "Local state/configuration or transport failed; no automatic retry. "

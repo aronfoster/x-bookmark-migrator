@@ -23,6 +23,10 @@ API = "https://api.x.com"
 class PilotError(Exception):
     """Safe to show to the operator: never contains remote bodies or secrets."""
 
+    def __init__(self, message, summary=None):
+        super().__init__(message)
+        self.summary = summary
+
 
 def exact_id(value):
     if not isinstance(value, str) or not re.fullmatch(r"[0-9]{1,19}", value):
@@ -133,16 +137,18 @@ class Client:
 
     def token(self, data, prior=None):
         auth = (self.client_id, self.client_secret) if self.client_secret else None
-        body = decode(
-            self.http.post(
-                API + "/2/oauth2/token",
-                data={
-                    **data,
-                    "client_id": self.client_id,
-                },
-                auth=auth,
-            )
+        response = self.http.post(
+            API + "/2/oauth2/token",
+            data={**data, "client_id": self.client_id},
+            auth=auth,
         )
+        if response.status_code in (400, 401):
+            operation = "refresh" if data.get("grant_type") == "refresh_token" else "exchange"
+            raise PilotError(
+                f"OAuth token {operation} rejected (HTTP {response.status_code}); "
+                "verify client configuration, then run auth-start and auth-finish again."
+            )
+        body = decode(response)
         scopes = body.get("scope", prior.get("scope") if prior else None)
         if not isinstance(scopes, str) or set(scopes.split()) != SCOPES:
             raise PilotError("OAuth grant must contain exactly the requested read scopes.")
@@ -191,7 +197,7 @@ class Client:
 
     def get(self, path, params, reserve):
         token = self.store.read("tokens.private.json")
-        if not token or token.get("client_id") != self.client_id:
+        if not isinstance(token, dict) or token.get("client_id") != self.client_id:
             raise PilotError("Run auth-start and auth-finish for this client first.")
         if set(token.get("scope", "").split()) != SCOPES:
             raise PilotError("Stored grant does not match read-only scopes.")
@@ -266,7 +272,12 @@ class Budget:
 def pilot(client, budget, owner_id, dialect="post"):
     owner_id = exact_id(owner_id)
     me = client.get("/2/users/me", {}, budget.reserve)
-    if me.get("errors") or exact_id(me.get("data", {}).get("id")) != owner_id:
+    identity = me.get("data")
+    if not isinstance(identity, dict):
+        raise PilotError(
+            "Malformed identity response; private response saved, stopped before bookmarks."
+        )
+    if me.get("errors") or exact_id(identity.get("id")) != owner_id:
         raise PilotError("Authenticated user differs from configured developer-app owner.")
     params = {
         "max_results": "5",
@@ -327,7 +338,28 @@ def pilot(client, budget, owner_id, dialect="post"):
     media = includes.get("media", [])
     if not isinstance(media, list) or any(not isinstance(item, dict) for item in media):
         raise PilotError("Malformed media expansion; private response saved.")
+    errors = body.get("errors", [])
+    if not isinstance(errors, list):
+        raise PilotError("Malformed errors array; private response saved.")
+    # Never print arbitrary remote strings, even when supplied in the type field.
+    known_types = {
+        f"https://{host}/2/problems/{kind}"
+        for host in ("api.x.com", "api.twitter.com")
+        for kind in ("resource-not-found", "not-authorized-for-resource")
+    }
+    error_types = sorted(
+        {
+            error["type"]
+            if isinstance(error, dict)
+            and isinstance(error.get("type"), str)
+            and error["type"] in known_types
+            else "unknown"
+            for error in errors
+        }
+    )
     summary = {
+        "partial_error_types": error_types,
+        "pilot_status": "partial" if errors else "read_complete",
         "records": len(data),
         "has_next_page": bool(meta.get("next_token")),
         "partial_errors": bool(body.get("errors")),
@@ -341,5 +373,5 @@ def pilot(client, budget, owner_id, dialect="post"):
         "fields": sorted({k for item in data for k in item}),
     }
     if body.get("errors"):
-        raise PilotError("Partial API errors; private response saved, pilot NOT accepted.")
+        raise PilotError("Partial API errors; diagnostics available, pilot NOT accepted.", summary)
     return summary

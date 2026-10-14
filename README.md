@@ -70,7 +70,11 @@ expanded-data/media field names, rate-limit headers for both reads, and the gene
 private filename. Missing/non-numeric rate-limit headers are omitted. Full JSON (including expansion objects and
 opaque continuation token) is stored privately, never printed. These records are a
 pilot snapshot, not a verified archive; missing categories/media/full text remain
-unresolved. A response with partial errors is saved but exits unsuccessfully.
+unresolved. A response with partial errors prints its summary (including sanitized
+`partial_error_types` and `pilot_status=partial`) and exits unsuccessfully. Known
+resource-unavailable errors are useful read evidence, but are not silently accepted
+as a complete pilot. Unknown error types are reported as `unknown`; raw details stay
+private. No second paid run is necessary to recover this summary.
 Every completed GET response is saved before HTTP/JSON/schema validation, including
 malformed JSON and HTTP failures, in a unique `read-*.private.json`. Evidence includes
 status, request parameters, and numeric rate-limit headers. OAuth token responses
@@ -119,3 +123,7 @@ The CLI deliberately uses `trust_env=False`: `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_P
 HTTPS access and standard trusted certificates. Proxy/custom-CA support must be
 configured and tested explicitly before deployment to a runtime requiring it; the
 current OpenClaw network environment has not been validated.
+
+Private `read-*.private.json` diagnostics accumulate without automatic cleanup. Keep
+them only while needed to diagnose/report the pilot, then delete those read files
+locally; retain tokens and the budget ledger to preserve authorization and accounting.
