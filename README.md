@@ -1,6 +1,7 @@
 # X bookmark migrator
 
-FOS-163: a small **read-only official API pilot**, not yet a production archive.
+FOS-163/164: **read-only official API pilot and resumable bookmark/folder inventory**,
+not yet a production archive.
 No bookmark deletion, scraping, private GraphQL, media downloads, or scheduler.
 
 ## Install and verify (Linux, Python 3.12+)
@@ -11,6 +12,14 @@ uv run pytest -q
 uv run ruff check .
 uv run ruff format --check .
 ```
+
+## Bookmark and folder inventory
+
+After OAuth setup, use `x-migrator inventory` for bounded, resumable reads and
+private portable JSONL exports with original folder IDs/names and coverage status.
+`x-migrator inventory-export` regenerates an export offline. See
+[docs/INVENTORY.md](docs/INVENTORY.md) for commands, limits, restart rules and live
+verification still required. Partial category scans never become deletion permission.
 
 ## One-time owner setup
 
