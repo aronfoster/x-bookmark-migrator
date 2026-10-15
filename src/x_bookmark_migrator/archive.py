@@ -147,7 +147,7 @@ def evidence_for(store, record):
 
 def enrich_references(inventory, client, budget, owner_id, post_ids=None, limit=5):
     """Explicit paid hydration for direct quotes/reposts; never an automatic retry."""
-    if not 1 <= limit <= 20:
+    if type(limit) is not int or not 1 <= limit <= 20:
         raise PilotError("Reference enrichment limit must be 1–20 posts.")
     ids = post_ids or list(inventory.state["posts"])[:limit]
     if not ids or len(ids) > limit or len(set(ids)) != len(ids):
@@ -174,21 +174,28 @@ def enrich_references(inventory, client, budget, owner_id, post_ids=None, limit=
     me = client.get("/2/users/me", {}, budget.reserve)
     if me.get("errors") or me.get("data", {}).get("id") != owner_id:
         raise PilotError("Authenticated X user differs from configured owner.")
-    for pid, record, needed in work:
-        params = {"ids": ",".join(needed), **post_fields(inventory.state["dialect"])}
+    needed = sorted({rid for _, _, refs in work for rid in refs})
+    evidence_files = []
+    for offset in range(0, len(needed), 100):
+        chunk = needed[offset : offset + 100]
+        params = {"ids": ",".join(chunk), **post_fields(inventory.state["dialect"])}
         body = client.get("/2/tweets", params, budget.reserve)
-        data, _, _, _ = validate_page(body, "hydrate", len(needed))
+        data, _, _, _ = validate_page(body, "hydrate", len(chunk))
         returned = [p["id"] for p in data]
-        if len(set(returned)) != len(returned) or any(p not in needed for p in returned):
+        if len(set(returned)) != len(returned) or any(p not in chunk for p in returned):
             raise PilotError("Unexpected reference hydration IDs.")
+        evidence_files.append(client.observations[-1]["private_file"])
+    # Publish links only after all bounded reads succeeded. Preserve every raw
+    # response once and share its provenance across the selected primary posts.
+    for pid, record, _ in work:
         inventory.state.setdefault("archive_reference_reads", {})[pid] = {
             "source": record["expansions_ref"],
-            "evidence": client.observations[-1]["private_file"],
+            "evidence": evidence_files,
         }
-        inventory.save()
+    inventory.save()
     return {
         "enriched_posts": len(work),
-        "x_api_calls": len(work) + 1,
+        "x_api_calls": len(evidence_files) + 1,
         "estimated_reserved_usd": str(budget.used),
         "observed_charge": "unverified",
     }
@@ -201,25 +208,31 @@ def archive_evidence(inventory, record):
     link = inventory.state.get("archive_reference_reads", {}).get(record["id"])
     if not link or link["source"] != record["expansions_ref"]:
         return combined
-    extra = inventory.store.read(link["evidence"])
-    if not extra or extra.get("status") != 200 or extra.get("endpoint") != "/2/tweets":
-        raise PilotError("Missing official reference evidence.", code="missing_provenance")
-    body = extra["response"]
+    files = link["evidence"]
+    if isinstance(files, str):  # Read receipts from the original per-primary lookup.
+        files = [files]
     combined["original_response"] = json.loads(json.dumps(combined["response"]))
-    combined["reference_evidence"] = extra
-    combined["reference_errors"] = body.get("errors", [])
+    combined["reference_evidence"] = []
+    combined["reference_errors"] = []
     includes = combined["response"].setdefault("includes", {})
     # More recent direct lookup is authoritative for referenced objects. Keep both
     # original responses in the payload so provenance and changes remain reviewable.
-    for kind, key in (("users", "id"), ("media", "media_key"), ("posts", "id")):
-        prior = list(includes.get(kind, []))
-        newer = list(body.get("includes", {}).get(kind, []))
-        if kind == "posts":
-            prior += includes.pop("tweets", [])
-            newer += body.get("includes", {}).get("tweets", []) + body.get("data", [])
-        merged = object_map(prior, key)
-        merged.update(object_map(newer, key))
-        includes[kind] = list(merged.values())
+    for name in files:
+        extra = inventory.store.read(name)
+        if not extra or extra.get("status") != 200 or extra.get("endpoint") != "/2/tweets":
+            raise PilotError("Missing official reference evidence.", code="missing_provenance")
+        body = extra["response"]
+        combined["reference_evidence"].append(extra)
+        combined["reference_errors"].extend(body.get("errors", []))
+        for kind, key in (("users", "id"), ("media", "media_key"), ("posts", "id")):
+            prior = list(includes.get(kind, []))
+            newer = list(body.get("includes", {}).get(kind, []))
+            if kind == "posts":
+                prior += includes.pop("tweets", [])
+                newer += body.get("includes", {}).get("tweets", []) + body.get("data", [])
+            merged = object_map(prior, key)
+            merged.update(object_map(newer, key))
+            includes[kind] = list(merged.values())
     return combined
 
 
@@ -277,6 +290,10 @@ def plan_post(post, includes):
         if not isinstance(attachments, dict):
             blockers.append("blocked_invalid_attachments")
             attachments = {}
+        if "media_source_tweet_id" in attachments:
+            # Source-media expansion is not archived by this implementation, even
+            # if regular media_keys are also present. Never certify its absence.
+            blockers.append("blocked_unsupported_media_source")
         keys = attachments.get("media_keys", [])
         if not isinstance(keys, list) or any(not isinstance(k, str) for k in keys):
             blockers.append("blocked_invalid_attachments")
@@ -299,7 +316,8 @@ def plan_post(post, includes):
                         logical_type=kind,
                         quality=quality,
                         source_original_verified=False,
-                        derivative=False,
+                        derivative="unknown",
+                        transformed_by_archiver=False,
                     )
                 except PilotError as exc:
                     entry["blocked"] = exc.code
@@ -388,34 +406,49 @@ def archive_batch(inventory, drive, media_http, *, post_ids=None, limit=5):
             )
             payload.update(posts=posts, media=assets)
             blockers.extend(content_blockers)
-            if (
-                record.get("errors")
-                or record.get("hydration_status") != "read"
-                or evidence.get("reference_errors")
-            ):
+            related = {p["id"] for p in posts}
+            for p in posts:
+                raw = p["raw"]
+                refs = raw.get("referenced_posts", raw.get("referenced_tweets", []))
+                if isinstance(refs, list):
+                    related.update(r["id"] for r in refs)
+            # Shared lookups can fail for an unrelated primary's reference. Only
+            # a specifically attributed tweet error can be excluded; unknown or
+            # expansion errors remain fail-closed. All errors stay in evidence.
+            reference_errors = [
+                error
+                for error in evidence.get("reference_errors", [])
+                if not isinstance(error, dict)
+                or error.get("resource_type") != "tweet"
+                or not isinstance(error.get("resource_id"), str)
+                or not re.fullmatch(r"[0-9]{1,19}", error["resource_id"])
+                or error["resource_id"] in related
+            ]
+            if record.get("errors") or record.get("hydration_status") != "read" or reference_errors:
                 blockers.append("blocked_partial_api_response")
-            for asset in assets:
-                if "blocked" in asset:
-                    continue
-                try:
-                    data, mime, extension = download_media(
-                        media_http, asset["source_url"], asset["logical_type"], drive.max_bytes
-                    )
-                    name = f"{asset['post_id']}_{asset['index']:02d}.{extension}"
-                    prior = adoptions.get(digest(data))
-                    if prior:
-                        drive.verify(prior)
-                        saved = prior
-                    else:
-                        saved = drive.save(category, name, data, mime)
-                    asset.update(storage=saved, container=extension)
-                except (PilotError, httpx.HTTPError) as exc:
-                    asset["blocked"] = (
-                        exc.code if isinstance(exc, PilotError) else "media_transport"
-                    )
-                    blockers.append("blocked_" + asset["blocked"])
         except PilotError as exc:
             blockers.append("blocked_" + exc.code)
+        for asset in payload["media"]:
+            if "blocked" in asset:
+                continue
+            try:
+                data, mime, extension = download_media(
+                    media_http, asset["source_url"], asset["logical_type"], drive.max_bytes
+                )
+            except (PilotError, httpx.HTTPError) as exc:
+                asset["blocked"] = exc.code if isinstance(exc, PilotError) else "media_transport"
+                blockers.append("blocked_" + asset["blocked"])
+                continue
+            # Storage failures must abort the batch, including legacy readback.
+            # They are not CDN failures and must not yield a completion receipt.
+            name = f"{asset['post_id']}_{asset['index']:02d}.{extension}"
+            prior = adoptions.get(digest(data))
+            if prior:
+                drive.verify(prior)
+                saved = prior
+            else:
+                saved = drive.save(category, name, data, mime)
+            asset.update(storage=saved, container=extension)
         payload["blockers"] = sorted(set(blockers))
         payload["archive_status"] = "blocked" if blockers else "bytes_verified"
         saved = drive.save(category, pid + ".json", encode(payload), "application/json")
@@ -432,20 +465,25 @@ def archive_batch(inventory, drive, media_http, *, post_ids=None, limit=5):
                 "deletion_eligible": False,
             }
         )
-    batch_id = secrets.token_hex(12)
+    raw_manifest = b"".join(encode(r) for r in rows)
     manifest = drive.save(
-        "batches", batch_id + ".jsonl", b"".join(encode(r) for r in rows), "application/x-ndjson"
+        "batches", digest(raw_manifest) + ".jsonl", raw_manifest, "application/x-ndjson"
     )
+    # Content dedupe may return a manifest written by an older version with a
+    # random name. Its batch identity stays tied to that actual stored name.
+    batch_id = manifest["name"].removesuffix(".jsonl")
+    receipt_id = secrets.token_hex(12)
     receipt = {
         "schema_version": 1,
         "batch_id": batch_id,
+        "receipt_id": receipt_id,
         "manifest": manifest,
         "records": len(rows),
         "bytes_verified": sum(not r["blockers"] for r in rows),
         "blocked": sum(bool(r["blockers"]) for r in rows),
         "deletion_eligible": False,
     }
-    name = "archive-" + batch_id + ".private.json"
+    name = "archive-" + receipt_id + ".private.json"
     # Store.write replaces atomically; a random new name plus explicit existence guard
     # keeps batch receipts immutable under the enclosing state lock.
     if inventory.store.path(name).exists():
