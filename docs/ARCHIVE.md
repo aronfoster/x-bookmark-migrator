@@ -34,10 +34,12 @@ intentionally not copied into this public repository.
 
 Reviewed 2026-10-15. Local tests use invented responses and files. The observed
 column distinguishes earlier owner/connector evidence from this implementation.
+The bookmark schema, lookup endpoint and partial-error contract were rechecked
+against the linked official documentation while addressing PR #4 reviews.
 
 | Endpoint / official reference | Documented contract used | Observed / failure handling |
 | --- | --- | --- |
-| [Bookmarks](https://docs.x.com/x-api/users/get-bookmarks) | OAuth bearer; current enums use `post.fields`, `note_post`, `article`, `attachments`, `entities`; expansions include `author_id`, `attachments.media_keys`, `referenced_posts`; media `url,type,variants`. | Existing saved read evidence is reused. No new live request here. Missing request provenance or content blocks completeness. |
+| [Bookmarks](https://docs.x.com/x-api/users/get-bookmarks) | OAuth bearer; current enums use `post.fields`, `note_post`, `article`, `attachments`, `entities`; expansions include `author_id`, `attachments.media_keys`, `referenced_posts`; media `url,type,variants`. Also documents `attachments.media_source_tweet_id` and the `attachments.media_source_tweet` expansion. | Existing saved read evidence is reused. No new live request here. Missing request provenance or content blocks completeness. Source-media attachments are explicitly blocked, including on quotes/reposts and when ordinary media keys coexist; their source is not yet archived. |
 | [Folder contents](https://docs.x.com/x-api/users/get-bookmarks-by-folder-id) | `data` contains IDs, not hydrated bodies. Request parameters do not prove complete response coverage. | Owner previously observed the same capped window without metadata. Preserve positive named-category evidence; absent membership stays unknown. |
 | [Lookup index](https://docs.x.com/x-api/posts/lookup/introduction), [GET /2/tweets](https://docs.x.com/x-api/posts/get-posts-by-ids) | 1–100 exact IDs, selected fields/expansions; returned data and optional errors. Current enums do not list the old nested referenced-tweet media expansion. | `archive-enrich` explicitly looks up direct quote/repost IDs, at most 20 per primary. Missing nested context remains blocked. No guessed expansion or paid fallback. |
 | [Data dictionary](https://docs.x.com/x-api/fundamentals/data-dictionary) | Generic documentation still describes `note_tweet.text`, while endpoint schemas show `note_post.text`. Article shape is not specified sufficiently to prove its full body. Variants expose `content_type`, `bit_rate`, `url`. | Preserve both documented long-text dialects; conflicting values block. Every Article stays `blocked_incomplete_article`, even if an unverified `text` member appears. Highest-bitrate observed MP4 is selected; HLS/posters do not substitute. |
@@ -115,7 +117,7 @@ Archival reuses the active inventory and saved read responses. It makes **zero X
 API calls**. Repeat `--post-id` to choose specific inventory IDs; otherwise it
 uses the first five. It does not automatically skip blocked records or drain a
 folder. For a folder-only ID without a body, finish the existing inventory's
-bounded hydration first. If direct quote/repost expansions lack media, run the
+bounded hydration first. If direct quote/repost expansions lack authors or media, run the
 explicit paid step using the same budget configuration as inventory:
 
 ```sh
@@ -123,14 +125,30 @@ uv run --env-file .env x-migrator archive-enrich --max-posts 5 \
   --console-hard-cap-confirmed --auto-recharge-off-confirmed
 ```
 
-This can issue one identity read plus up to five lookup reads. The existing
-per-call/run/month reservation settings are required. Repeating this explicit
-command repeats paid reads; there is no hidden retry. Actual Console charges
-must be recorded separately. The archived payload retains both read versions.
+This unions direct reference IDs across the selected primaries and reads them in
+chunks of at most 100 IDs. The default five primaries need at most one identity
+read and one lookup; the maximum 20 primaries with 20 references each need at
+most one identity read and four lookups. Shared IDs are requested once per run.
+The existing per-call/run/month reservation settings remain required; fewer
+requests are not a claim about per-resource billing or actual cost. Repeating
+this explicit command repeats paid reads; there is no hidden retry. Actual
+Console charges must be recorded separately. The archived payload retains every
+raw response. Explicit tweet errors block the affected references (including
+nested references); unscoped or other resource errors conservatively block all
+primaries sharing the lookup evidence. Missing authors/media stay blocked.
 
 The result identifies a private batch receipt. Its `manifest.file_id` and
-`manifest.sha256` are the portable entry point and integrity anchor. Retain that
-receipt privately with the job records. In a **fresh state directory** containing only the same
+`manifest.sha256` are the portable entry point and integrity anchor. **Before
+accepting each batch, copy its receipt, or at least both fields, into the existing
+private job record or private Linear acceptance record on storage independent of
+the OpenClaw state mount.** Record the runtime invocation and backup location
+there too. A second file on the same mount is not sufficient. Do not put these
+identifiers in this public repository or PR. The CLI does not perform this backup:
+`bytes_verified` alone does not establish recoverability after losing state.
+Drive's own manifest properties are not an independent integrity anchor.
+
+For the acceptance restore, obtain the ID and hash from that separate record,
+without consulting the original state directory. In a **fresh state directory** containing only the same
 Drive grant (no X token/inventory/journal), reconstruct to an empty private folder:
 
 ```sh
@@ -154,27 +172,36 @@ quality caveats, media receipts and raw official evidence. No X/browser is used.
   folder association is usable even when the folder window cannot be paginated;
   absence from that window never establishes unfiled status.
 - Files use post ID/media index names. Within a category, SHA-256 content identity
-  reuses bytes; receipts record the actual existing Drive filename. Per-batch
+  reuses bytes; receipts record the actual existing Drive filename. `batch_id`
+  matches that manifest's filename stem, including reused legacy manifests;
+  `receipt_id` distinguishes local run receipts. New manifest filenames use their
+  content hash, so unchanged reruns retain the same batch identity. Per-batch
   JSONL and local receipts are create-only. The mutable journal is an index, not
   the sole archive. Run only one writer with the persistent state lock.
 - Defaults: five posts; 64 MiB per file. Explicit limits allow up to 20 posts and
   256 MiB per file. Assets are processed individually in bounded memory. Reference
   traversal is capped at two levels/20 posts and 16 attachments per referenced
   post; excess is blocked. Larger files, unknown containers, HLS-only video,
-  missing quotes, polls, inaccessible media, malformed notes and Articles remain
+  missing quotes, source-media attachments, polls, inaccessible media, malformed notes and Articles remain
   blocked. No source URL rewriting, scraping or thumbnail-as-video fallback.
 - PNG/JPEG/WebP signatures/end markers and MP4 top-level boxes are checked to
   reject obvious corruption or wrong content. This is not a complete decoder.
   Live acceptance must independently decode photos and play/probe representative
-  videos. Logical animated GIF remains distinct from its MP4 container. API
-  renditions are not falsely labeled original source quality; no derivatives
-  are produced.
+  videos. Compare decoded photo dimensions against the returned API `width` and
+  `height` and record the result privately; missing dimensions or a mismatch
+  leave full-size quality unverified. Do not rewrite source URLs to guess an
+  original. Logical animated GIF remains distinct from its MP4 container.
+  Source rendition quality remains unverified (`derivative: "unknown"`);
+  `transformed_by_archiver: false` states only that the downloaded bytes were
+  saved unchanged. Strict JPEG end-marker checks remain fail-closed; investigate
+  rejected live examples before broadening accepted formats.
 - Interrupted uploads retain their pre-generated IDs. Explicit rerun checks the
   remote object before creation, and verifies existing bytes. A mismatch stops;
   it never overwrites corruption or chooses a new ID to conceal it. Partially
   uploaded batches can leave unreferenced create-only objects, which reruns reuse.
-- Storage failure can prevent publishing the batch manifest; no success receipt
-  is issued then. Individual media failures are retained as blocked records while
+- Storage failure stops the batch immediately, including failed media uploads or
+  legacy asset readback; no batch manifest or completion receipt is issued.
+  Individual CDN download failures are retained as blocked records while
   other posts can still archive. Restore failures never authorize deletion.
 - Archive/restore exit 1 if any record is blocked. Successful records still exist
   in the immutable manifest. Every record retains `deletion_eligible: false`;
@@ -183,7 +210,7 @@ quality caveats, media receipts and raw official evidence. No X/browser is used.
 
 ## Acceptance still required to close FOS-165
 
-Local verification: all 188 tests pass, including the new storage/archive/CLI
+Local verification: all 203 tests pass, including the new storage/archive/CLI
 failure and fresh-state recovery cases, alongside existing OAuth/inventory tests.
 A separate rehearsal generated a PNG and H.264 MP4 with FFmpeg, archived/restored
 them alongside a text-only post through HTTP doubles, then decoded both restored
@@ -193,6 +220,8 @@ not a live X/CDN/Drive test. Ruff lint/format and whitespace checks also pass.
 Confirm actual runtime/credential/mount access; pass unattended probe and reuse
 the three pilot assets; archive 3–5 representative official API records (text,
 multi-photo, ordinary video and GIF where available, plus a named category);
-restore with fresh state and no X access; inspect text and decode media; document
+back up each restore anchor outside the state mount; restore using that separate
+record with fresh state and no X access; inspect text and decode media, compare
+photo dimensions, and check whether plain quotes include their authors; document
 unsupported cases and actual charges privately. Fixture tests and merged code
 do not satisfy this gate. FOS-167 live deletion remains blocked until it passes.
