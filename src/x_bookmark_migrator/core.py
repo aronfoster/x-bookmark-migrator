@@ -23,9 +23,10 @@ API = "https://api.x.com"
 class PilotError(Exception):
     """Safe to show to the operator: never contains remote bodies or secrets."""
 
-    def __init__(self, message, summary=None):
+    def __init__(self, message, summary=None, code="read_failed"):
         super().__init__(message)
         self.summary = summary
+        self.code = code
 
 
 def exact_id(value):
@@ -118,7 +119,8 @@ def decode(response):
         }
         raise PilotError(
             f"X HTTP {response.status_code}. "
-            + hints.get(response.status_code, "Stopped without retry; inspect Console.")
+            + hints.get(response.status_code, "Stopped without retry; inspect Console."),
+            code=f"http_{response.status_code}",
         )
     try:
         body = response.json()
@@ -245,7 +247,9 @@ class Client:
         try:
             return decode(response)
         except PilotError as exc:
-            raise PilotError(str(exc) + " Read evidence: " + json.dumps(observation)) from None
+            raise PilotError(
+                str(exc) + " Read evidence: " + json.dumps(observation), code=exc.code
+            ) from None
 
 
 class Budget:
@@ -263,7 +267,7 @@ class Budget:
         ledger = self.store.read("budget.private.json") or {}
         used = Decimal(ledger.get(month, "0"))
         if self.used + self.per_call > self.run_cap or used + self.per_call > self.month_cap:
-            raise PilotError("Estimated spend cap reached; no read sent.")
+            raise PilotError("Estimated spend cap reached; no read sent.", code="spend_cap")
         ledger[month] = str(used + self.per_call)
         self.store.write("budget.private.json", ledger)
         self.used += self.per_call
@@ -279,37 +283,7 @@ def pilot(client, budget, owner_id, dialect="post"):
         )
     if me.get("errors") or exact_id(identity.get("id")) != owner_id:
         raise PilotError("Authenticated user differs from configured developer-app owner.")
-    params = {
-        "max_results": "5",
-        "media.fields": "type,url,variants,preview_image_url,alt_text,duration_ms,width,height",
-    }
-    if dialect == "tweet":
-        params.update(
-            {
-                "tweet.fields": ",".join(
-                    (
-                        "created_at",
-                        "author_id",
-                        "attachments",
-                        "referenced_tweets",
-                        "entities",
-                        "note_tweet",
-                        "article",
-                    )
-                ),
-                "expansions": "author_id,attachments.media_keys,referenced_tweets.id,"
-                "referenced_tweets.id.attachments.media_keys",
-            }
-        )
-    elif dialect == "post":
-        params.update(
-            {
-                "post.fields": "id,text,created_at,attachments,entities,note_post,article",
-                "expansions": "author_id,attachments.media_keys,referenced_posts",
-            }
-        )
-    else:
-        raise PilotError("Unknown field dialect.")
+    params = {"max_results": "5", **post_fields(dialect)}
     body = client.get(f"/2/users/{owner_id}/bookmarks", params, budget.reserve)
     meta = body.get("meta", {})
     if not isinstance(meta, dict):
@@ -375,3 +349,38 @@ def pilot(client, budget, owner_id, dialect="post"):
     if body.get("errors"):
         raise PilotError("Partial API errors; diagnostics available, pilot NOT accepted.", summary)
     return summary
+
+
+def post_fields(dialect="post"):
+    """Shared documented field profiles for bookmarks and folder-only lookup."""
+    params = {
+        "media.fields": "type,url,variants,preview_image_url,alt_text,duration_ms,width,height",
+    }
+    if dialect == "tweet":
+        params.update(
+            {
+                "tweet.fields": ",".join(
+                    (
+                        "created_at",
+                        "author_id",
+                        "attachments",
+                        "referenced_tweets",
+                        "entities",
+                        "note_tweet",
+                        "article",
+                    )
+                ),
+                "expansions": "author_id,attachments.media_keys,referenced_tweets.id,"
+                "referenced_tweets.id.attachments.media_keys",
+            }
+        )
+    elif dialect == "post":
+        params.update(
+            {
+                "post.fields": "id,text,created_at,attachments,entities,note_post,article",
+                "expansions": "author_id,attachments.media_keys,referenced_posts",
+            }
+        )
+    else:
+        raise PilotError("Unknown field dialect.")
+    return params

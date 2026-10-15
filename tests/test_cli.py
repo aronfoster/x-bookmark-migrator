@@ -138,3 +138,54 @@ def test_callback_requires_terminal(run_cli, monkeypatch, capsys):
     monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
     assert run(lambda req: pytest.fail("network"), ["auth-finish"]) == 1
     assert not calls and "interactive terminal" in capsys.readouterr().err
+
+
+def test_inventory_cli_partial_and_offline_export(run_cli, capsys, monkeypatch):
+    run, store, calls = run_cli
+
+    def handle(req):
+        if req.url.path.endswith("me"):
+            return httpx.Response(200, json={"data": {"id": "123"}})
+        return httpx.Response(200, json={"data": [{"id": "10", "name": "PRIVATE folder"}]})
+
+    assert (
+        run(
+            handle,
+            [
+                "inventory",
+                "--app-owner-id",
+                "123",
+                "--max-calls",
+                "2",
+                "--per-call-reserve-usd",
+                ".1",
+                "--console-hard-cap-confirmed",
+                "--auto-recharge-off-confirmed",
+            ],
+        )
+        == 1
+    )
+    output = capsys.readouterr()
+    result = json.loads(output.out)
+    assert "PRIVATE" not in output.out + output.err
+    assert result["inventory_status"] == "partial" and result["folders"] == 1
+    assert len(calls) == 2
+    monkeypatch.delenv("X_CLIENT_ID")
+    assert (
+        run(lambda req: pytest.fail("offline export made network call"), ["inventory-export"]) == 0
+    )
+    exported = json.loads(capsys.readouterr().out)
+    assert exported["private_export"] != result["private_export"]
+    assert len(calls) == 2 and (store.root / exported["private_export"]).exists()
+
+
+def test_inventory_cli_requires_console_confirmation(run_cli, capsys):
+    run, _, calls = run_cli
+    assert (
+        run(
+            lambda req: pytest.fail("network"),
+            ["inventory", "--app-owner-id", "123", "--per-call-reserve-usd", ".1"],
+        )
+        == 1
+    )
+    assert not calls and "Confirm Console" in capsys.readouterr().err
