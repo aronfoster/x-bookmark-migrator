@@ -31,7 +31,12 @@ verification still required. Partial category scans never become deletion permis
    Set a hard billing-cycle spending limit and turn auto-recharge **off** before reads.
    The CLI flags below attest to these manual checks; they do not configure or verify Console.
 3. In a local interactive terminal, export `X_CLIENT_ID` (the OAuth 2.0 Client ID,
-   not an API key or app-only bearer token). `.env.example` is reference only.
+   not an API key or app-only bearer token). Alternatively, copy `.env.example` to
+   ignored `.env` and fill it locally; use `uv run --env-file .env` in place of
+   `uv run` for the auth, pilot and inventory commands. The CLI does not load it
+   automatically. Export `X_APP_OWNER_ID` in your invoking shell for commands using
+   `"$X_APP_OWNER_ID"`, or pass the verified numeric ID directly: `--env-file` cannot
+   populate that shell substitution.
 4. Run `uv run x-migrator auth-start`, open the printed official authorization URL,
    and approve as the bookmark owner. It requests only
    `tweet.read users.read bookmark.read offline.access`. Write scope is deliberately

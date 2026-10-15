@@ -4,23 +4,62 @@ This implements bounded official API reads and portable category evidence. It do
 not archive assets, schedule jobs, or remove bookmarks. FOS-165 and FOS-167 consume
 this evidence; they must reconcile categories and verify archives before deletion.
 
-## Run a small inventory
+## First live check: a limited probe
 
-Use the same private state directory and OAuth setup as the pilot. Confirm the
-Console hard spending limit and auto-recharge setting before spending more. If your
-configuration is in the ignored `.env`, use `uv run --env-file .env` as below;
-otherwise export the environment variables and omit that option.
+Use Linux, Python 3.12+, `uv`, direct HTTPS to `api.x.com`, and the completed
+[README OAuth setup](../README.md#one-time-owner-setup). Reuse its private state
+directory outside Git and the same `X_CLIENT_ID`. Confirm the Console hard spending
+limit and auto-recharge setting before spending more. The examples use the ignored
+`.env` through `uv run --env-file .env`; if variables are already exported, omit that
+option. Export `X_APP_OWNER_ID` in the invoking shell, or supply the owner's verified
+numeric ID directly to `--app-owner-id`. `--env-file` only sets the child process's
+environment, so it cannot supply the shell's `$X_APP_OWNER_ID` substitution.
+
+**Check existing reservations first.** The UTC-month budget is shared by pilot and
+inventory in this state directory and persists across invocations. It does not reset
+when an inventory starts or resumes. For the default directory, this offline command
+prints only the current month and reserved estimate (no credentials or API calls):
+
+```sh
+uv run python - <<'PYCODE'
+import json
+from datetime import UTC, datetime
+from pathlib import Path
+month = datetime.now(UTC).strftime("%Y-%m")
+path = Path.home() / ".local/state/x-bookmark-migrator/budget.private.json"
+ledger = json.loads(path.read_text()) if path.exists() else {}
+print(f"UTC month: {month}; estimated reserved USD: {ledger.get(month, '0')}")
+PYCODE
+```
+
+If using `--state-dir`, inspect `budget.private.json` in that directory instead.
+At the example's $0.10 reservation, allow up to $0.60 of **remaining** headroom;
+previous pilot reservations count toward the $1.00 example month ceiling. With
+$0.60 already reserved, only four further GETs fit. Do not delete the ledger or
+switch directories to reset accounting. Set any higher soft ceiling deliberately,
+within the verified Console limit and your intended budget, or wait for the next
+UTC accounting month (which may differ from the Console billing cycle).
 
 ```sh
 uv run --env-file .env x-migrator inventory --app-owner-id "$X_APP_OWNER_ID" \
   --console-hard-cap-confirmed --auto-recharge-off-confirmed \
-  --max-calls 6 --page-size 5 --hydrate-batch-size 5 \
+  --max-calls 6 --page-size 1 --hydrate-batch-size 1 --max-pages-per-stream 1 \
   --per-call-reserve-usd 0.10 --run-cap-usd 0.60 --month-cap-usd 1.00
 ```
 
-`X_APP_OWNER_ID` must be set in the invoking shell for shell substitution above
-(the `uv --env-file` option only supplies variables to the child process). Alternatively
-supply the owner's verified numeric ID directly to `--app-owner-id`.
+This is a **probe**, not a resumable full inventory. Limiting each stream to one page
+prevents a large main backlog from consuming every call. A one-item page limits
+folder discovery to at most one folder, leaving room for its contents and a lookup.
+With a reachable nonempty folder and a folder-only ID, the probe makes five GETs:
+identity, folder enumeration, main bookmarks, that folder's contents, and hydration.
+Empty/inaccessible folders or a folder ID already present in the main page mean
+fewer calls; hydration access is then **still unverified**. Record which endpoints
+actually ran. Do not manufacture an extra lookup just to claim verification.
+
+**Exit 1 / partial is expected for a truncated probe** and also occurs if live folder
+responses omit pagination metadata. Its private JSONL/checkpoint remains useful.
+`page_limit` and `pagination_unverified` blocks cannot be cleared by `--resume`;
+start a fresh pass with suitable bounds after interpreting the evidence.
 
 The dollar amounts are illustrative operator reservations, **not guaranteed X
 prices**. Larger pages and expansions can cost more. Each GET reserves the same
@@ -35,9 +74,54 @@ Reads occur in this order: identity check, folder enumeration, main bookmarks, e
 observed folder's contents, then hydration of IDs without main-stream post bodies.
 The request cap includes the identity GET on every invocation, but not OAuth token
 refresh. The default page and hydration sizes are 100, within documented limits;
-page sizes 1–100 are accepted. The small example deliberately bounds the first live experiment. Folder page-size
-quirks are reviewer-reported, not established here. No retries, dialect fallback,
+page sizes 1–100 are accepted. The probe deliberately bounds the first live
+experiment. Folder page-size quirks are reviewer-reported, not established here. No retries, dialect fallback,
 write scopes, or destructive operations occur automatically.
+
+## From probe to a full inventory
+
+1. Compare the probe's endpoint/status evidence and per-operation reservations with
+   actual Console charge details/deltas. A combined balance delta alone cannot price
+   each endpoint. Keep unobserved hydration and folder charges explicitly unverified.
+   Resolve missing pagination metadata before expecting complete category coverage.
+2. Choose page/batch sizes and a conservative per-call reserve for those sizes,
+   including expanded resources. **Do not reuse a one-item probe's measured charge
+   unchanged for 100-item pages.** Account for variable returned-resource counts,
+   current published rates and a margin; the single reserve must cover the most
+   expensive planned GET. If pricing is unresolved, continue only with deliberate
+   small bounded experiments and report the gap.
+3. Estimate main pages, folder-list pages, pages in every folder, hydration batches
+   for folder-only IDs, and one identity GET per invocation. Add headroom for
+   uncertain terminal pages and interrupted reads. Set the run cap to at least
+   `max_calls × per_call_reserve` if the request cap should be the normal stopping
+   point. Set the month cap to existing reservations **plus** the planned budget,
+   within your intended spending and Console limit; ten $0.10 reservations already
+   consume the original $1.00 example ceiling.
+4. Set the three shell variables below to those deliberate dollar limits. Start a
+   **fresh** full pass, without `--resume` or the probe's one-page bound. This example
+   uses ten GETs per invocation and 100-item pages/batches; reduce them if the pricing
+   evidence supports only a smaller batch. Default pass bounds remain 10,000 records,
+   1,000 folders and 100 pages per stream; choose higher bounds up front if needed.
+
+```sh
+uv run --env-file .env x-migrator inventory --app-owner-id "$X_APP_OWNER_ID" \
+  --console-hard-cap-confirmed --auto-recharge-off-confirmed \
+  --max-calls 10 --page-size 100 --hydrate-batch-size 100 \
+  --per-call-reserve-usd "${X_INVENTORY_CALL_RESERVE_USD:?Set a measured conservative reserve}" \
+  --run-cap-usd "${X_INVENTORY_RUN_CAP_USD:?Set the run reservation cap}" \
+  --month-cap-usd "${X_INVENTORY_MONTH_CAP_USD:?Include prior reservations in the month cap}"
+```
+
+After `request_limit`, repeat that full-pass command with
+`--resume --source-unchanged-confirmed`, only while the source remains unchanged.
+After `spend_cap`, inspect the ledger and deliberately revise the applicable soft
+cap or wait; immediately repeating the same command cannot restore headroom.
+Stop resuming at `observed_end`. If streams are blocked or content remains partial,
+inspect the reported reasons instead of looping until success: resuming does not
+repair missing metadata, inaccessible content or a page/record limit. A larger
+page/record bound needs a fresh pass. Known partial records remain blocked for later
+archival while other verified records can progress. Preserve the probe and full-pass
+evidence separately, and never infer all-history coverage from `observed_end`.
 
 ## Resume versus rescan
 
@@ -47,8 +131,9 @@ edits, moves, or unbookmarks have occurred since the pass began**. This is an op
 attestation, not an API snapshot guarantee. Resume uses the checkpoint's original
 page size and record/folder/page bounds. Omit those flags to inherit them; explicitly
 supplying a different value is rejected before any API request. `active_limits` in
-the summary reports the effective values. Request, hydration-batch and spend limits
-apply to this invocation. The full uninterrupted and split/restarted synthetic tests
+the summary reports the effective values. Request, hydration-batch and run-spend
+limits apply to this invocation; the month ceiling is checked against the persistent
+shared pilot/inventory ledger across invocations. The full uninterrupted and split/restarted synthetic tests
 produce identical exact IDs, original folder names and memberships.
 
 After any source mutation, including a future migrator deletion, run without
@@ -63,8 +148,8 @@ original private diagnostic remains available. There is no exactly-once billing 
 HTTP 401/429/5xx and transport failures stop the invocation and preserve the pending
 cursor. Fix authorization or wait as indicated by the private rate-limit evidence
 before explicitly resuming. A folder/main 403/404 or schema error blocks that stream
-while allowing other reachable streams to progress. Ambiguous/top-level partial API errors, pagination
-cycles, missing pagination metadata and per-stream page/record bounds require a
+while allowing other reachable streams to progress. Ambiguous/top-level partial
+API errors, pagination cycles, missing pagination metadata and per-stream page/record bounds require a
 fresh pass after investigating the cause; resume does not erase those failures.
 
 A recognized missing/protected referenced-post expansion is different: when its
