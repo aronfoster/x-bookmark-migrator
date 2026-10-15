@@ -1,8 +1,9 @@
 # X bookmark migrator
 
-FOS-163/164: **read-only official API pilot and resumable bookmark/folder inventory**,
-not yet a production archive.
-No bookmark deletion, scraping, private GraphQL, media downloads, or scheduler.
+Official API pilot, resumable bookmark/folder inventory and bounded Drive archival.
+FOS-165 adds media-byte preservation and independent reconstruction; production
+OpenClaw storage acceptance is still outstanding. See [archive setup](docs/ARCHIVE.md).
+No bookmark deletion, scraping, private GraphQL or scheduler.
 
 ## Install and verify (Linux, Python 3.12+)
 
@@ -218,6 +219,15 @@ HTTPS access and standard trusted certificates. Proxy/custom-CA support must be
 configured and tested explicitly before deployment to a runtime requiring it; the
 current OpenClaw network environment has not been validated.
 
-Private `read-*.private.json` diagnostics accumulate without automatic cleanup. Keep
-them only while needed to diagnose/report the pilot, then delete those read files
-locally; retain tokens and the budget ledger to preserve authorization and accounting.
+Private `read-*.private.json` evidence accumulates without automatic cleanup. Retain
+files referenced by the active inventory or archive enrichment until archival and
+independent restoration have succeeded; the archiver needs their request/response
+provenance. Retain tokens, the budget ledger and create-only archive receipts.
+
+## Durable archive (FOS-165)
+
+The CLI now supports `archive-probe`, `archive-import-pilot`, `archive`,
+`archive-enrich` and `archive-restore`. See [the archive runbook](docs/ARCHIVE.md)
+for Drive authorization, API contracts, failure recovery and the outstanding
+OpenClaw live acceptance gate. Archival and restoration use actual file bytes;
+they never unbookmark. Existing inventory/pilot commands remain available.

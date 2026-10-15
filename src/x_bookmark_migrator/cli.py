@@ -8,19 +8,22 @@ from pathlib import Path
 
 import httpx
 
+from . import archive_cli
+from .archive import enrich_references
 from .core import Budget, Client, PilotError, Store, auth_start, exact_id, pilot
 from .inventory import Inventory, validate_run_limits
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Official X read-only bookmark pilot")
+    parser = argparse.ArgumentParser(description="Official X bookmark inventory and archive")
     parser.add_argument(
         "--state-dir", type=Path, default=Path.home() / ".local/state/x-bookmark-migrator"
     )
     sub = parser.add_subparsers(dest="command", required=True)
+    archive_cli.add_commands(sub)
     sub.add_parser("auth-start")
     sub.add_parser("auth-finish")
-    for command in ("pilot", "inventory"):
+    for command in ("pilot", "inventory", "archive-enrich"):
         read = sub.add_parser(
             command,
             epilog=(
@@ -44,7 +47,11 @@ def main():
         )
         read.add_argument("--run-cap-usd", default=os.environ.get("X_RUN_CAP_USD", "0.25"))
         read.add_argument("--month-cap-usd", default=os.environ.get("X_MONTH_CAP_USD", "1.00"))
-        read.add_argument("--field-dialect", choices=("post", "tweet"), default="post")
+        if command != "archive-enrich":
+            read.add_argument("--field-dialect", choices=("post", "tweet"), default="post")
+        if command == "archive-enrich":
+            read.add_argument("--post-id", action="append", dest="post_ids")
+            read.add_argument("--max-posts", type=int, default=5)
         if command == "inventory":
             read.add_argument("--resume", action="store_true")
             read.add_argument("--retry-unavailable", action="store_true")
@@ -76,6 +83,10 @@ def main():
     recovery.add_argument("--read-file", required=True)
     args = parser.parse_args()
     try:
+        if args.command in archive_cli.COMMANDS:
+            result = archive_cli.run(args)
+            print(json.dumps(result))
+            return 1 if result.get("blocked") else 0
         if args.command in ("inventory-export", "inventory-recover"):
             store = Store(args.state_dir)
             with store.locked():
@@ -90,11 +101,11 @@ def main():
         client_id = os.environ.get("X_CLIENT_ID")
         if not client_id:
             raise PilotError("Set X_CLIENT_ID to the app's OAuth 2.0 client ID.")
-        if args.command in ("pilot", "inventory") and not (
+        if args.command in ("pilot", "inventory", "archive-enrich") and not (
             args.console_hard_cap_confirmed and args.auto_recharge_off_confirmed
         ):
             raise PilotError("Confirm Console hard spending limit and auto-recharge off first.")
-        if args.command in ("pilot", "inventory"):
+        if args.command in ("pilot", "inventory", "archive-enrich"):
             owner_id = args.app_owner_id
             source = "--app-owner-id"
             if owner_id is None:
@@ -132,6 +143,15 @@ def main():
                 )
                 if args.command == "pilot":
                     result = pilot(client, budget, owner_id, args.field_dialect)
+                elif args.command == "archive-enrich":
+                    result = enrich_references(
+                        Inventory.load(store),
+                        client,
+                        budget,
+                        owner_id,
+                        args.post_ids,
+                        args.max_posts,
+                    )
                 else:
                     inventory = Inventory(
                         store,

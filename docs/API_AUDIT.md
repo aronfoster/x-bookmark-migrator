@@ -1,5 +1,9 @@
 # Official API audit and correction
 
+The FOS-165 archive/Drive integration has a separate current
+[API contract and storage audit](ARCHIVE.md#api-contract-checked-before-implementation),
+reviewed 2026-10-15. Its synthetic tests do not establish deployed OpenClaw access.
+
 Reviewed 2026-10-14 (America/Denver). This audit covers all three source modules,
 CLI entry points, tests and runbooks. All execution here used synthetic responses;
 no authenticated X calls, real content, account identifiers or charges are published.
