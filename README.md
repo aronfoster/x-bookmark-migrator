@@ -27,7 +27,8 @@ verification still required. Partial category scans never become deletion permis
    OAuth 2.0. A native/public client needs no client secret; confidential clients
    use `X_CLIENT_SECRET` supplied through a protected runtime environment.
    Register the exact callback `http://127.0.0.1:8765/callback`.
-2. Record the app owner's **numeric X user ID**, credit balance and current prices.
+2. Record the credit balance and current prices. Retrieve the numeric user ID
+   after OAuth setup using the instructions below.
    Set a hard billing-cycle spending limit and turn auto-recharge **off** before reads.
    The CLI flags below attest to these manual checks; they do not configure or verify Console.
 3. In a local interactive terminal, export `X_CLIENT_ID` (the OAuth 2.0 Client ID,
@@ -45,6 +46,8 @@ verification still required. Partial category scans never become deletion permis
    expected. Copy the **entire address-bar URL**, run `uv run x-migrator auth-finish`,
    and paste at its hidden terminal prompt within ten minutes. Never paste that URL
    into chat, tickets, shell commands, or Git. No local web server is required.
+6. Follow [Find your numeric account ID](#find-your-numeric-account-id) before the
+   pilot or inventory. You do not need that ID to complete OAuth setup.
 
 Tokens and pending OAuth state live in `~/.local/state/x-bookmark-migrator`:
 owner-only directory (0700), atomic/fsynced files (0600), one process lock covering
@@ -54,9 +57,86 @@ select an existing secret volume, outside any Git checkout. Production OpenClaw
 mount/UID/secret provisioning remains for FOS-165/168; it has not been validated.
 Never sync this directory to Drive or commit it. No live state belongs in CI.
 
+## Find your numeric account ID
+
+`--app-owner-id` / `X_APP_OWNER_ID` means the numeric **X user ID of the account
+whose bookmarks you are reading**, which must also own the funded developer app
+for the intended Owned Read setup. It is not the app's ID, OAuth Client ID, API key,
+or an `@username`. The official identity endpoint is
+[`GET /2/users/me`](https://docs.x.com/x-api/users/get-my-user); it returns the user
+represented by your OAuth grant. It does not independently prove app ownership or
+billing eligibility: confirm that account owns the app in the Developer Console.
+
+**Already ran the pilot? Recover its saved identity without another paid read:**
+
+```sh
+uv run python - <<'PYCODE'
+import json
+from pathlib import Path
+from x_bookmark_migrator.core import Store, exact_id
+store = Store(Path.home() / ".local/state/x-bookmark-migrator")
+with store.locked():
+    for path in sorted(store.root.glob("read-*.private.json"),
+                       key=lambda p: p.stat().st_mtime, reverse=True):
+        saved = store.read(path.name)
+        body = saved.get("response", {})
+        if saved.get("endpoint") != "/2/users/me" or saved.get("status") != 200:
+            continue
+        data = body.get("data") if isinstance(body, dict) else None
+        if isinstance(data, dict) and not body.get("errors"):
+            print(json.dumps({"username": data.get("username"), "id": exact_id(data.get("id"))}))
+            break
+    else:
+        raise SystemExit("No saved identity found; use the one-read lookup below.")
+PYCODE
+```
+
+Check that the displayed account is the one you authorized and that owns the app.
+Saved evidence may belong to an earlier login; if uncertain, use the fresh lookup.
+For a custom state directory, replace the `Store(...)` path in these snippets with
+that same absolute private directory.
+
+**No saved identity? After `auth-finish`, make one official identity lookup.** First
+confirm the Console hard cap and auto-recharge off, as for the pilot. This reserves
+an illustrative $0.10 against the same $1.00 UTC-month ledger; these amounts are
+operator estimates, not a price guarantee. Adjust them deliberately for your budget
+and current Console pricing. This command uses the existing client, token refresh,
+lock and budget controls; it does not request bookmarks or require the unknown ID.
+
+```sh
+uv run --env-file .env python - <<'PYCODE'
+import json
+import os
+from pathlib import Path
+import httpx
+from x_bookmark_migrator.core import Budget, Client, Store, exact_id
+store = Store(Path.home() / ".local/state/x-bookmark-migrator")
+with store.locked(), httpx.Client(timeout=30, follow_redirects=False, trust_env=False) as http:
+    client = Client(store, http, os.environ["X_CLIENT_ID"], os.environ.get("X_CLIENT_SECRET"))
+    budget = Budget(store, "0.10", "0.10", "1.00")
+    body = client.get("/2/users/me", {}, budget.reserve)
+    data = body.get("data")
+    if body.get("errors") or not isinstance(data, dict):
+        raise SystemExit("Identity incomplete; inspect the saved private read evidence.")
+    print(json.dumps({"username": data.get("username"), "id": exact_id(data.get("id"))}))
+PYCODE
+```
+
+Omit `--env-file .env` if `X_CLIENT_ID` is already exported. Both snippets print only
+identity fields locally, never tokens or bookmark bodies. Keep the resulting account
+ID/username in your local configuration; do not copy them into public examples,
+issues, PR comments or committed files. To set the shell variable without placing
+the value in command history, run this in Bash and paste the verified numeric ID:
+
+```sh
+read -r -p "Verified numeric X user ID: " X_APP_OWNER_ID
+export X_APP_OWNER_ID
+```
+
 ## First real pilot: one command after OAuth setup
 
-Set `X_APP_OWNER_ID` to the numeric owner ID verified in Console, then run:
+Set `X_APP_OWNER_ID` using [the identity instructions above](#find-your-numeric-account-id),
+confirm the account owns the app in Console, then run:
 
 ```sh
 uv run x-migrator pilot --app-owner-id "$X_APP_OWNER_ID" \

@@ -11,7 +11,8 @@ Use Linux, Python 3.12+, `uv`, direct HTTPS to `api.x.com`, and the completed
 directory outside Git and the same `X_CLIENT_ID`. Confirm the Console hard spending
 limit and auto-recharge setting before spending more. The examples use the ignored
 `.env` through `uv run --env-file .env`; if variables are already exported, omit that
-option. Export `X_APP_OWNER_ID` in the invoking shell, or supply the owner's verified
+option. Find the ID with [the README identity lookup](../README.md#find-your-numeric-account-id).
+Export `X_APP_OWNER_ID` in the invoking shell, or supply the owner's verified
 numeric ID directly to `--app-owner-id`. `--env-file` only sets the child process's
 environment, so it cannot supply the shell's `$X_APP_OWNER_ID` substitution.
 
