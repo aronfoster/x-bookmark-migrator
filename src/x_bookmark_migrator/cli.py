@@ -21,7 +21,15 @@ def main():
     sub.add_parser("auth-start")
     sub.add_parser("auth-finish")
     for command in ("pilot", "inventory"):
-        read = sub.add_parser(command)
+        read = sub.add_parser(
+            command,
+            epilog=(
+                "Inventory exits 1 for partial coverage (including unverified folder pagination); "
+                "the private checkpoint and export are still useful."
+            )
+            if command == "inventory"
+            else None,
+        )
         read.add_argument("--app-owner-id", required=True)
         read.add_argument("--console-hard-cap-confirmed", action="store_true")
         read.add_argument("--auto-recharge-off-confirmed", action="store_true")
@@ -34,11 +42,27 @@ def main():
             read.add_argument("--retry-unavailable", action="store_true")
             read.add_argument("--source-unchanged-confirmed", action="store_true")
             read.add_argument("--max-calls", type=int, default=10)
-            read.add_argument("--page-size", type=int, default=100)
+            read.add_argument(
+                "--page-size",
+                type=int,
+                help="Fresh pass default: 100; resume uses stored value and rejects changes",
+            )
             read.add_argument("--hydrate-batch-size", type=int, default=100)
-            read.add_argument("--max-records", type=int, default=10000)
-            read.add_argument("--max-folders", type=int, default=1000)
-            read.add_argument("--max-pages-per-stream", type=int, default=100)
+            read.add_argument(
+                "--max-records",
+                type=int,
+                help="Fresh pass default: 10000; resume uses stored value and rejects changes",
+            )
+            read.add_argument(
+                "--max-folders",
+                type=int,
+                help="Fresh pass default: 1000; resume uses stored value and rejects changes",
+            )
+            read.add_argument(
+                "--max-pages-per-stream",
+                type=int,
+                help="Fresh pass default: 100; resume uses stored value and rejects changes",
+            )
     sub.add_parser("inventory-export", help="Export the latest checkpoint offline")
     args = parser.parse_args()
     try:

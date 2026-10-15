@@ -20,6 +20,79 @@ LIMITATIONS = [
 ]
 
 
+SCHEMA_VERSION = 2
+UNAVAILABLE_TYPES = {
+    f"https://{host}/2/problems/{kind}"
+    for host in ("api.x.com", "api.twitter.com")
+    for kind in ("resource-not-found", "not-authorized-for-resource")
+}
+
+
+def reference_errors(data, includes, errors):
+    """Scope proven reference-expansion failures; ambiguous errors remain blocking."""
+    expanded = {
+        item["id"]: item
+        for kind in ("posts", "tweets")
+        for item in includes.get(kind, [])
+        if isinstance(item.get("id"), str)
+    }
+    dependencies = {}
+    for post in data:
+        seen, pending = set(), [post]
+        while pending:
+            current = pending.pop()
+            for field in ("referenced_posts", "referenced_tweets"):
+                refs = current.get(field, [])
+                if not isinstance(refs, list):
+                    continue
+                for ref in refs:
+                    rid = ref.get("id") if isinstance(ref, dict) else None
+                    if not isinstance(rid, str) or rid in seen:
+                        continue
+                    seen.add(rid)
+                    if rid in expanded:
+                        pending.append(expanded[rid])
+        dependencies[post["id"]] = seen
+    scoped = {post["id"]: [] for post in data}
+    blocking = []
+    for error in errors:
+        rid = error.get("resource_id", error.get("value")) if isinstance(error, dict) else None
+        affected = [
+            pid for pid, refs in dependencies.items() if isinstance(rid, str) and rid in refs
+        ]
+        if (
+            affected
+            and rid not in scoped
+            and error.get("parameter")
+            in ("referenced_posts", "referenced_posts.id", "referenced_tweets.id")
+            and error.get("resource_type") in ("post", "tweet")
+            and isinstance(error.get("type"), str)
+            and error["type"] in UNAVAILABLE_TYPES
+        ):
+            for pid in affected:
+                scoped[pid].append(error)
+        else:
+            blocking.append(error)
+    return scoped, blocking
+
+
+def load_checkpoint(store, name):
+    state = store.read(name)
+    if not state or state.get("schema_version") not in (1, SCHEMA_VERSION):
+        raise PilotError("Unsupported or missing inventory checkpoint.")
+    if state["schema_version"] == 1:
+        # In-memory upgrade preserves old cursors/statuses and needs no new API reads.
+        state["expansions"] = {}
+        for post in state["posts"].values():
+            includes = post.pop("includes", {})
+            evidence = post["source_evidence"][-1] if post["post"] is not None else None
+            post["expansions_ref"] = evidence
+            if evidence is not None:
+                state["expansions"][evidence] = includes
+        state["schema_version"] = SCHEMA_VERSION
+    return state
+
+
 def now():
     return datetime.now(UTC).isoformat()
 
@@ -59,13 +132,16 @@ def validate_page(body, kind, page_size):
     for item in data:
         if not isinstance(item, dict):
             raise PilotError("Malformed inventory item.", code="schema_error")
-        exact_id(item.get("id"))
+        try:
+            exact_id(item.get("id"))
+            if "author_id" in item:
+                exact_id(item["author_id"])
+        except PilotError:
+            raise PilotError("Malformed inventory item ID.", code="schema_error") from None
         if kind == "folders" and not isinstance(item.get("name"), str):
             raise PilotError("Missing original folder name.", code="schema_error")
         if kind in ("main", "hydrate") and not isinstance(item.get("text"), str):
             raise PilotError("Missing post text.", code="schema_error")
-        if "author_id" in item:
-            exact_id(item["author_id"])
     return data, token, errors, meta is not None
 
 
@@ -81,17 +157,29 @@ class Inventory:
         resume=False,
         source_unchanged=False,
         retry_unavailable=False,
-        page_size=100,
-        max_records=10000,
-        max_folders=1000,
-        max_pages=100,
+        page_size=None,
+        max_records=None,
+        max_folders=None,
+        max_pages=None,
     ):
         self.store = store
         exact_id(owner_id)
         post_fields(dialect)
-        if not 5 <= page_size <= 100:
-            raise PilotError("Page size must be between 5 and 100.")
-        if not (1 <= max_records <= 100000 and 1 <= max_folders <= 1000 and 1 <= max_pages <= 1000):
+        supplied = dict(
+            page_size=page_size,
+            max_records=max_records,
+            max_folders=max_folders,
+            max_pages=max_pages,
+        )
+        limits = dict(page_size=100, max_records=10000, max_folders=1000, max_pages=100)
+        limits.update({key: value for key, value in supplied.items() if value is not None})
+        if not 1 <= limits["page_size"] <= 100:
+            raise PilotError("Page size must be between 1 and 100.")
+        if not (
+            1 <= limits["max_records"] <= 100000
+            and 1 <= limits["max_folders"] <= 1000
+            and 1 <= limits["max_pages"] <= 1000
+        ):
             raise PilotError("Inventory bounds exceed supported limits.")
         active = store.read("inventory-active.private.json")
         if resume:
@@ -105,9 +193,15 @@ class Inventory:
                 raise PilotError("No inventory to resume.")
             # Never use a path loaded from state as an arbitrary filename.
             self.name = self.checkpoint_name(active["pass_id"])
-            self.state = store.read(self.name)
-            if not self.state or self.state.get("schema_version") != 1:
-                raise PilotError("Unsupported or missing inventory checkpoint.")
+            self.state = load_checkpoint(store, self.name)
+            if any(
+                value is not None and value != self.state["limits"][key]
+                for key, value in supplied.items()
+            ):
+                raise PilotError(
+                    "Resume limits differ from checkpoint; omit bound flags to use "
+                    "stored limits, or start a fresh pass to change them."
+                )
             if (self.state["owner_id"], self.state["dialect"]) != (owner_id, dialect):
                 raise PilotError("Inventory owner or field dialect changed; start a fresh pass.")
             if self.state["in_flight"]:
@@ -126,12 +220,14 @@ class Inventory:
                 previous = store.read(self.checkpoint_name(active["pass_id"]))
                 if previous and (previous["owner_id"], previous["dialect"]) == (owner_id, dialect):
                     unavailable_cache = dict(
-                        list(previous.get("unavailable_cache", {}).items())[-max_records:]
+                        list(previous.get("unavailable_cache", {}).items())[
+                            -limits["max_records"] :
+                        ]
                     )
             pass_id = secrets.token_hex(12)
             self.name = self.checkpoint_name(pass_id)
             self.state = dict(
-                schema_version=1,
+                schema_version=SCHEMA_VERSION,
                 pass_id=pass_id,
                 owner_id=owner_id,
                 dialect=dialect,
@@ -141,12 +237,8 @@ class Inventory:
                 continuity_notes=[],
                 in_flight=False,
                 stop_reason=None,
-                limits=dict(
-                    page_size=page_size,
-                    max_records=max_records,
-                    max_folders=max_folders,
-                    max_pages=max_pages,
-                ),
+                limits=limits,
+                expansions={},
                 streams={"main": stream("main"), "folders": stream("folders")},
                 folders={},
                 posts={},
@@ -164,9 +256,7 @@ class Inventory:
         result = cls.__new__(cls)
         result.store = store
         result.name = cls.checkpoint_name(active["pass_id"])
-        result.state = store.read(result.name)
-        if not result.state or result.state.get("schema_version") != 1:
-            raise PilotError("Unsupported or missing inventory checkpoint.")
+        result.state = load_checkpoint(store, result.name)
         return result
 
     @staticmethod
@@ -195,7 +285,7 @@ class Inventory:
                 bookmark_time=None,
                 hydration_status="pending",
                 post=None,
-                includes={},
+                expansions_ref=None,
                 source_evidence=[],
                 errors=[],
             )
@@ -227,8 +317,15 @@ class Inventory:
             return  # raw response retained; cursor does not advance past an uncommitted page
         seen_tokens = {p["request_token"] for p in item["pages"]}
         seen_tokens.add(item["next_token"])
+        scoped, blocking = (
+            reference_errors(data, body.get("includes", {}), errors)
+            if key == "main"
+            else ({}, errors)
+        )
+        if key == "main":
+            state["expansions"][evidence] = body.get("includes", {})
         reason = None
-        if errors:
+        if blocking:
             reason = "partial_errors"
         elif next_token is not None and next_token in seen_tokens:
             reason = "pagination_cycle"
@@ -253,12 +350,12 @@ class Inventory:
                     post.update(
                         seen_in_main=True,
                         post=entry,
-                        includes=body.get("includes", {}),
-                        hydration_status="partial" if errors else "read",
+                        expansions_ref=evidence,
+                        hydration_status="partial" if scoped[post_id] or blocking else "read",
                     )
                     state.get("unavailable_cache", {}).pop(post_id, None)
                     post.pop("unavailable_observed_at", None)
-                    post["errors"] = errors
+                    post["errors"] = scoped[post_id] + blocking
                     post["source_evidence"].append(evidence)
                 elif item["folder_id"] not in post["folder_ids"]:
                     post["folder_ids"].append(item["folder_id"])
@@ -307,9 +404,10 @@ class Inventory:
             hydration[status] = hydration.get(status, 0) + 1
         complete = all(s["status"] == "exhausted" for s in state["streams"].values())
         return dict(
-            schema_version=1,
+            schema_version=SCHEMA_VERSION,
             pass_id=state["pass_id"],
             records=len(state["posts"]),
+            active_limits=state["limits"],
             folders=len(state["folders"]),
             membership_counts=categories,
             hydration_counts=hydration,
@@ -370,6 +468,8 @@ class Inventory:
                     )
                 for batch in self.state["hydration_batches"]:
                     emit({"type": "hydration_batch", **batch})
+                for evidence, includes in self.state["expansions"].items():
+                    emit({"type": "expansions", "evidence": evidence, "includes": includes})
                 for post in self.state["posts"].values():
                     emit(
                         {
@@ -510,11 +610,6 @@ class Inventory:
         if len({p["id"] for p in data}) != len(data) or any(p["id"] not in requested for p in data):
             raise PilotError("Lookup returned unexpected/duplicate IDs.", code="schema_error")
         returned = {p["id"]: p for p in data}
-        known_types = {
-            f"https://{host}/2/problems/{kind}"
-            for host in ("api.x.com", "api.twitter.com")
-            for kind in ("resource-not-found", "not-authorized-for-resource")
-        }
         matched = {}
         unrelated = []
         for error in errors:
@@ -525,21 +620,26 @@ class Inventory:
                 isinstance(error_id, str)
                 and error_id in requested
                 and error.get("resource_type") in ("tweet", "post")
-                and error.get("type") in known_types
+                and isinstance(error.get("type"), str)
+                and error["type"] in UNAVAILABLE_TYPES
                 and error_id not in returned
             ):
                 matched.setdefault(error_id, []).append(error)
             else:
                 unrelated.append(error)
+        scoped, blocking = reference_errors(data, body.get("includes", {}), unrelated)
+        self.state["expansions"][evidence] = body.get("includes", {})
         for post_id in requested:
             post = self.state["posts"][post_id]
             post["source_evidence"].append(evidence)
-            post["errors"] = copy.deepcopy(matched.get(post_id, []) + unrelated)
+            post["errors"] = copy.deepcopy(
+                matched.get(post_id, []) + scoped.get(post_id, []) + blocking
+            )
             if post_id in returned:
                 post.update(
                     post=returned[post_id],
-                    includes=body.get("includes", {}),
-                    hydration_status="partial" if unrelated else "read",
+                    expansions_ref=evidence,
+                    hydration_status="partial" if scoped[post_id] or blocking else "read",
                 )
             else:
                 post["hydration_status"] = (

@@ -35,7 +35,7 @@ Reads occur in this order: identity check, folder enumeration, main bookmarks, e
 observed folder's contents, then hydration of IDs without main-stream post bodies.
 The request cap includes the identity GET on every invocation, but not OAuth token
 refresh. The default page and hydration sizes are 100, within documented limits;
-the small example deliberately bounds the first live experiment. Folder page-size
+page sizes 1–100 are accepted. The small example deliberately bounds the first live experiment. Folder page-size
 quirks are reviewer-reported, not established here. No retries, dialect fallback,
 write scopes, or destructive operations occur automatically.
 
@@ -45,7 +45,9 @@ A capped run saves its exact next token and all committed page observations. Rep
 the command with `--resume --source-unchanged-confirmed` **only if no saves, folder
 edits, moves, or unbookmarks have occurred since the pass began**. This is an operator
 attestation, not an API snapshot guarantee. Resume uses the checkpoint's original
-page size and record/folder/page bounds; request, hydration-batch and spend limits
+page size and record/folder/page bounds. Omit those flags to inherit them; explicitly
+supplying a different value is rejected before any API request. `active_limits` in
+the summary reports the effective values. Request, hydration-batch and spend limits
 apply to this invocation. The full uninterrupted and split/restarted synthetic tests
 produce identical exact IDs, original folder names and memberships.
 
@@ -61,9 +63,17 @@ original private diagnostic remains available. There is no exactly-once billing 
 HTTP 401/429/5xx and transport failures stop the invocation and preserve the pending
 cursor. Fix authorization or wait as indicated by the private rate-limit evidence
 before explicitly resuming. A folder/main 403/404 or schema error blocks that stream
-while allowing other reachable streams to progress. Partial API errors, pagination
+while allowing other reachable streams to progress. Ambiguous/top-level partial API errors, pagination
 cycles, missing pagination metadata and per-stream page/record bounds require a
 fresh pass after investigating the cause; resume does not erase those failures.
+
+A recognized missing/protected referenced-post expansion is different: when its
+explicit expansion parameter and exact ID match a direct or nested reference in
+returned posts, pagination continues. Only those posts become `partial`; unrelated
+posts remain usable. Main and hydration responses use the same attribution rule.
+An error ID merely being absent from `data` is **not enough** to classify it as an
+expansion failure: unknown/unattributable errors remain conservative stream/batch
+failures. Every original error remains in the page or hydration-batch evidence.
 
 Unavailable folder-only posts receive `blocked_unavailable_source` with their
 exact-ID API errors. A bounded cache carries this evidence into fresh passes for the
@@ -125,14 +135,25 @@ IDs, original names, tokens, text and raw errors remain private. Exit status 1 m
 partial coverage or a stopped run; it is not a reason to discard the export. Offline
 export exits 0 when it successfully writes the existing state, even if that state is partial.
 
-JSONL is UTF-8 and contains `summary`, `folder`, `stream`, `hydration_batch`, and `post`
-rows. Each post carries its exact string ID, canonical URL, full observed post object,
-expansions, original folder ID/name associations, hydration errors/status, observation
-time and category flags. Stream rows contain raw/unique counts, request/next tokens,
-per-page IDs, errors and timestamps. Hydration rows preserve requested/returned IDs
-and errors. Private read filenames are provenance references; retained post bodies,
-expansions, category associations and API errors are also embedded, so the export
-can be interpreted without the checkpoint. Assets are still URLs, not archived files.
+JSONL schema version 2 is UTF-8 and contains `summary`, `folder`, `stream`,
+`hydration_batch`, `expansions`, and `post` rows. Each post carries its exact string
+ID, canonical URL, full observed post object, original folder ID/name associations,
+hydration errors/status, observation time and category flags. Post `expansions_ref`
+points to an `expansions` row's `evidence` key within the **same export**; that row
+holds the complete original `includes` object once per API response. Join those keys
+to resolve users, media and referenced posts. This avoids copying a full page's
+expansions onto every post while retaining all returned expansion fields.
+
+Stream rows contain raw/unique counts, request/next tokens, per-page IDs, errors and
+timestamps. Hydration rows preserve requested/returned IDs and errors. Private read
+filenames are provenance references; post bodies, shared expansions, categories and
+API errors are embedded in JSONL, so no external read file or checkpoint is needed
+to interpret an export. Assets are still URLs, not archived files.
+
+Version 1 checkpoints are upgraded in memory when loaded, sharing their existing
+expansions without new API reads or changing saved cursors/failure states. Offline
+export leaves the original checkpoint untouched; the next run persists version 2.
+Previously blocked streams remain blocked until a fresh pass, as documented above.
 
 For example, synthetic tests verify one post belongs to both `10` / `Malfoid` and
 `20` / `Culture War`, while another post is found only in folder `10` and hydrated
@@ -150,6 +171,9 @@ Local tests use synthetic HTTP fixtures only: pagination/restart equivalence, na
 and multiple folders, folder-only hydration, partial folder failures, rate limits,
 spend/record/page bounds, token loops, source drift, unavailable IDs, safe rescan,
 transport/process interruption, owner mismatch, private exports and offline export.
+Review regressions also cover scoped direct/nested reference failures, ambiguous
+errors, one-copy expansion storage with 100 posts, version 1 checkpoint upgrades,
+malformed-ID isolation, differing resume bounds and page sizes 1–4.
 
 **External actions for this implementation: zero authenticated X requests; zero
 bookmark mutations; no actual billing observed.** FOS-163 proved the main endpoint

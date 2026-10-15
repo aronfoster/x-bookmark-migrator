@@ -125,7 +125,8 @@ def test_two_page_restart_named_folders_and_portable_export(setup):
         {"id": "10", "names": ["Malfoid"]},
         {"id": "20", "names": ["Culture War"]},
     ]
-    assert records[C]["includes"]["media"][0]["media_key"] == "synthetic"
+    expansions = {r["evidence"]: r["includes"] for r in rows if r["type"] == "expansions"}
+    assert expansions[records[C]["expansions_ref"]]["media"][0]["media_key"] == "synthetic"
     assert records[C]["bookmark_time"] is None
     assert all(not r["deletion_eligible"] for r in records.values())
     assert all(isinstance(r["id"], str) for r in records.values())
@@ -441,3 +442,188 @@ def test_transport_failure_preserves_evidence_and_blocks_negative_claims(setup):
     assert inv.state["streams"]["main"]["next_token"] == "main-next"
     resumed = run(Inventory(store, OWNER, resume=True, source_unchanged=True), example)
     assert resumed["records"] == 4 and not resumed["all_folders_exhausted_in_pass"]
+
+
+def expansion_error(pid="99", parameter="referenced_posts"):
+    return {
+        "type": "https://api.x.com/2/problems/resource-not-found",
+        "resource_id": pid,
+        "resource_type": "tweet",
+        "parameter": parameter,
+    }
+
+
+@pytest.mark.parametrize(
+    "field,parameter",
+    [("referenced_posts", "referenced_posts"), ("referenced_tweets", "referenced_tweets.id")],
+)
+def test_missing_reference_only_marks_affected_post_and_main_keeps_paging(setup, field, parameter):
+    store, calls, run = setup
+
+    def quoted(req):
+        if req.url.path == BASE and not req.url.params.get("pagination_token"):
+            return page(
+                [{**post(A), field: [{"id": "99", "type": "quoted"}]}, post(D)],
+                "main-next",
+                errors=[expansion_error(parameter=parameter)],
+            )
+        return example(req)
+
+    inv = Inventory(store, OWNER)
+    summary = run(inv, quoted)
+    assert inv.state["streams"]["main"]["status"] == "exhausted"
+    assert any(r.url.params.get("pagination_token") == "main-next" for r in calls)
+    assert summary["records"] == 4
+    assert inv.state["posts"][A]["hydration_status"] == "partial"
+    assert inv.state["posts"][D]["hydration_status"] == "read"
+    assert inv.state["posts"][D]["errors"] == []
+    assert inv.state["posts"][B]["hydration_status"] == "read"
+    assert summary["all_folders_exhausted_in_pass"]  # content failure is not a category gap
+    assert summary["inventory_status"] == "partial"  # affected content still needs work
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        expansion_error("98"),  # no observed reference association
+        {**expansion_error(), "parameter": "ids"},
+        {**expansion_error(), "type": "unknown"},
+        expansion_error(A),
+    ],
+)
+def test_ambiguous_or_top_level_errors_still_block_main(setup, error):
+    store, calls, run = setup
+
+    def ambiguous(req):
+        if req.url.path == BASE:
+            return page(
+                [{**post(A), "referenced_posts": [{"id": "99"}]}], "main-next", errors=[error]
+            )
+        return example(req)
+
+    inv = Inventory(store, OWNER)
+    run(inv, ambiguous)
+    assert inv.state["streams"]["main"]["reason"] == "partial_errors"
+    assert not any(r.url.params.get("pagination_token") == "main-next" for r in calls)
+
+
+def test_hydration_scopes_nested_reference_failure_and_keeps_unaffected_records(setup):
+    store, _, run = setup
+
+    def mixed(req):
+        if req.url.path == BASE:
+            return page([post(D)])
+        if req.url.path == "/2/tweets":
+            ids = req.url.params["ids"].split(",")
+            return {
+                "data": [
+                    {**post(pid), **({"referenced_posts": [{"id": "98"}]} if pid == A else {})}
+                    for pid in ids
+                ],
+                "includes": {"posts": [{"id": "98", "referenced_posts": [{"id": "99"}]}]},
+                "errors": [expansion_error()],
+            }
+        return example(req)
+
+    inv = Inventory(store, OWNER)
+    summary = run(inv, mixed)
+    assert summary["hydration_counts"] == {"read": 3, "partial": 1}
+    assert inv.state["posts"][A]["errors"] == [expansion_error()]
+    assert inv.state["posts"][B]["errors"] == inv.state["posts"][C]["errors"] == []
+    assert inv.state["hydration_batches"][0]["errors"] == [expansion_error()]
+
+
+def test_expansions_stored_once_per_response_in_checkpoint_and_export(setup):
+    store, _, run = setup
+    marker = "SYNTHETIC_LARGE_MEDIA_PAYLOAD" * 1000
+    ids = [str(1800000000000000000 + i) for i in range(100)]
+
+    def large(req):
+        if req.url.path == BASE + "/folders":
+            return page([])
+        assert req.url.path == BASE
+        return page([post(pid) for pid in ids], includes={"media": [{"media_key": marker}]})
+
+    inv = Inventory(store, OWNER)
+    summary = run(inv, large)
+    rows = read_export(store, summary)
+    checkpoint = (store.root / inv.name).read_text()
+    exported = (store.root / summary["private_export"]).read_text()
+    assert checkpoint.count(marker) == exported.count(marker) == 1
+    expansion_rows = [r for r in rows if r["type"] == "expansions"]
+    assert len(expansion_rows) == 1
+    assert all(
+        p["expansions_ref"] == expansion_rows[0]["evidence"] for p in rows if p["type"] == "post"
+    )
+    assert len(checkpoint) < len(marker) * 10  # would exceed 100x with per-post duplication
+
+
+def test_malformed_id_blocks_only_that_stream_and_resume_does_not_retry(setup):
+    store, calls, run = setup
+
+    def malformed(req):
+        if req.url.path.endswith("/folders/10"):
+            return page([{"id": 123}])
+        return example(req)
+
+    inv = Inventory(store, OWNER)
+    run(inv, malformed)
+    assert inv.state["streams"]["folder:10"]["status"] == "blocked"
+    assert inv.state["streams"]["folder:10"]["reason"] == "schema_error"
+    assert any(r.url.path.endswith("/folders/20") for r in calls)
+    run(Inventory(store, OWNER, resume=True, source_unchanged=True), malformed)
+    assert len([r for r in calls if r.url.path.endswith("/folders/10")]) == 1
+
+
+@pytest.mark.parametrize(
+    "bound,changed", [("page_size", 7), ("max_records", 50), ("max_folders", 20), ("max_pages", 30)]
+)
+def test_resume_rejects_explicit_changed_limits_without_mutating_checkpoint(setup, bound, changed):
+    store, _, run = setup
+    inv = Inventory(store, OWNER, page_size=5)
+    run(inv, example, max_calls=3)
+    before = (store.root / inv.name).read_bytes()
+    with pytest.raises(PilotError, match="Resume limits differ"):
+        Inventory(store, OWNER, resume=True, source_unchanged=True, **{bound: changed})
+    assert (store.root / inv.name).read_bytes() == before
+    resumed = Inventory(store, OWNER, resume=True, source_unchanged=True)
+    assert resumed.summary()["active_limits"]["page_size"] == 5
+    assert Inventory(store, OWNER, resume=True, source_unchanged=True, page_size=5)
+
+
+@pytest.mark.parametrize("size", [1, 2, 3, 4])
+def test_small_page_sizes_are_sent_to_all_inventory_endpoints(setup, size):
+    store, calls, run = setup
+
+    def small(req):
+        assert req.url.params["max_results"] == str(size)
+        if req.url.path == BASE + "/folders":
+            return page([{"id": "10", "name": "synthetic"}])
+        if req.url.path == BASE:
+            return page([post(A)])
+        return page([{"id": A}])
+
+    summary = run(Inventory(store, OWNER, page_size=size), small)
+    assert summary["inventory_status"] == "observed_end"
+    assert len(calls) == 4
+
+
+def test_v1_checkpoint_upgrades_expansions_without_changing_disk_or_cursors(setup):
+    store, _, run = setup
+    inv = Inventory(store, OWNER)
+    run(inv, example, max_calls=3)
+    legacy = inv.state
+    legacy["schema_version"] = 1
+    expansions = legacy.pop("expansions")
+    for saved in legacy["posts"].values():
+        saved["includes"] = expansions.get(saved.pop("expansions_ref"), {})
+    store.write(inv.name, legacy)
+    before = (store.root / inv.name).read_bytes()
+    offline = Inventory.load(store)
+    assert offline.state["schema_version"] == 2
+    assert offline.state["expansions"] == expansions
+    assert offline.state["streams"]["main"]["next_token"] == "main-next"
+    offline.export()
+    assert (store.root / inv.name).read_bytes() == before
+    resumed = Inventory(store, OWNER, resume=True, source_unchanged=True)
+    assert run(resumed, example)["records"] == 4
