@@ -8,7 +8,7 @@ from pathlib import Path
 
 import httpx
 
-from . import archive_cli
+from . import archive_cli, unbookmark_cli
 from .archive import enrich_references
 from .core import Budget, Client, PilotError, Store, auth_start, exact_id, pilot
 from .inventory import Inventory, validate_run_limits
@@ -21,7 +21,13 @@ def main():
     )
     sub = parser.add_subparsers(dest="command", required=True)
     archive_cli.add_commands(sub)
-    sub.add_parser("auth-start")
+    unbookmark_cli.add_commands(sub)
+    auth = sub.add_parser("auth-start")
+    auth.add_argument(
+        "--allow-unbookmark",
+        action="store_true",
+        help="Explicitly request bookmark.write as well as existing read scopes",
+    )
     sub.add_parser("auth-finish")
     for command in ("pilot", "inventory", "archive-enrich"):
         read = sub.add_parser(
@@ -83,8 +89,10 @@ def main():
     recovery.add_argument("--read-file", required=True)
     args = parser.parse_args()
     try:
-        if args.command in archive_cli.COMMANDS:
-            result = archive_cli.run(args)
+        if args.command in archive_cli.COMMANDS + unbookmark_cli.COMMANDS:
+            result = (archive_cli if args.command in archive_cli.COMMANDS else unbookmark_cli).run(
+                args
+            )
             print(json.dumps(result))
             return 1 if result.get("blocked") else 0
         if args.command in ("inventory-export", "inventory-recover"):
@@ -131,12 +139,12 @@ def main():
         ):
             client = Client(store, http, client_id, os.environ.get("X_CLIENT_SECRET"))
             if args.command == "auth-start":
-                print(auth_start(store, client_id))
+                print(auth_start(store, client_id, allow_unbookmark=args.allow_unbookmark))
             elif args.command == "auth-finish":
                 if not sys.stdin.isatty():
                     raise PilotError("Run auth-finish in a local interactive terminal.")
                 client.finish(getpass.getpass("Paste full callback URL (hidden): "))
-                print("Read-only OAuth grant stored privately.")
+                print("Requested OAuth grant stored privately.")
             else:
                 budget = Budget(
                     store, args.per_call_reserve_usd, args.run_cap_usd, args.month_cap_usd

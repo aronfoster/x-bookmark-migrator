@@ -1,5 +1,9 @@
 # Official API audit and correction
 
+The FOS-167 [unbookmark contract and recovery audit](UNBOOKMARK.md#official-contracts-checked-2026-10-15)
+supersedes the historical read-only scope notes below for explicitly authorized
+removal commands. Default authorization, inventory and archive remain non-destructive.
+
 The FOS-165 archive/Drive integration has a separate current
 [API contract and storage audit](ARCHIVE.md#api-contract-checked-before-implementation),
 reviewed 2026-10-15. Its synthetic tests do not establish deployed OpenClaw access.

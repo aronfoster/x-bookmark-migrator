@@ -1,7 +1,8 @@
 # Archive and independently retrieve saved content
 
-FOS-165 implementation; live acceptance is **not complete**. No X DELETE endpoint
-is implemented. `bytes_verified` means the selected response and supported media
+FOS-165 implementation; live acceptance is **not complete**. Archive commands
+never call DELETE; the separate [FOS-167 pilot](UNBOOKMARK.md) consumes their evidence.
+`bytes_verified` means the selected response and supported media
 were saved and retrieved byte-for-byte. It is not permission to unbookmark, proof
 of full history coverage, or a claim that a user has reviewed the content.
 
