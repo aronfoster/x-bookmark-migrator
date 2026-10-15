@@ -11,7 +11,7 @@ import tempfile
 import time
 from contextlib import contextmanager
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlsplit
 
@@ -35,6 +35,56 @@ def exact_id(value):
     return value
 
 
+def validate_page(body, kind, page_size):
+    """Validate before changing checkpoint; retain partial positives, never negative claims."""
+    if not isinstance(body, dict):
+        raise PilotError("Malformed inventory response.", code="schema_error")
+    meta = body.get("meta")
+    errors = body.get("errors", [])
+    if (meta is not None and not isinstance(meta, dict)) or not isinstance(errors, list):
+        raise PilotError("Malformed inventory metadata/errors.", code="schema_error")
+    data = body.get("data", [])
+    if "data" not in body and not errors and (meta or {}).get("result_count") != 0:
+        raise PilotError("Missing inventory data/empty-page evidence.", code="schema_error")
+    if not isinstance(data, list) or (kind == "hydrate" and len(data) > page_size):
+        raise PilotError("Unexpected response data shape or lookup count.", code="schema_error")
+    previous = (meta or {}).get("previous_token")
+    if previous is not None and (not isinstance(previous, str) or not previous):
+        raise PilotError("Malformed previous token.", code="schema_error")
+    token = (meta or {}).get("next_token")
+    if token is not None and (not isinstance(token, str) or not token):
+        raise PilotError("Malformed continuation token.", code="schema_error")
+    if "result_count" in (meta or {}) and (
+        type(meta["result_count"]) is not int or meta["result_count"] != len(data)
+    ):
+        raise PilotError("Inventory result count mismatch.", code="schema_error")
+    includes = body.get("includes", {})
+    if not isinstance(includes, dict) or any(
+        not isinstance(v, list) or any(not isinstance(i, dict) for i in v)
+        for v in includes.values()
+    ):
+        raise PilotError("Malformed inventory expansions.", code="schema_error")
+    for item in data:
+        if not isinstance(item, dict):
+            raise PilotError("Malformed inventory item.", code="schema_error")
+        try:
+            exact_id(item.get("id"))
+            if "author_id" in item:
+                exact_id(item["author_id"])
+        except PilotError:
+            raise PilotError("Malformed inventory item ID.", code="schema_error") from None
+        if kind == "folders" and not isinstance(item.get("name"), str):
+            raise PilotError("Missing original folder name.", code="schema_error")
+        if kind in ("main", "hydrate") and not isinstance(item.get("text"), str):
+            raise PilotError("Missing post text.", code="schema_error")
+    return (
+        data,
+        token,
+        errors,
+        bool(meta) and any(key in meta for key in ("result_count", "next_token", "previous_token")),
+    )
+
+
 class Store:
     def __init__(self, root: Path):
         self.root = root.expanduser().absolute()
@@ -48,8 +98,13 @@ class Store:
         if st.st_uid != os.getuid() or st.st_mode & 0o077:
             raise PilotError("Private directory must be owned by this user with mode 0700.")
 
+    def path(self, name):
+        if not isinstance(name, str) or not name or Path(name).name != name or name in (".", ".."):
+            raise PilotError("Private state filename must be a basename.")
+        return self.root / name
+
     def read(self, name):
-        path = self.root / name
+        path = self.path(name)
         if path.is_symlink():
             raise PilotError("Private file must not be a symlink.")
         if not path.exists():
@@ -59,6 +114,7 @@ class Store:
         return json.loads(path.read_text())
 
     def write(self, name, value):
+        destination = self.path(name)
         fd, temporary = tempfile.mkstemp(dir=self.root)
         try:
             with os.fdopen(fd, "w") as stream:
@@ -66,7 +122,7 @@ class Store:
                 stream.write("\n")
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.replace(temporary, self.root / name)
+            os.replace(temporary, destination)
             directory = os.open(self.root, os.O_DIRECTORY)
             try:
                 os.fsync(directory)
@@ -257,15 +313,34 @@ class Budget:
 
     def __init__(self, store, per_call, run_cap, month_cap):
         self.store = store
-        self.per_call, self.run_cap, self.month_cap = map(Decimal, (per_call, run_cap, month_cap))
-        if any(not v.is_finite() or v <= 0 for v in (self.per_call, self.run_cap, self.month_cap)):
-            raise PilotError("Budget values must be finite and positive.")
+        settings = (
+            ("per_call", per_call, "--per-call-reserve-usd / X_PER_CALL_RESERVE_USD"),
+            ("run_cap", run_cap, "--run-cap-usd / X_RUN_CAP_USD"),
+            ("month_cap", month_cap, "--month-cap-usd / X_MONTH_CAP_USD"),
+        )
+        for attribute, value, label in settings:
+            try:
+                parsed = Decimal(value)
+            except (InvalidOperation, TypeError, ValueError):
+                raise PilotError(f"{label} must be a finite, positive dollar amount.") from None
+            if not parsed.is_finite() or parsed <= 0:
+                raise PilotError(f"{label} must be a finite, positive dollar amount.")
+            setattr(self, attribute, parsed)
         self.used = Decimal(0)
 
     def reserve(self):
         month = datetime.now(UTC).strftime("%Y-%m")
-        ledger = self.store.read("budget.private.json") or {}
-        used = Decimal(ledger.get(month, "0"))
+        ledger = self.store.read("budget.private.json")
+        if ledger is None:
+            ledger = {}
+        try:
+            if not isinstance(ledger, dict):
+                raise ValueError
+            used = Decimal(ledger.get(month, "0"))
+        except (InvalidOperation, TypeError, ValueError):
+            raise PilotError("Invalid monthly reservation ledger; inspect private state.") from None
+        if not used.is_finite() or used < 0:
+            raise PilotError("Invalid monthly reservation ledger; inspect private state.")
         if self.used + self.per_call > self.run_cap or used + self.per_call > self.month_cap:
             raise PilotError("Estimated spend cap reached; no read sent.", code="spend_cap")
         ledger[month] = str(used + self.per_call)
@@ -285,36 +360,10 @@ def pilot(client, budget, owner_id, dialect="post"):
         raise PilotError("Authenticated user differs from configured developer-app owner.")
     params = {"max_results": "5", **post_fields(dialect)}
     body = client.get(f"/2/users/{owner_id}/bookmarks", params, budget.reserve)
-    meta = body.get("meta", {})
-    if not isinstance(meta, dict):
-        raise PilotError("Malformed pagination metadata; private response saved.")
-    if "data" not in body and meta.get("result_count") != 0:
-        if not body.get("errors"):
-            raise PilotError("Missing bookmark data and empty-page metadata.")
-    data = body.get("data", [])
-    if not isinstance(data, list) or len(data) > 5:
-        raise PilotError("Unexpected bookmark page size or shape.")
-    for item in data:
-        if not isinstance(item, dict) or not isinstance(item.get("text"), str):
-            raise PilotError("Malformed bookmark record.")
-        exact_id(item.get("id"))
-        if "author_id" in item:
-            exact_id(item["author_id"])
-    if "next_token" in meta and (not isinstance(meta["next_token"], str) or not meta["next_token"]):
-        raise PilotError("Malformed pagination metadata.")
-    if "result_count" in meta and (
-        type(meta["result_count"]) is not int or meta["result_count"] != len(data)
-    ):
-        raise PilotError("Result count does not match records.")
+    data, next_token, errors, has_metadata = validate_page(body, "main", 5)
     includes = body.get("includes", {})
-    if not isinstance(includes, dict):
-        raise PilotError("Malformed includes; private response saved.")
     media = includes.get("media", [])
-    if not isinstance(media, list) or any(not isinstance(item, dict) for item in media):
-        raise PilotError("Malformed media expansion; private response saved.")
-    errors = body.get("errors", [])
-    if not isinstance(errors, list):
-        raise PilotError("Malformed errors array; private response saved.")
+    duplicate_ids = len(data) != len({item["id"] for item in data})
     # Never print arbitrary remote strings, even when supplied in the type field.
     known_types = {
         f"https://{host}/2/problems/{kind}"
@@ -333,21 +382,47 @@ def pilot(client, budget, owner_id, dialect="post"):
     )
     summary = {
         "partial_error_types": error_types,
-        "pilot_status": "partial" if errors else "read_complete",
+        "pilot_status": "partial" if errors or duplicate_ids else "read_complete",
         "records": len(data),
-        "has_next_page": bool(meta.get("next_token")),
+        "has_next_page": bool(next_token),
+        "pagination_metadata_present": has_metadata,
+        "requested_page_size": 5,
+        "exceeded_requested_page_size": len(data) > 5,
+        "duplicate_ids": duplicate_ids,
         "partial_errors": bool(body.get("errors")),
         "field_dialect": dialect,
         "estimated_reserved_usd": str(budget.used),
         "observed_charge": "unverified",
         "private_file": client.observations[-1]["private_file"],
         "reads": client.observations,
-        "includes": sorted(includes),
-        "media_fields": sorted({key for item in media for key in item}),
-        "fields": sorted({k for item in data for k in item}),
+        "includes": sorted(
+            set(includes) & {"media", "users", "posts", "tweets", "polls", "places", "topics"}
+        ),
+        "media_fields": sorted(
+            {key for item in media for key in item}
+            & (set(params["media.fields"].split(",")) | {"media_key"})
+        ),
+        "fields": sorted(
+            {k for item in data for k in item}
+            & (
+                set(params.get("post.fields", params.get("tweet.fields", "")).split(","))
+                | {
+                    "id",
+                    "text",
+                    "author_id",
+                    "referenced_posts",
+                    "referenced_tweets",
+                    "edit_history_tweet_ids",
+                    "edit_history_post_ids",
+                }
+            )
+        ),
     }
-    if body.get("errors"):
-        raise PilotError("Partial API errors; diagnostics available, pilot NOT accepted.", summary)
+    if errors or duplicate_ids:
+        raise PilotError(
+            "Partial API errors or duplicate IDs; diagnostics available, pilot NOT accepted.",
+            summary,
+        )
     return summary
 
 

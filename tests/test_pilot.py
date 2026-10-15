@@ -334,3 +334,70 @@ def test_successful_rate_limits_in_summary(store):
     assert len(summary["reads"]) == 2
     assert all(r["rate_limits"] == {"x-rate-limit-limit": "100"} for r in summary["reads"])
     assert "PRIVATE" not in json.dumps(summary)
+
+
+@pytest.mark.parametrize("value", ["-1", "NaN", "Infinity"])
+def test_invalid_ledger_cannot_reduce_reserved_spend(store, value):
+    from datetime import UTC, datetime
+
+    store.write("budget.private.json", {datetime.now(UTC).strftime("%Y-%m"): value})
+    with pytest.raises(PilotError, match="ledger"):
+        budget(store).reserve()
+
+
+def test_pilot_retains_oversized_response_but_does_not_print_remote_field_names(store):
+    tokens(store)
+    body = {
+        "data": [
+            {"id": str(i), "text": "synthetic", "PRIVATE_FIELD": "private"} for i in range(20)
+        ],
+        "includes": {"PRIVATE_KEY": [], "media": [{"type": "photo", "PRIVATE_MEDIA": "private"}]},
+    }
+    api = client(
+        store,
+        lambda req: httpx.Response(
+            200, json={"data": {"id": OWNER}} if req.url.path.endswith("me") else body
+        ),
+    )
+    result = pilot(api, budget(store), OWNER)
+    assert result["records"] == 20 and result["exceeded_requested_page_size"]
+    assert "PRIVATE" not in json.dumps(result)
+    assert store.read(result["private_file"])["response"] == body
+
+
+@pytest.mark.parametrize("name", ["../outside", "/tmp/outside", ".", "..", ""])
+def test_store_cannot_read_or_write_outside_private_root(store, name):
+    with pytest.raises(PilotError, match="basename"):
+        store.read(name)
+    with pytest.raises(PilotError, match="basename"):
+        store.write(name, {})
+
+
+def test_pilot_duplicate_ids_are_partial(store):
+    tokens(store)
+    api = client(
+        store,
+        lambda req: httpx.Response(
+            200,
+            json={"data": {"id": OWNER}}
+            if req.url.path.endswith("me")
+            else {"data": [{"id": POST, "text": "synthetic"}] * 2},
+        ),
+    )
+    with pytest.raises(PilotError) as error:
+        pilot(api, budget(store), OWNER)
+    assert error.value.summary["pilot_status"] == "partial"
+    assert error.value.summary["duplicate_ids"]
+
+
+@pytest.mark.parametrize("value", ["", "PRIVATE_INVALID_VALUE", None, [], {}])
+def test_malformed_ledger_value_is_redacted_and_not_replaced(store, value):
+    from datetime import UTC, datetime
+
+    month = datetime.now(UTC).strftime("%Y-%m")
+    store.write("budget.private.json", {month: value})
+    before = (store.root / "budget.private.json").read_bytes()
+    with pytest.raises(PilotError, match="Invalid monthly reservation ledger") as error:
+        budget(store).reserve()
+    assert "PRIVATE" not in str(error.value)
+    assert (store.root / "budget.private.json").read_bytes() == before

@@ -12,9 +12,8 @@ directory outside Git and the same `X_CLIENT_ID`. Confirm the Console hard spend
 limit and auto-recharge setting before spending more. The examples use the ignored
 `.env` through `uv run --env-file .env`; if variables are already exported, omit that
 option. Find the ID with [the README identity lookup](../README.md#find-your-numeric-account-id).
-Export `X_APP_OWNER_ID` in the invoking shell, or supply the owner's verified
-numeric ID directly to `--app-owner-id`. `--env-file` only sets the child process's
-environment, so it cannot supply the shell's `$X_APP_OWNER_ID` substitution.
+Put `X_APP_OWNER_ID` in that ignored `.env`. The CLI reads it from the process
+environment; an explicit `--app-owner-id` overrides it. No shell export is needed.
 
 **Check existing reservations first.** The UTC-month budget is shared by pilot and
 inventory in this state directory and persists across invocations. It does not reset
@@ -42,20 +41,26 @@ within the verified Console limit and your intended budget, or wait for the next
 UTC accounting month (which may differ from the Console billing cycle).
 
 ```sh
-uv run --env-file .env x-migrator inventory --app-owner-id "$X_APP_OWNER_ID" \
+uv run --env-file .env x-migrator inventory \
   --console-hard-cap-confirmed --auto-recharge-off-confirmed \
   --max-calls 6 --page-size 1 --hydrate-batch-size 1 --max-pages-per-stream 1 \
   --per-call-reserve-usd 0.10 --run-cap-usd 0.60 --month-cap-usd 1.00
 ```
 
-This is a **probe**, not a resumable full inventory. Limiting each stream to one page
-prevents a large main backlog from consuming every call. A one-item page limits
-folder discovery to at most one folder, leaving room for its contents and a lookup.
-With a reachable nonempty folder and a folder-only ID, the probe makes five GETs:
-identity, folder enumeration, main bookmarks, that folder's contents, and hydration.
-Empty/inaccessible folders or a folder ID already present in the main page mean
-fewer calls; hydration access is then **still unverified**. Record which endpoints
-actually ran. Do not manufacture an extra lookup just to claim verification.
+This is a **probe**, not a full inventory. Each stream is limited to one page,
+and at most six GETs may be sent. `--page-size 1` requests one result; it does not
+ensure the server returns only one. A response may contain more folders or IDs,
+so this command does not guarantee reaching every folder or the lookup endpoint.
+Valid returned IDs and memberships are retained up to the explicit local record
+and folder caps. The raw response is saved privately, even if a cap prevents
+retaining all records. Page evidence reports requested size, actual count and
+omitted count. A request limit controls requests, not returned resources or charges.
+
+`hydration_counts.read` counts usable post bodies from **either** the main feed or
+lookup. Check `lookup_requests_this_run` for actual lookup GET reservations and
+`lookup_batches_in_pass` / `lookup_returned_records_in_pass` for accepted lookup
+responses. `main_post_bodies` reports main-feed contributions separately. Zero
+lookup requests means lookup access remains unverified, even if `read` is nonzero.
 
 **Exit 1 / partial is expected for a truncated probe** and also occurs if live folder
 responses omit pagination metadata. Its private JSONL/checkpoint remains useful.
@@ -75,8 +80,8 @@ Reads occur in this order: identity check, folder enumeration, main bookmarks, e
 observed folder's contents, then hydration of IDs without main-stream post bodies.
 The request cap includes the identity GET on every invocation, but not OAuth token
 refresh. The default page and hydration sizes are 100, within documented limits;
-page sizes 1–100 are accepted. The probe deliberately bounds the first live
-experiment. Folder page-size quirks are reviewer-reported, not established here. No retries, dialect fallback,
+request page sizes 1–100 are accepted. The response parser does not impose that
+request range as a response-array ceiling. Local retention and request caps still apply. No retries, dialect fallback,
 write scopes, or destructive operations occur automatically.
 
 ## From probe to a full inventory
@@ -98,19 +103,18 @@ write scopes, or destructive operations occur automatically.
    point. Set the month cap to existing reservations **plus** the planned budget,
    within your intended spending and Console limit; ten $0.10 reservations already
    consume the original $1.00 example ceiling.
-4. Set the three shell variables below to those deliberate dollar limits. Start a
+4. Set `X_PER_CALL_RESERVE_USD`, `X_RUN_CAP_USD` and `X_MONTH_CAP_USD` in
+   your ignored `.env` to those deliberate dollar limits. Explicit CLI budget flags
+   override them. Start a
    **fresh** full pass, without `--resume` or the probe's one-page bound. This example
    uses ten GETs per invocation and 100-item pages/batches; reduce them if the pricing
    evidence supports only a smaller batch. Default pass bounds remain 10,000 records,
    1,000 folders and 100 pages per stream; choose higher bounds up front if needed.
 
 ```sh
-uv run --env-file .env x-migrator inventory --app-owner-id "$X_APP_OWNER_ID" \
+uv run --env-file .env x-migrator inventory \
   --console-hard-cap-confirmed --auto-recharge-off-confirmed \
-  --max-calls 10 --page-size 100 --hydrate-batch-size 100 \
-  --per-call-reserve-usd "${X_INVENTORY_CALL_RESERVE_USD:?Set a measured conservative reserve}" \
-  --run-cap-usd "${X_INVENTORY_RUN_CAP_USD:?Set the run reservation cap}" \
-  --month-cap-usd "${X_INVENTORY_MONTH_CAP_USD:?Include prior reservations in the month cap}"
+  --max-calls 10 --page-size 100 --hydrate-batch-size 100
 ```
 
 After `request_limit`, repeat that full-pass command with
@@ -181,12 +185,14 @@ errors or silently omitted IDs stay `unresolved`; neither is called a tombstone.
 | `deletion_eligible` | Always false: inventory alone never authorizes deletion. |
 
 A short page with a next token is followed. A page without a next token is an API end
-only when pagination metadata is present. Current official folder references list
+only when meaningful pagination metadata is present; an empty `meta: {}` is
+insufficient. Current official folder references list
 pagination request parameters but omit `meta` from their example/schema. A live
 response without that metadata is saved as `pagination_unverified`, including its
 positive folder/name/membership evidence. **No assumption that a short folder list
 is complete is made.** Capture its actual shape and entitlement before adapting the
-parser. Do not invent a continuation or fall back to private APIs.
+parser. Missing metadata is a coverage limitation, not a schema error. Do not invent
+a continuation or fall back to private APIs.
 
 Repeated tokens halt the affected stream. Duplicate IDs within a stream or observed
 folder renames flag possible source drift and invalidate negative membership claims;
@@ -203,7 +209,10 @@ State remains outside Git in the existing owner-only state directory. Each pass 
 an atomic/fsynced `inventory-<pass>.private.json` checkpoint. Successful GET evidence,
 HTTP failures and malformed responses remain in existing `read-*.private.json` files.
 Checkpoint commits contain records and cursor transitions together; a failed page
-never advances the checkpoint cursor past uncommitted records. Default bounds are
+never advances the checkpoint cursor past omitted records. When retention fills,
+existing IDs still receive positive memberships, new IDs fill remaining capacity,
+and omitted records stay in the raw diagnostic. That stream stops with `record_limit`;
+a larger fresh pass is required for further coverage. Default bounds are
 10,000 unique posts, 1,000 folders and 100 pages per stream. Configure larger bounds
 on a fresh pass if needed (supported maxima: 100,000 posts, 1,000 folders/pages).
 This intentionally uses one bounded JSON state rather than another database/service.
@@ -215,7 +224,34 @@ an export without credentials, more X requests, or additional spending:
 uv run x-migrator inventory-export
 ```
 
-Use global `--state-dir /absolute/private/path` **before** either subcommand if needed.
+### Recover a rejected folder response without another API read
+
+Before starting a new pass, recover the saved read that the old validator rejected.
+Use its basename from your private diagnostics (never publish the real filename):
+
+```sh
+read -r -p "Saved folder read filename: " X_INVENTORY_READ_FILE
+uv run x-migrator inventory-recover --read-file "$X_INVENTORY_READ_FILE"
+```
+
+This command needs no `.env`, credentials or network. It verifies the HTTP status,
+owner/folder endpoint, original request/cursor and observation time against the
+active rejected stream, then updates its checkpoint and creates a new export.
+Tokens, budget and the raw read are unchanged. Original observation times are kept.
+Old checkpoints without an exact failed-read link permit only an oversized folder
+response matching the pass window/request; this weaker association is recorded and
+cannot establish negative category evidence. A second replay is rejected. If a new
+pass has replaced the active pointer, do not edit pointers or merge its observations;
+keep the old diagnostics separately.
+
+Recovery does not hydrate IDs or resolve missing pagination metadata. To hydrate
+pending recovered IDs, use `inventory --resume --source-unchanged-confirmed` with
+your chosen budget only while the source has remained unchanged. A probe's page
+limits and unknown folder coverage remain partial; resume is not a full rescan.
+Offline recovery exits 0 when the saved evidence was successfully recovered, even
+if coverage remains partial.
+
+Use global `--state-dir /absolute/private/path` **before** any subcommand if needed.
 Stdout prints only sanitized counts, statuses, opaque local filenames and estimates;
 IDs, original names, tokens, text and raw errors remain private. Exit status 1 means
 partial coverage or a stopped run; it is not a reason to discard the export. Offline
@@ -239,7 +275,8 @@ to interpret an export. Assets are still URLs, not archived files.
 Version 1 checkpoints are upgraded in memory when loaded, sharing their existing
 expansions without new API reads or changing saved cursors/failure states. Offline
 export leaves the original checkpoint untouched; the next run persists version 2.
-Previously blocked streams remain blocked until a fresh pass, as documented above.
+Previously blocked streams remain blocked until a fresh pass, except for explicit
+offline recovery of a rejected folder read as described above.
 
 For example, synthetic tests verify one post belongs to both `10` / `Malfoid` and
 `20` / `Culture War`, while another post is found only in folder `10` and hydrated
@@ -263,14 +300,18 @@ malformed-ID isolation, differing resume bounds and page sizes 1–4.
 
 **External actions for this implementation: zero authenticated X requests; zero
 bookmark mutations; no actual billing observed.** FOS-163 proved the main endpoint
-and `post` field dialect live. Folder enumeration, folder contents, metadata shape,
-folder-only hydration and charges still require a small owner-runtime run. The
+and `post` field dialect live. The owner also reported successful folder GETs with
+ID-only content, no pagination metadata and more IDs than requested. These are
+observations, not proof of complete folder coverage. Lookup access and per-operation
+charges still require owner-runtime verification. The
 fixture verification must not be reported as live category verification.
 
 For that run, retain the private JSONL/checkpoint, report only sanitized endpoint
 statuses/counts, continuation presence, named-category association verification and
 Console charge deltas. Compare a bounded resumed run with a fresh pass while the
 source remains unchanged; never post real IDs, names, text or tokens to the public repo.
+
+See [API_AUDIT.md](API_AUDIT.md) for the full audit and documentation requirements.
 
 Official references checked for implementation:
 - [Folder enumeration](https://docs.x.com/x-api/users/get-bookmark-folders)

@@ -627,3 +627,265 @@ def test_v1_checkpoint_upgrades_expansions_without_changing_disk_or_cursors(setu
     assert (store.root / inv.name).read_bytes() == before
     resumed = Inventory(store, OWNER, resume=True, source_unchanged=True)
     assert run(resumed, example)["records"] == 4
+
+
+def live_shape(req):
+    """Documented folder shape, synthetic IDs, observed over-return behavior."""
+    if req.url.path == BASE + "/folders":
+        return {"data": [{"id": "10", "name": "synthetic folder"}]}
+    if req.url.path == BASE:
+        return page([post(A)], "more-main")
+    if req.url.path == BASE + "/folders/10":
+        return {"data": [{"id": str(int(A) + i)} for i in range(20)]}
+    assert req.url.path == "/2/tweets"
+    return {"data": [post(pid) for pid in req.url.params["ids"].split(",")]}
+
+
+def test_documented_folder_shape_preserves_oversized_response_and_lookup_accounting(setup):
+    store, calls, run = setup
+    inv = Inventory(store, OWNER, page_size=1, max_pages=1)
+    result = run(inv, live_shape, max_calls=6, hydrate_batch_size=1)
+    assert len(calls) == 6
+    assert result["records"] == result["membership_counts"]["filed"] == 20
+    assert result["membership_counts"]["confirmed_unfiled"] == 0
+    assert result["main_post_bodies"] == 1
+    assert result["hydration_counts"] == {"read": 3, "pending": 17}
+    assert result["lookup_requests_this_run"] == result["lookup_batches_in_pass"] == 2
+    assert result["lookup_returned_records_in_pass"] == 2
+    folder = inv.state["streams"]["folder:10"]
+    assert folder["reason"] == "pagination_unverified"
+    assert folder["pages"][0]["raw_count"] == 20
+    assert folder["pages"][0]["exceeded_requested_page_size"]
+    assert folder["pages"][0]["requested_page_size"] == 1
+    assert all(p["folder_ids"] == ["10"] for p in inv.state["posts"].values())
+    assert not result["all_folders_exhausted_in_pass"]
+    assert result["stop_reason"] == "request_limit"
+    resumed = Inventory(store, OWNER, resume=True, source_unchanged=True)
+    done = run(resumed, live_shape, hydrate_batch_size=10)
+    assert done["hydration_counts"] == {"read": 20}
+    assert done["lookup_returned_records_in_pass"] == 19
+    assert done["inventory_status"] == "partial"
+    assert len([r for r in calls if r.url.path.endswith("/folders/10")]) == 1
+
+
+@pytest.mark.parametrize("kind", ["main", "folder", "folders"])
+def test_response_count_is_not_constrained_by_request_range(setup, kind):
+    store, _, _ = setup
+    inv = Inventory(store, OWNER, page_size=1)
+    if kind == "folder":
+        inv.accept_page("folders", {"data": [{"id": "10", "name": "synthetic"}]}, "folders")
+    data = [
+        {
+            "id": str(1000 + i),
+            **(
+                {"name": "synthetic"}
+                if kind == "folders"
+                else {"text": "synthetic"}
+                if kind == "main"
+                else {}
+            ),
+        }
+        for i in range(101)
+    ]
+    key = "folder:10" if kind == "folder" else kind
+    inv.accept_page(key, {"data": data}, "saved")
+    assert len(inv.state["streams"][key]["pages"][0]["ids"]) == 101
+    assert inv.state["streams"][key]["reason"] == "pagination_unverified"
+
+
+def test_record_cap_retains_known_memberships_and_available_capacity(setup):
+    store, _, _ = setup
+    inv = Inventory(store, OWNER, max_records=2)
+    inv.accept_page("main", page([post(A)]), "main")
+    inv.accept_page("folders", page([{"id": "10", "name": "synthetic"}]), "folders")
+    # The known ID comes after excess new IDs; its positive evidence must survive.
+    inv.accept_page(
+        "folder:10", page([{"id": B}, {"id": C}, {"id": D}, {"id": A}], "next"), "contents"
+    )
+    assert set(inv.state["posts"]) == {A, B}
+    assert inv.state["posts"][A]["folder_ids"] == ["10"]
+    item = inv.state["streams"]["folder:10"]
+    assert item["reason"] == "record_limit" and item["next_token"] is None
+    assert item["pages"][0]["next_token"] == "next"
+    assert item["pages"][0]["omitted_count"] == 2
+    assert item["pages"][0]["raw_count"] == 4
+    assert not inv.all_folders_exhausted()
+
+
+@pytest.mark.parametrize("meta", [None, {}, {"unrecognized": "synthetic"}])
+def test_missing_or_empty_pagination_metadata_cannot_prove_coverage(setup, meta):
+    store, _, _ = setup
+    inv = Inventory(store, OWNER)
+    inv.accept_page("folders", {"data": [], "meta": meta}, "folders")
+    assert not inv.all_folders_exhausted()
+    assert inv.state["streams"]["folders"]["reason"] == "pagination_unverified"
+
+
+def rejected_folder(setup, monkeypatch, *, legacy=True):
+    import x_bookmark_migrator.inventory as module
+
+    store, _, run = setup
+    original = module.validate_page
+
+    def legacy_validator(body, kind, size):
+        if kind == "folder":
+            raise PilotError("legacy page-size rejection", code="schema_error")
+        return original(body, kind, size)
+
+    inv = Inventory(store, OWNER, page_size=1, max_pages=1)
+    with monkeypatch.context() as patch:
+        patch.setattr(module, "validate_page", legacy_validator)
+        run(inv, live_shape)
+    name = inv.state["streams"]["folder:10"]["failed_evidence"]
+    if legacy:
+        inv.state["streams"]["folder:10"].pop("failed_evidence")
+    inv.save()  # merged version did not record the failed filename in its checkpoint
+    return inv, name
+
+
+def test_recover_legacy_rejected_read_offline_without_changing_billing_or_tokens(
+    setup, monkeypatch
+):
+    store, calls, _ = setup
+    inv, name = rejected_folder(setup, monkeypatch)
+    raw = store.read(name)
+    before = {
+        n: (store.root / n).read_bytes()
+        for n in (name, "tokens.private.json", "budget.private.json")
+    }
+    call_count = len(calls)
+    loaded = Inventory.load(store)
+    result = loaded.recover(name)
+    assert len(calls) == call_count
+    assert result["offline_recovery"] and result["get_attempts_this_run"] == 0
+    assert result["lookup_requests_this_run"] == result["lookup_batches_in_pass"] == 0
+    assert result["records"] == result["membership_counts"]["filed"] == 20
+    assert result["hydration_counts"] == {"read": 1, "pending": 19}
+    assert loaded.state["posts"][B]["first_observed_at"] == raw["retrieved_at"]
+    assert loaded.state["streams"]["folder:10"]["pages"][0]["observed_at"] == raw["retrieved_at"]
+    assert all((store.root / n).read_bytes() == value for n, value in before.items())
+    assert len([r for r in read_export(store, result) if r["type"] == "post"]) == 20
+    assert store.read(inv.name)["posts"][B]["folder_ids"] == ["10"]
+    with pytest.raises(PilotError, match="rejected page"):
+        loaded.recover(name)
+
+
+@pytest.mark.parametrize("change", ["owner", "cursor", "time", "status", "filename", "in_flight"])
+def test_recovery_rejects_unrelated_evidence_without_checkpoint_change(setup, monkeypatch, change):
+    store, _, _ = setup
+    inv, name = rejected_folder(setup, monkeypatch)
+    saved = store.read(name)
+    if change == "owner":
+        saved["endpoint"] = "/2/users/999/bookmarks/folders/10"
+    elif change == "cursor":
+        saved["request"]["pagination_token"] = "wrong"
+    elif change == "time":
+        saved["retrieved_at"] = "2000-01-01T00:00:00+00:00"
+    elif change == "status":
+        saved["status"] = 403
+    elif change == "filename":
+        saved["private_file"] = "different"
+    else:
+        inv.state["in_flight"] = True
+        inv.save()
+    store.write(name, saved)
+    checkpoint = (store.root / inv.name).read_bytes()
+    with pytest.raises(PilotError):
+        inv.recover(name)
+    assert (store.root / inv.name).read_bytes() == checkpoint
+
+
+def test_recovery_rejects_path_traversal(setup):
+    store, _, _ = setup
+    inv = Inventory(store, OWNER)
+    with pytest.raises(PilotError, match="filename"):
+        inv.recover("../read-" + "a" * 24 + ".private.json")
+
+
+def test_recovery_cli_is_offline_and_needs_no_credentials(setup, monkeypatch, capsys):
+    import sys
+
+    from x_bookmark_migrator import cli
+
+    store, _, _ = setup
+    inv, name = rejected_folder(setup, monkeypatch)
+    monkeypatch.delenv("X_CLIENT_ID", raising=False)
+    monkeypatch.delenv("X_APP_OWNER_ID", raising=False)
+    monkeypatch.setattr(cli.httpx, "Client", lambda **kw: pytest.fail("HTTP client created"))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["x-migrator", "--state-dir", str(store.root), "inventory-recover", "--read-file", name],
+    )
+    assert cli.main() == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["records"] == 20 and result["get_attempts_this_run"] == 0
+    assert store.read(inv.name)["posts"][A]["folder_ids"] == ["10"]
+    assert not result["consistent_observations"]  # legacy evidence lacks an exact link
+
+
+def test_folder_limit_keeps_discovered_names_without_advancing_cursor(setup):
+    store, _, _ = setup
+    inv = Inventory(store, OWNER, max_folders=1)
+    inv.accept_page(
+        "folders",
+        page([{"id": "10", "name": "first"}, {"id": "20", "name": "second"}], "next"),
+        "folders",
+    )
+    assert inv.state["folders"] == {"10": {"id": "10", "names": ["first"]}}
+    assert "folder:10" in inv.state["streams"] and "folder:20" not in inv.state["streams"]
+    item = inv.state["streams"]["folders"]
+    assert item["reason"] == "record_limit" and item["next_token"] is None
+    assert item["pages"][0]["omitted_count"] == 1
+    assert not inv.all_folders_exhausted()
+
+
+@pytest.mark.parametrize("returned", [[A, A], [D]])
+def test_lookup_rejects_duplicate_or_unrequested_ids_without_changing_posts(setup, returned):
+    import copy
+
+    store, _, _ = setup
+    inv = Inventory(store, OWNER)
+    inv.add_post(A)
+    inv.add_post(B)
+    before = copy.deepcopy(inv.state)
+    with pytest.raises(PilotError, match="unexpected/duplicate"):
+        inv.accept_hydration([A, B], {"data": [post(pid) for pid in returned]}, "lookup")
+    assert inv.state == before
+
+
+def test_exact_link_recovery_retains_consistency_and_clears_failed_link(setup, monkeypatch):
+    store, calls, _ = setup
+    inv, name = rejected_folder(setup, monkeypatch, legacy=False)
+    before = {
+        n: (store.root / n).read_bytes()
+        for n in (name, "tokens.private.json", "budget.private.json")
+    }
+    count = len(calls)
+    result = inv.recover(name)
+    item = inv.state["streams"]["folder:10"]
+    assert result["records"] == 20 and result["consistent_observations"]
+    assert result["get_attempts_this_run"] == 0 and len(calls) == count
+    assert "failed_evidence" not in item
+    assert item["pages"][0]["evidence"] == name
+    assert not result["all_folders_exhausted_in_pass"]  # no pagination evidence
+    assert all((store.root / n).read_bytes() == data for n, data in before.items())
+    with pytest.raises(PilotError, match="rejected page"):
+        inv.recover(name)
+
+
+def test_exact_link_recovery_rejects_other_valid_saved_read(setup, monkeypatch):
+    import copy
+
+    store, _, _ = setup
+    inv, name = rejected_folder(setup, monkeypatch, legacy=False)
+    other_name = "read-" + "f" * 24 + ".private.json"
+    other = store.read(name)
+    other["private_file"] = other_name
+    store.write(other_name, other)
+    before = copy.deepcopy(inv.state)
+    disk = (store.root / inv.name).read_bytes()
+    with pytest.raises(PilotError, match="rejected page"):
+        inv.recover(other_name)
+    assert inv.state == before and (store.root / inv.name).read_bytes() == disk
+    assert inv.state["streams"]["folder:10"]["failed_evidence"] == name
