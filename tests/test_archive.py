@@ -244,6 +244,11 @@ def test_five_posts_roundtrip_with_fresh_state_and_no_x(storage, tmp_path):
         # Content-addressed media, payloads and manifests do not duplicate on rerun.
         assert len(server.bytes) == object_count
         assert again["private_receipt"] != result["private_receipt"]
+        first_receipt = store.read(result["private_receipt"])
+        next_receipt = store.read(again["private_receipt"])
+        assert first_receipt["batch_id"] == next_receipt["batch_id"]
+        assert first_receipt["receipt_id"] != next_receipt["receipt_id"]
+        assert next_receipt["manifest"]["name"] == next_receipt["batch_id"] + ".jsonl"
     fresh = Store(tmp_path / "fresh")
     grant(fresh)
     remote = Drive(fresh, http, "root")
@@ -265,6 +270,8 @@ def test_five_posts_roundtrip_with_fresh_state_and_no_x(storage, tmp_path):
     assert gif["logical_type"] == "animated_gif" and gif["container"] == "mp4"
     assert gif["source_url"].endswith("high.mp4")
     assert gif["source_original_verified"] is False
+    assert gif["derivative"] == "unknown"
+    assert gif["transformed_by_archiver"] is False
     assert all(p.stat().st_mode & 0o777 == 0o600 for p in output.root.iterdir())
 
 
@@ -623,3 +630,153 @@ def test_storage_errors_do_not_retry_or_emit_success(storage, status):
     assert "private_remote_body" not in str(failure.value)
     assert sum(r.url.path == "/upload/drive/v3/files" for r in calls) == 1
     assert not server.bytes
+
+
+@pytest.mark.parametrize("with_keys,nested", [(False, False), (True, False), (False, True)])
+def test_source_media_never_counts_as_complete(storage, with_keys, nested):
+    store, drive, server, _ = storage
+    attachments = {"media_source_tweet_id": ["999"]}
+    if with_keys:
+        attachments["media_keys"] = ["photo-1"]
+    source = post("102" if nested else "101", attachments=attachments)
+    primary = post(referenced_posts=[{"type": "quoted", "id": "102"}]) if nested else source
+    inv = inventory(store, [primary], includes([photo()], [source] if nested else []))
+    with httpx.Client(transport=httpx.MockTransport(media_http)) as media:
+        result = archive_batch(inv, drive, media)
+    assert result["blocked"] == 1 and result["bytes_verified"] == 0
+    row = json.loads(server.bytes[manifest(store, result)])
+    assert "blocked_unsupported_media_source" in row["blockers"]
+    payload = json.loads(server.bytes[row["payload"]["file_id"]])
+    assert payload["posts"][-1]["raw"]["attachments"] == attachments
+
+
+@pytest.mark.parametrize("failure", [403, 429, "transport", "readback"])
+def test_media_storage_failure_aborts_entire_batch(storage, failure):
+    store, _, server, _ = storage
+    inv = inventory(
+        store, [post(attachments={"media_keys": ["photo-1"]}), post("102")], includes([photo()])
+    )
+    attempts = []
+
+    def handler(request):
+        if request.url.path == "/upload/drive/v3/files":
+            attempts.append(request)
+            if failure == "transport":
+                raise httpx.ReadError("storage connection lost", request=request)
+            if isinstance(failure, int):
+                return httpx.Response(failure)
+        if failure == "readback" and request.url.params.get("alt") == "media":
+            return httpx.Response(200, content=b"corrupt")
+        return server.handle(request)
+
+    with (
+        httpx.Client(transport=httpx.MockTransport(handler)) as http,
+        httpx.Client(transport=httpx.MockTransport(media_http)) as media,
+        pytest.raises((PilotError, httpx.ReadError)),
+    ):
+        archive_batch(inv, Drive(store, http, "root"), media)
+    assert len(attempts) == (2 if failure == "readback" else 1)
+    assert not list(store.root.glob("archive-*.private.json"))
+    assert not any(o.get("name", "").endswith((".jsonl", ".json")) for o in server.objects.values())
+
+
+def x_grant(store):
+    store.write(
+        "tokens.private.json",
+        {
+            "access_token": "fake",
+            "refresh_token": "fake",
+            "scope": " ".join(SCOPES),
+            "client_id": "app",
+            "expires_at": time.time() + 3600,
+        },
+    )
+
+
+@pytest.mark.parametrize("unknown_error", [False, True])
+def test_batched_references_dedupe_and_attribute_errors(storage, unknown_error):
+    store, drive, server, _ = storage
+    posts = [
+        post(pid, referenced_posts=[{"type": "quoted", "id": rid}])
+        for pid, rid in [("101", "201"), ("102", "201"), ("103", "202")]
+    ]
+    inv = inventory(store, posts)
+    x_grant(store)
+    calls = []
+    error = (
+        {"title": "Unknown failure"}
+        if unknown_error
+        else {"resource_type": "tweet", "resource_id": "202", "title": "Not Found Error"}
+    )
+
+    def handler(request):
+        calls.append(request)
+        if request.url.path == "/2/users/me":
+            return httpx.Response(200, json={"data": {"id": "100"}})
+        assert request.url.params["ids"] == "201,202"
+        return httpx.Response(
+            200, json={"data": [post("201")], "includes": includes(), "errors": [error]}
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http:
+        result = enrich_references(
+            inv, Client(store, http, "app"), Budget(store, ".01", ".10", "1"), "100"
+        )
+    assert result["enriched_posts"] == 3 and result["x_api_calls"] == len(calls) == 2
+    links = inv.state["archive_reference_reads"]
+    assert links["101"]["evidence"] == links["102"]["evidence"] == links["103"]["evidence"]
+    with httpx.Client(transport=httpx.MockTransport(media_http)) as media:
+        result = archive_batch(Inventory.load(store), drive, media)
+    assert result["bytes_verified"] == (0 if unknown_error else 2)
+    rows = [json.loads(line) for line in server.bytes[manifest(store, result)].splitlines()]
+    assert "blocked_partial_api_response" in rows[2]["blockers"]
+    payload = json.loads(server.bytes[rows[0]["payload"]["file_id"]])
+    assert payload["source_evidence"]["reference_errors"] == [error]
+
+
+@pytest.mark.parametrize("exhaust_budget", [False, True])
+def test_reference_union_respects_lookup_bound_and_budget(storage, exhaust_budget):
+    store, _, _, _ = storage
+    posts = [
+        post(
+            str(101 + n),
+            referenced_posts=[{"type": "quoted", "id": str(1000 + 20 * n + i)} for i in range(20)],
+        )
+        for n in range(6)
+    ]
+    inv = inventory(store, posts)
+    x_grant(store)
+    chunks = []
+
+    def handler(request):
+        if request.url.path == "/2/users/me":
+            return httpx.Response(200, json={"data": {"id": "100"}})
+        ids = request.url.params["ids"].split(",")
+        chunks.append(ids)
+        return httpx.Response(
+            200, json={"data": [post(pid) for pid in ids], "includes": includes()}
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http:
+        client = Client(store, http, "app")
+        budget = Budget(store, ".01", ".02" if exhaust_budget else ".10", "1")
+        if exhaust_budget:
+            with pytest.raises(PilotError):
+                enrich_references(inv, client, budget, "100", limit=6)
+            assert "archive_reference_reads" not in Inventory.load(store).state
+            assert [len(c) for c in chunks] == [100]
+        else:
+            result = enrich_references(inv, client, budget, "100", limit=6)
+            assert result["x_api_calls"] == 3
+            assert [len(c) for c in chunks] == [100, 20]
+            assert len({rid for c in chunks for rid in c}) == 120
+            assert all(
+                len(v["evidence"]) == 2 for v in inv.state["archive_reference_reads"].values()
+            )
+
+
+@pytest.mark.parametrize("limit", [True, 1.5, "5", None])
+def test_enrichment_rejects_noninteger_limit_before_reads(storage, limit):
+    inv = inventory(storage[0])
+    with pytest.raises(PilotError, match="limit"):
+        enrich_references(inv, None, None, "100", limit=limit)
