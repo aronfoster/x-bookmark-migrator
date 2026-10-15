@@ -388,3 +388,16 @@ def test_pilot_duplicate_ids_are_partial(store):
         pilot(api, budget(store), OWNER)
     assert error.value.summary["pilot_status"] == "partial"
     assert error.value.summary["duplicate_ids"]
+
+
+@pytest.mark.parametrize("value", ["", "PRIVATE_INVALID_VALUE", None, [], {}])
+def test_malformed_ledger_value_is_redacted_and_not_replaced(store, value):
+    from datetime import UTC, datetime
+
+    month = datetime.now(UTC).strftime("%Y-%m")
+    store.write("budget.private.json", {month: value})
+    before = (store.root / "budget.private.json").read_bytes()
+    with pytest.raises(PilotError, match="Invalid monthly reservation ledger") as error:
+        budget(store).reserve()
+    assert "PRIVATE" not in str(error.value)
+    assert (store.root / "budget.private.json").read_bytes() == before

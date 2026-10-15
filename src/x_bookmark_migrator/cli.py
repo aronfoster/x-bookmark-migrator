@@ -9,7 +9,7 @@ from pathlib import Path
 import httpx
 
 from .core import Budget, Client, PilotError, Store, auth_start, exact_id, pilot
-from .inventory import Inventory
+from .inventory import Inventory, validate_run_limits
 
 
 def main():
@@ -111,10 +111,8 @@ def main():
                 raise PilotError(
                     f"{source} must contain your numeric X user ID (1–19 digits)."
                 ) from None
-            if args.command == "inventory" and (
-                not 1 <= args.max_calls <= 10000 or not 1 <= args.hydrate_batch_size <= 100
-            ):
-                raise PilotError("Invalid request or hydration batch limit.")
+            if args.command == "inventory":
+                validate_run_limits(args.max_calls, args.hydrate_batch_size)
         store = Store(args.state_dir)
         with (
             store.locked(),

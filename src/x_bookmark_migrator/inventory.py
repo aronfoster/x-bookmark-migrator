@@ -104,6 +104,11 @@ def stream(kind, folder_id=None):
     )
 
 
+def validate_run_limits(max_calls, hydrate_batch_size):
+    if not 1 <= max_calls <= 10000 or not 1 <= hydrate_batch_size <= 100:
+        raise PilotError("Invalid request or hydration batch limit.")
+
+
 class Inventory:
     """One capped pass. Caller holds Store.locked across reads, refresh, and exports."""
 
@@ -338,6 +343,7 @@ class Inventory:
                 observed_at=observed_at or now(),
             )
         )
+        item.pop("failed_evidence", None)
         item.update(
             next_token=item["next_token"] if omitted_count else next_token,
             status="blocked" if reason else ("pending" if next_token else "exhausted"),
@@ -545,8 +551,7 @@ class Inventory:
         return name
 
     def run(self, client, budget, *, max_calls=10, hydrate_batch_size=100):
-        if not 1 <= max_calls <= 10000 or not 1 <= hydrate_batch_size <= 100:
-            raise PilotError("Invalid request or hydration batch limit.")
+        validate_run_limits(max_calls, hydrate_batch_size)
         calls = 0
         reservations = {}
         state = self.state

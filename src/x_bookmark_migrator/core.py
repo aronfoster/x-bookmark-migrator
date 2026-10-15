@@ -11,7 +11,7 @@ import tempfile
 import time
 from contextlib import contextmanager
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlsplit
 
@@ -313,15 +313,32 @@ class Budget:
 
     def __init__(self, store, per_call, run_cap, month_cap):
         self.store = store
-        self.per_call, self.run_cap, self.month_cap = map(Decimal, (per_call, run_cap, month_cap))
-        if any(not v.is_finite() or v <= 0 for v in (self.per_call, self.run_cap, self.month_cap)):
-            raise PilotError("Budget values must be finite and positive.")
+        settings = (
+            ("per_call", per_call, "--per-call-reserve-usd / X_PER_CALL_RESERVE_USD"),
+            ("run_cap", run_cap, "--run-cap-usd / X_RUN_CAP_USD"),
+            ("month_cap", month_cap, "--month-cap-usd / X_MONTH_CAP_USD"),
+        )
+        for attribute, value, label in settings:
+            try:
+                parsed = Decimal(value)
+            except (InvalidOperation, TypeError, ValueError):
+                raise PilotError(f"{label} must be a finite, positive dollar amount.") from None
+            if not parsed.is_finite() or parsed <= 0:
+                raise PilotError(f"{label} must be a finite, positive dollar amount.")
+            setattr(self, attribute, parsed)
         self.used = Decimal(0)
 
     def reserve(self):
         month = datetime.now(UTC).strftime("%Y-%m")
-        ledger = self.store.read("budget.private.json") or {}
-        used = Decimal(ledger.get(month, "0"))
+        ledger = self.store.read("budget.private.json")
+        if ledger is None:
+            ledger = {}
+        try:
+            if not isinstance(ledger, dict):
+                raise ValueError
+            used = Decimal(ledger.get(month, "0"))
+        except (InvalidOperation, TypeError, ValueError):
+            raise PilotError("Invalid monthly reservation ledger; inspect private state.") from None
         if not used.is_finite() or used < 0:
             raise PilotError("Invalid monthly reservation ledger; inspect private state.")
         if self.used + self.per_call > self.run_cap or used + self.per_call > self.month_cap:

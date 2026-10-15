@@ -25,6 +25,19 @@ shapes plus sanitized observed failures. Do not substitute mocks for live eviden
 | Rate limits | [Rate limits](https://docs.x.com/x-api/fundamentals/rate-limits) | Preserve numeric rate headers; stop on 429, with explicit later retry after the reset. |
 | Cost | [Pricing](https://docs.x.com/x-api/getting-started/pricing) | Billing is resource-based; Console spending limits are distinct from local reservations. Owned Read eligibility is conditional; folder prices remain unverified. |
 
+## Review verification
+
+Rechecked the two linked folder endpoint pages on 2026-10-14 after review. Both
+currently show `max_results` with a request range of 1–100 and response `data` and
+`errors`, without `meta`. Neither page states that over-return is supported or
+expected. Accepting extra valid records is a defensive local policy based on the
+reported live response, not an X guarantee that `max_results` may be ignored.
+
+Review follow-up adds setting-specific budget errors (including blank environment
+values), redacted malformed-ledger errors, exact-linked recovery success/mismatch
+tests, clearing the obsolete failed-read link after acceptance, and shared preflight
+limit validation. Original evidence remains in the accepted page and private read.
+
 ## Corrections and regression evidence
 
 - **Environment:** pilot/inventory now read `X_APP_OWNER_ID` from the process

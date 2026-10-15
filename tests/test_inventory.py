@@ -721,7 +721,7 @@ def test_missing_or_empty_pagination_metadata_cannot_prove_coverage(setup, meta)
     assert inv.state["streams"]["folders"]["reason"] == "pagination_unverified"
 
 
-def rejected_folder(setup, monkeypatch):
+def rejected_folder(setup, monkeypatch, *, legacy=True):
     import x_bookmark_migrator.inventory as module
 
     store, _, run = setup
@@ -736,7 +736,9 @@ def rejected_folder(setup, monkeypatch):
     with monkeypatch.context() as patch:
         patch.setattr(module, "validate_page", legacy_validator)
         run(inv, live_shape)
-    name = inv.state["streams"]["folder:10"].pop("failed_evidence")
+    name = inv.state["streams"]["folder:10"]["failed_evidence"]
+    if legacy:
+        inv.state["streams"]["folder:10"].pop("failed_evidence")
     inv.save()  # merged version did not record the failed filename in its checkpoint
     return inv, name
 
@@ -850,3 +852,40 @@ def test_lookup_rejects_duplicate_or_unrequested_ids_without_changing_posts(setu
     with pytest.raises(PilotError, match="unexpected/duplicate"):
         inv.accept_hydration([A, B], {"data": [post(pid) for pid in returned]}, "lookup")
     assert inv.state == before
+
+
+def test_exact_link_recovery_retains_consistency_and_clears_failed_link(setup, monkeypatch):
+    store, calls, _ = setup
+    inv, name = rejected_folder(setup, monkeypatch, legacy=False)
+    before = {
+        n: (store.root / n).read_bytes()
+        for n in (name, "tokens.private.json", "budget.private.json")
+    }
+    count = len(calls)
+    result = inv.recover(name)
+    item = inv.state["streams"]["folder:10"]
+    assert result["records"] == 20 and result["consistent_observations"]
+    assert result["get_attempts_this_run"] == 0 and len(calls) == count
+    assert "failed_evidence" not in item
+    assert item["pages"][0]["evidence"] == name
+    assert not result["all_folders_exhausted_in_pass"]  # no pagination evidence
+    assert all((store.root / n).read_bytes() == data for n, data in before.items())
+    with pytest.raises(PilotError, match="rejected page"):
+        inv.recover(name)
+
+
+def test_exact_link_recovery_rejects_other_valid_saved_read(setup, monkeypatch):
+    import copy
+
+    store, _, _ = setup
+    inv, name = rejected_folder(setup, monkeypatch, legacy=False)
+    other_name = "read-" + "f" * 24 + ".private.json"
+    other = store.read(name)
+    other["private_file"] = other_name
+    store.write(other_name, other)
+    before = copy.deepcopy(inv.state)
+    disk = (store.root / inv.name).read_bytes()
+    with pytest.raises(PilotError, match="rejected page"):
+        inv.recover(other_name)
+    assert inv.state == before and (store.root / inv.name).read_bytes() == disk
+    assert inv.state["streams"]["folder:10"]["failed_evidence"] == name

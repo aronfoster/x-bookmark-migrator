@@ -362,3 +362,28 @@ def test_budget_environment_defaults(run_cli, monkeypatch, capsys):
     )
     assert len(calls) == 2
     assert json.loads(capsys.readouterr().out)["estimated_reserved_usd"] == "0.4"
+
+
+@pytest.mark.parametrize(
+    "setting",
+    ["X_PER_CALL_RESERVE_USD", "X_RUN_CAP_USD", "X_MONTH_CAP_USD"],
+)
+@pytest.mark.parametrize("value", ["", "PRIVATE_INVALID_VALUE"])
+def test_invalid_budget_environment_identifies_setting_without_echoing_value(
+    run_cli, monkeypatch, capsys, setting, value
+):
+    run, store, calls = run_cli
+    monkeypatch.setenv("X_APP_OWNER_ID", "123")
+    monkeypatch.setenv("X_PER_CALL_RESERVE_USD", ".1")
+    monkeypatch.setenv(setting, value)
+    assert (
+        run(
+            lambda req: pytest.fail("network"),
+            ["inventory", "--console-hard-cap-confirmed", "--auto-recharge-off-confirmed"],
+        )
+        == 1
+    )
+    output = capsys.readouterr()
+    assert setting in output.err and "finite, positive dollar amount" in output.err
+    assert "PRIVATE" not in output.err and not calls
+    assert not (store.root / "inventory-active.private.json").exists()
