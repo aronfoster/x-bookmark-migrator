@@ -148,7 +148,7 @@ class Store:
     def create(self, name, value):
         """Publish a complete, fsynced immutable record; never replace an existing one."""
         destination = self.path(name)
-        fd, temporary = tempfile.mkstemp(dir=self.root)
+        fd, temporary = tempfile.mkstemp(dir=self.root, prefix="pending-", suffix=".private.tmp")
         try:
             with os.fdopen(fd, "w") as output:
                 json.dump(value, output, ensure_ascii=False, sort_keys=True)

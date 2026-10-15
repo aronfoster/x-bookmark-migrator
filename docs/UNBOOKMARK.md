@@ -94,7 +94,9 @@ uv run --env-file .env x-migrator --state-dir "$XM_STATE_DIR" unbookmark-apply \
 Apply checks the authenticated X owner and write scope, pins the Drive identity/root
 and active inventory, and re-fetches archived bytes. For each candidate it retrieves
 the current exact folder name and first ID window, and requires that the selected
-ID is present there. A rename, missing membership, incomplete archive or conflicting
+ID is present there. An ID outside this first response is blocked even if earlier
+inventory saw it on a deeper page; the request asks for at most 100 IDs, but the
+observed response may be smaller. A rename, missing membership, incomplete archive or conflicting
 category blocks that item. Unknown/unfiled items cannot use this pilot; it does
 not manufacture negative membership evidence from capped windows.
 
@@ -107,6 +109,16 @@ records old/new counts and exact newly observed IDs, and stops if the target rem
 visible, the window produces no new IDs, the window is empty, or readback fails.
 An empty window is an observation, not complete-history proof. No additional item
 is deleted merely to force progress through a stuck window. A rerun preserves that stop.
+
+Each intent freezes the inventory's known post IDs before deletion. Comparisons
+partition newly observed IDs into `previously_inventoried_ids` and
+`not_previously_inventoried_ids`; older intents without that baseline explicitly
+report it unavailable. Unseen IDs may be previously hidden bookmarks or concurrent
+saves. Known IDs can also have been re-saved or moved. Neither partition proves
+bookmark age or why the window changed: `older_bookmarks_exposed` stays `unverified`.
+`new_ids_observed` means only that the immediate window changed; both partitions
+remain eligible observations because hidden bookmarks may be absent from inventory.
+Review this evidence alongside the owner's quiet-window observations for FOS-164.
 
 The first window refresh's new IDs are private evidence, not automatically imported
 or archived records. After the accepted pilot, run a fresh inventory/archive/plan
@@ -132,14 +144,21 @@ uv run --env-file .env x-migrator --state-dir "$XM_STATE_DIR" unbookmark-reconci
   --console-hard-cap-confirmed --auto-recharge-off-confirmed
 ```
 
-This writes another immutable observation/report. It does not change the meaning
-of an unknown response based on a capped listing. If a previously missing window
-is now read successfully, apply can continue the remaining already-reviewed IDs
-without repeating the earlier deletion. A recorded stagnant/contradictory window
-remains a stop for that plan. Review the evidence instead of looping apply.
+This writes another immutable observation/report. A failed per-item window read
+records `window_status: unverified` and a safe error code, retains that item's
+deletion result, and continues reconciling the remaining receipts within the
+request/spend bounds. It does not change an unknown result based on listing absence.
+If a previously missing window is now read successfully, it is marked
+`reconciled_later`; that delayed comparison cannot authorize apply to continue
+the remaining IDs. It may include unrelated saves since the original intent.
+Review it, then inventory/archive/plan the remaining candidates afresh. A recorded
+stagnant/contradictory window also remains a stop for that plan.
 
-Exit 1 means blocked, incomplete or stopped; some earlier IDs may already have
-been removed. A local disk error can prevent a summary after an actual DELETE:
+Exit 1 / `blocked: true` means blocked, incomplete or stopped; it can coexist with
+`unbookmarked` results for earlier successful deletions. Apply reports complete
+only when every selected item succeeded and every immediate window showed new IDs.
+Reconcile's summary describes its read observations, not permission to resume
+deletion. A local disk error can prevent a summary after an actual DELETE:
 do not assume nothing happened. Run reconciliation. Intent/result filenames are
 deterministic by owner/post/attempt; immutable files use exclusive creation and
 fsync before network actions. A state lock serializes all operations.
@@ -173,6 +192,13 @@ text, API errors, response headers and archive file IDs stay in private 0600 fil
 No response payload, credential, or real owner artifact belongs in Git or CI.
 
 ## Official contracts checked 2026-10-15
+
+Review follow-up rechecked the linked identity, folder-contents, pagination and
+error documentation on 2026-10-15. They do not establish a stable snapshot or
+bookmark save times. Provenance partitioning and delayed-continuation refusal
+are local policies. The 10,000-ID defensive response ceiling retains the existing
+observed-over-return policy in [API_AUDIT.md](API_AUDIT.md#review-verification);
+it does not claim X guarantees more than the requested 100 IDs.
 
 | Reference | Contract and implementation policy |
 | --- | --- |

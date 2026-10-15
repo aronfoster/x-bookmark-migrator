@@ -137,6 +137,9 @@ def test_three_real_archives_preserve_categories_delete_and_reveal_new_ids(migra
         base, _ = latest_attempt(store, "100", pid)
         comparison = store.read(base + ".window.private.json")
         assert comparison["removed_id_absent"] and comparison["newly_observed_ids"]
+        assert comparison["inventory_baseline_available"]
+        assert comparison["not_previously_inventoried_ids"] == comparison["newly_observed_ids"]
+        assert comparison["older_bookmarks_exposed"] == "unverified"
         intent = store.read(base + ".intent.private.json")
         assert intent["verified"]["folder"] == {"id": "10", "names": ["Synthetic category"]}
         assert store.read(base + ".result.private.json")["state"] == "unbookmarked"
@@ -513,3 +516,180 @@ def test_read_consent_cannot_silently_install_write_grant(migration):
                 "http://127.0.0.1:8765/callback?code=SECRET&state=" + state
             )
     assert store.read("tokens.private.json") == prior
+
+
+def test_comparison_partitions_observations_without_claiming_bookmark_age():
+    from x_bookmark_migrator.unbookmark import compare_window
+
+    before = {"ids": ["101", "102"]}
+    after = {"ids": ["102", "103", "104"]}
+    comparison = compare_window(before, after, "101", ["101", "102", "103"])
+    assert comparison["newly_observed_ids"] == ["103", "104"]
+    assert comparison["previously_inventoried_ids"] == ["103"]
+    assert comparison["not_previously_inventoried_ids"] == ["104"]
+    assert comparison["inventory_baseline_available"]
+    assert comparison["older_bookmarks_exposed"] == "unverified"
+    legacy = compare_window(before, after, "101")
+    assert not legacy["inventory_baseline_available"]
+    assert legacy["previously_inventoried_ids"] == []
+    assert legacy["not_previously_inventoried_ids"] == ["103", "104"]
+
+
+def test_delayed_reconcile_keeps_original_baseline_and_cannot_resume_deletion(migration):
+    from x_bookmark_migrator.inventory import Inventory
+
+    store, _, _, source, client, _, plan, apply = migration
+    name = plan(["101", "102"])
+    source.after_failure = True
+    assert apply(name)["stop_reason"] == "after_window_unverified"
+    base, _ = latest_attempt(store, "100", "101")
+    assert store.read(base + ".intent.private.json")["inventory_post_ids"] == ["101", "102", "103"]
+    # Simulate later inventory learning an ID and an unrelated save displacing the
+    # original first window. Recovery must use the intent's frozen baseline.
+    inv = Inventory.load(store)
+    inv.state["posts"]["104"] = {"id": "104"}
+    inv.save()
+    source.ids = ["102", "104", "107"]
+    source.after_failure = False
+    result = reconcile_plan(store, client, Budget(store, ".1", "10", "100"), name, "100")
+    assert result["states"] == {"unbookmarked": 1, "not_attempted": 1}
+    comparison = store.read(base + ".window.private.json")
+    assert comparison["reconciled_later"]
+    assert comparison["previously_inventoried_ids"] == []
+    assert comparison["not_previously_inventoried_ids"] == ["104", "107"]
+    assert apply(name)["stop_reason"] == "reconciliation_required"
+    assert len(source.deletes) == 1
+
+
+@pytest.mark.parametrize("fault", ["partial", "schema", "transport"])
+def test_reconcile_records_failed_window_and_continues_other_receipts(migration, fault):
+    store, _, _, source, _, _, plan, apply = migration
+    name = plan(["101", "102", "103"])
+    assert not apply(name)["blocked"]
+    for pid in ("102", "103"):
+        base, _ = latest_attempt(store, "100", pid)
+        store.path(base + ".result.private.json").unlink()
+    reads = []
+
+    def handle(req):
+        if req.url.path.endswith("/folders/10"):
+            reads.append(req)
+            if len(reads) == 1:
+                if fault == "transport":
+                    raise httpx.ReadTimeout("PRIVATE", request=req)
+                body = {"data": [{"id": "104"}], "errors": [{"detail": "PRIVATE"}]}
+                if fault == "schema":
+                    body = {"data": "PRIVATE"}
+                return httpx.Response(200, json=body)
+        return source.handle(req)
+
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        result = reconcile_plan(
+            store, Client(store, http, "app"), Budget(store, ".1", "10", "100"), name, "100"
+        )
+    assert result["states"] == {"unbookmarked": 3} and result["blocked"]
+    report = store.read(result["private_report"])
+    outcomes = report["outcomes"]
+    assert outcomes[0]["window_status"] == "unverified"
+    assert (
+        outcomes[0]["window_error"]
+        == {
+            "partial": "blocked_folder_window",
+            "schema": "schema_error",
+            "transport": "transport_error",
+        }[fault]
+    )
+    assert all(o["window_status"] == "new_ids_observed" for o in outcomes[1:])
+    assert len(reads) == 3 and len(source.deletes) == 3
+    for pid in ("102", "103"):
+        base, _ = latest_attempt(store, "100", pid)
+        assert store.read(base + ".result.private.json")["state"] == "unbookmarked"
+    assert result["reservations_by_operation"] == {"identity": 1, "reconcile_window": 3}
+    assert "PRIVATE" not in json.dumps(report) and "PRIVATE" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("limit", ["requests", "spend", "rate"])
+def test_reconcile_recovers_all_receipts_without_exceeding_read_limits(migration, limit):
+    store, _, _, source, client, _, plan, apply = migration
+    name = plan(["101", "102", "103"])
+    apply(name)
+    count = len(source.calls)
+    if limit == "rate":
+        source.after_failure = True
+    result = reconcile_plan(
+        store,
+        client,
+        Budget(store, ".1", ".1" if limit == "spend" else "10", "100"),
+        name,
+        "100",
+        max_calls=1 if limit == "requests" else 20,
+    )
+    assert result["states"] == {"unbookmarked": 3}
+    assert (
+        result["stop_reason"]
+        == {"requests": "request_limit", "spend": "spend_cap", "rate": "http_429"}[limit]
+    )
+    assert len(source.calls) - count == (2 if limit == "rate" else 1)
+    assert all(
+        o["window_status"] == "unverified" for o in store.read(result["private_report"])["outcomes"]
+    )
+    assert len(source.deletes) == 3
+
+
+@pytest.mark.parametrize("data", [None, [], "PRIVATE", 7])
+def test_malformed_identity_is_safe_error_before_mutation(migration, data):
+    store, drive, _, source, _, _, plan, _ = migration
+    name = plan()
+    with httpx.Client(
+        transport=httpx.MockTransport(lambda req: httpx.Response(200, json={"data": data}))
+    ) as http:
+        with pytest.raises(PilotError, match="owner differs"):
+            apply_plan(
+                store,
+                drive,
+                Client(store, http, "app"),
+                Budget(store, ".1", "10", "100"),
+                name,
+                "100",
+                confirmed=True,
+            )
+    assert not source.deletes and not list(store.root.glob("*.intent.private.json"))
+
+
+def test_interrupted_immutable_publication_leaves_private_temporary_file(migration, monkeypatch):
+    import os
+
+    store = migration[0]
+    original = os.unlink
+
+    def interrupted(path):
+        if str(path).endswith(".private.tmp"):
+            raise OSError("simulated process interruption before cleanup")
+        return original(path)
+
+    monkeypatch.setattr(os, "unlink", interrupted)
+    with pytest.raises(OSError):
+        store.create("receipt.private.json", {"synthetic": True})
+    pending = list(store.root.glob("pending-*.private.tmp"))
+    assert len(pending) == 1 and pending[0].stat().st_mode & 0o777 == 0o600
+    assert store.read("receipt.private.json") == {"synthetic": True}
+    monkeypatch.setattr(os, "unlink", original)
+    pending[0].unlink()
+
+
+@pytest.mark.parametrize("size", [101, 10001])
+def test_folder_window_preserves_overreturn_with_defensive_ceiling(migration, size):
+    from x_bookmark_migrator.unbookmark import Reads, window
+
+    store = migration[0]
+    body = {"data": [{"id": str(i + 1)} for i in range(size)]}
+    with httpx.Client(
+        transport=httpx.MockTransport(lambda req: httpx.Response(200, json=body))
+    ) as http:
+        reads = Reads(Client(store, http, "app"), Budget(store, ".1", "10", "100"), 1)
+        if size > 10000:
+            with pytest.raises(PilotError, match="Ambiguous folder window"):
+                window(reads, "100", "10", "before_window")
+        else:
+            result = window(reads, "100", "10", "before_window")
+            assert len(result["ids"]) == size and not result["all_history_complete"]

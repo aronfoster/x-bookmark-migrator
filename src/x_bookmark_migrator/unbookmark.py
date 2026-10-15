@@ -203,7 +203,9 @@ class Reads:
 def check_identity(reads, owner_id):
     body = reads.get("/2/users/me", {}, "identity")
     require(
-        not body.get("errors") and body.get("data", {}).get("id") == owner_id,
+        isinstance(body.get("data"), dict)
+        and not body.get("errors")
+        and body["data"].get("id") == owner_id,
         "Authenticated X owner differs.",
     )
 
@@ -213,6 +215,8 @@ def window(reads, owner_id, folder_id, operation, *, prepaid=False):
     body = reads.get(endpoint, {"max_results": "100"}, operation, prepaid=prepaid)
     data, token, errors, metadata = validate_page(body, "folder", 100)
     ids = [item["id"] for item in data]
+    # Local defensive ceiling, not the requested page size: inventory has observed
+    # folder over-return. Preserve valid positives without assuming a 100-ID limit.
     require(
         not errors and len(ids) == len(set(ids)) and len(ids) <= 10000,
         "Ambiguous folder window; stopped.",
@@ -341,8 +345,9 @@ def invalidate_inventory(inventory):
     inventory.save()
 
 
-def compare_window(before, after, pid):
+def compare_window(before, after, pid, inventory_post_ids=None):
     added = sorted(set(after["ids"]) - set(before["ids"]))
+    known = set(inventory_post_ids or [])
     absent = pid not in after["ids"]
     return {
         "before": before,
@@ -350,6 +355,11 @@ def compare_window(before, after, pid):
         "post_id": pid,
         "removed_id_absent": absent,
         "newly_observed_ids": added,
+        "inventory_baseline_available": inventory_post_ids is not None,
+        "previously_inventoried_ids": sorted(set(added) & known),
+        "not_previously_inventoried_ids": sorted(set(added) - known),
+        # Neither partition proves bookmark age: even known posts can be re-saved.
+        "older_bookmarks_exposed": "unverified",
         "window_status": "target_still_visible"
         if not absent
         else "new_ids_observed"
@@ -413,8 +423,13 @@ def apply_plan(
                 comparison = store.read(base + ".window.private.json")
                 if comparison:
                     outcome["window_status"] = comparison["window_status"]
+                    outcome["reconciled_later"] = comparison.get("reconciled_later", False)
                 outcomes.append(outcome)
-                if previous != "unbookmarked" or outcome.get("window_status") != "new_ids_observed":
+                if (
+                    previous != "unbookmarked"
+                    or outcome.get("window_status") != "new_ids_observed"
+                    or outcome.get("reconciled_later")
+                ):
                     stop = "reconciliation_required"
                     break
                 continue
@@ -457,6 +472,7 @@ def apply_plan(
             "verified": verified,
             "folder_name_evidence": folder_evidence,
             "before": before,
+            "inventory_post_ids": sorted(inventory.state["posts"]),
             "operator_attestation": plan["operator_attestation"],
         }
         # Both operations must finish durably before the network call. No exception
@@ -507,7 +523,7 @@ def apply_plan(
             break
         try:
             after = window(reads, owner_id, item["folder"]["id"], "after_window", prepaid=True)
-            comparison = compare_window(before, after, pid)
+            comparison = compare_window(before, after, pid, intent["inventory_post_ids"])
             store.create(base + ".window.private.json", comparison)
             outcome["window_status"] = comparison["window_status"]
             if comparison["window_status"] != "new_ids_observed":
@@ -564,6 +580,7 @@ def reconcile_plan(store, client, budget, plan_name, owner_id, *, max_calls=20):
     reads = Reads(client, budget, max_calls)
     check_identity(reads, owner_id)
     outcomes = []
+    window_stop = None
     for item in plan["items"]:
         pid = item["post_id"]
         base, _ = latest_attempt(store, owner_id, pid)
@@ -572,21 +589,39 @@ def reconcile_plan(store, client, budget, plan_name, owner_id, *, max_calls=20):
             continue
         intent = store.read(base + ".intent.private.json")
         state = result_for(store, base)
-        after = window(reads, owner_id, intent["verified"]["folder"]["id"], "reconcile_window")
-        comparison = compare_window(intent["before"], after, pid)
+        outcome = {"post_id": pid, "state": state, "attempt": base, "sent_this_run": False}
+        outcomes.append(outcome)
+        if window_stop:
+            outcome.update(window_status="unverified", window_error=window_stop)
+            continue
+        try:
+            after = window(reads, owner_id, intent["verified"]["folder"]["id"], "reconcile_window")
+        except (PilotError, httpx.HTTPError) as exc:
+            # Keep the durable deletion result even when corroborating reads fail.
+            # Reservation failures also land here; later receipts still reconcile
+            # without sending requests beyond the configured budget/request cap.
+            outcome.update(
+                window_status="unverified",
+                window_error=exc.code if isinstance(exc, PilotError) else "transport_error",
+            )
+            if outcome["window_error"] in (
+                "request_limit",
+                "spend_cap",
+                "http_401",
+                "http_403",
+                "http_429",
+            ):
+                window_stop = outcome["window_error"]
+            continue
+        comparison = {
+            **compare_window(intent["before"], after, pid, intent.get("inventory_post_ids")),
+            "reconciled_later": True,
+        }
         if state == "unbookmarked" and store.read(base + ".window.private.json") is None:
-            store.create(base + ".window.private.json", {**comparison, "reconciled_later": True})
+            store.create(base + ".window.private.json", comparison)
         store.create(
             base + ".reconcile-" + secrets.token_hex(6) + ".private.json",
             {"state": state, "created_at": now(), **comparison},
         )
-        outcomes.append(
-            {
-                "post_id": pid,
-                "state": state,
-                "attempt": base,
-                "window_status": comparison["window_status"],
-                "sent_this_run": False,
-            }
-        )
-    return save_report(store, plan_name, outcomes, reads, None)
+        outcome.update(window_status=comparison["window_status"], reconciled_later=True)
+    return save_report(store, plan_name, outcomes, reads, window_stop)
