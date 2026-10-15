@@ -4,6 +4,14 @@ This implements bounded official API reads and portable category evidence. It do
 not archive assets, schedule jobs, or remove bookmarks. FOS-165 and FOS-167 consume
 this evidence; they must reconcile categories and verify archives before deletion.
 
+**Current workflow:** the observed folder endpoint returns an incomplete first
+window without a usable continuation. Do not repeat the page-size experiment or
+wait for complete folder pagination. Preserve positive category evidence, archive
+those items, then use the [FOS-167 named-folder pilot](UNBOOKMARK.md). It rechecks
+each known folder, removes only verified items, and records whether a fresh window
+reveals new IDs. The full-inventory guidance below applies where actual returned
+continuations exist; it cannot repair capped folder windows.
+
 ## First live check: a limited probe
 
 Use Linux, Python 3.12+, `uv`, direct HTTPS to `api.x.com`, and the completed
@@ -196,7 +204,9 @@ a continuation or fall back to private APIs.
 
 Repeated tokens halt the affected stream. Duplicate IDs within a stream or observed
 folder renames flag possible source drift and invalidate negative membership claims;
-ordinary duplication across different folders is expected and retains all memberships.
+observations across different folders retain all memberships as conflicting evidence
+under the owner's zero-or-one-named-folder rule. Inventory's legacy `filed` label
+alone does not resolve a conflict; archival and unbookmarking block that item.
 An undetectable insertion/deletion between pages can still change results. Freeze
 manual edits during a pass and reconcile categories again before FOS-167 deletion.
 The reviewer-reported approximately 800-main-bookmark limit is not hardcoded or

@@ -1,9 +1,10 @@
 # X bookmark migrator
 
-Official API pilot, resumable bookmark/folder inventory and bounded Drive archival.
+Official API pilot, resumable bookmark/folder inventory, Drive archival and verified unbookmarking.
 FOS-165 adds media-byte preservation and independent reconstruction; production
 OpenClaw storage acceptance is still outstanding. See [archive setup](docs/ARCHIVE.md).
-No bookmark deletion, scraping, private GraphQL or scheduler.
+FOS-167 adds an explicit 1–3-item [verified unbookmark pilot](docs/UNBOOKMARK.md).
+Live acceptance remains outstanding. No scraping, private GraphQL or scheduler.
 
 ## Install and verify (Linux, Python 3.12+)
 
@@ -41,8 +42,9 @@ verification still required. Partial category scans never become deletion permis
    environment. An explicit `--app-owner-id` overrides it; no shell export is needed.
 4. Run `uv run x-migrator auth-start`, open the printed official authorization URL,
    and approve as the bookmark owner. It requests only
-   `tweet.read users.read bookmark.read offline.access`. Write scope is deliberately
-   deferred until FOS-167 and will require new consent.
+   `tweet.read users.read bookmark.read offline.access`. The separate
+   [unbookmark setup](docs/UNBOOKMARK.md#authorize-bookmark-removal-once) explicitly
+   adds `bookmark.write` through new consent when ready.
 5. The browser redirects to an unserved localhost callback, so a connection error is
    expected. Copy the **entire address-bar URL**, run `uv run x-migrator auth-finish`,
    and paste at its hidden terminal prompt within ten minutes. Never paste that URL
@@ -231,3 +233,14 @@ The CLI now supports `archive-probe`, `archive-import-pilot`, `archive`,
 for Drive authorization, API contracts, failure recovery and the outstanding
 OpenClaw live acceptance gate. Archival and restoration use actual file bytes;
 they never unbookmark. Existing inventory/pilot commands remain available.
+
+## Verified unbookmark pilot (FOS-167)
+
+After the live archive/restore acceptance, use `unbookmark-plan` to independently
+verify 1–3 archived named-folder candidates, `unbookmark-apply` to execute the
+reviewed exact-ID removals, and `unbookmark-reconcile` for read-only recovery.
+The [runbook](docs/UNBOOKMARK.md) covers write-scope consent, commands, actual
+response evidence, budget and failure handling. Every attempt has a durable
+intent, and successful/ambiguous deletes are never repeated. All old inventory
+cursors become invalid before any deletion attempt. Retain the private state
+volume and removal receipts; do not delete them to retry or process a re-save.

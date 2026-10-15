@@ -158,6 +158,10 @@ class Inventory:
             # Never use a path loaded from state as an arbitrary filename.
             self.name = self.checkpoint_name(active["pass_id"])
             self.state = load_checkpoint(store, self.name)
+            if "unbookmark_attempt_requires_fresh_pass" in self.state["continuity_notes"]:
+                raise PilotError(
+                    "Unbookmark was attempted; start a fresh inventory without --resume."
+                )
             if any(
                 value is not None and value != self.state["limits"][key]
                 for key, value in supplied.items()

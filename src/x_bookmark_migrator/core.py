@@ -16,6 +16,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 SCOPES = frozenset("tweet.read users.read bookmark.read offline.access".split())
+WRITE_SCOPES = SCOPES | {"bookmark.write"}
 CALLBACK = "http://127.0.0.1:8765/callback"
 API = "https://api.x.com"
 
@@ -144,21 +145,46 @@ class Store:
         finally:
             os.close(fd)
 
+    def create(self, name, value):
+        """Publish a complete, fsynced immutable record; never replace an existing one."""
+        destination = self.path(name)
+        fd, temporary = tempfile.mkstemp(dir=self.root)
+        try:
+            with os.fdopen(fd, "w") as output:
+                json.dump(value, output, ensure_ascii=False, sort_keys=True)
+                output.write("\n")
+                output.flush()
+                os.fsync(output.fileno())
+            os.link(temporary, destination)
+            directory = os.open(self.root, os.O_DIRECTORY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        finally:
+            os.unlink(temporary)
 
-def auth_start(store, client_id):
+
+def auth_start(store, client_id, *, allow_unbookmark=False):
     verifier = secrets.token_urlsafe(48)
     state = secrets.token_urlsafe(32)
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest())
     store.write(
         "pending.private.json",
-        dict(verifier=verifier, state=state, client_id=client_id, created=time.time()),
+        dict(
+            verifier=verifier,
+            state=state,
+            client_id=client_id,
+            created=time.time(),
+            scopes=sorted(WRITE_SCOPES if allow_unbookmark else SCOPES),
+        ),
     )
     return "https://x.com/i/oauth2/authorize?" + urlencode(
         dict(
             response_type="code",
             client_id=client_id,
             redirect_uri=CALLBACK,
-            scope=" ".join(sorted(SCOPES)),
+            scope=" ".join(sorted(WRITE_SCOPES if allow_unbookmark else SCOPES)),
             state=state,
             code_challenge=challenge.decode().rstrip("="),
             code_challenge_method="S256",
@@ -193,7 +219,7 @@ class Client:
         self.store, self.http = store, http
         self.client_id, self.client_secret = client_id, client_secret
 
-    def token(self, data, prior=None):
+    def token(self, data, prior=None, requested_scopes=SCOPES):
         auth = (self.client_id, self.client_secret) if self.client_secret else None
         response = self.http.post(
             API + "/2/oauth2/token",
@@ -208,8 +234,13 @@ class Client:
             )
         body = decode(response)
         scopes = body.get("scope", prior.get("scope") if prior else None)
-        if not isinstance(scopes, str) or set(scopes.split()) != SCOPES:
-            raise PilotError("OAuth grant must contain exactly the requested read scopes.")
+        expected = set(prior["scope"].split()) if prior else set(requested_scopes)
+        if (
+            expected not in (SCOPES, WRITE_SCOPES)
+            or not isinstance(scopes, str)
+            or set(scopes.split()) != expected
+        ):
+            raise PilotError("OAuth grant must contain exactly the explicitly requested scopes.")
         for field in ("access_token", "refresh_token"):
             if not isinstance(body.get(field), str) or not body[field]:
                 raise PilotError("OAuth response missing access or rotated refresh token.")
@@ -250,26 +281,34 @@ class Client:
                 code=query["code"][0],
                 code_verifier=pending["verifier"],
                 redirect_uri=CALLBACK,
-            )
+            ),
+            requested_scopes=pending.get("scopes", SCOPES),
         )
 
-    def get(self, path, params, reserve):
+    def access_token(self, *, write=False):
         token = self.store.read("tokens.private.json")
         if not isinstance(token, dict) or token.get("client_id") != self.client_id:
             raise PilotError("Run auth-start and auth-finish for this client first.")
-        if set(token.get("scope", "").split()) != SCOPES:
-            raise PilotError("Stored grant does not match read-only scopes.")
+        scopes = set(token.get("scope", "").split())
+        if scopes not in (SCOPES, WRITE_SCOPES):
+            raise PilotError("Stored grant does not match supported scopes.")
+        if write and scopes != WRITE_SCOPES:
+            raise PilotError("Run auth-start --allow-unbookmark and auth-finish first.")
         if token["expires_at"] <= time.time() + 60:
             token = self.token(
                 dict(grant_type="refresh_token", refresh_token=token["refresh_token"]), prior=token
             )
+        return token["access_token"]
+
+    def get(self, path, params, reserve):
+        access = self.access_token()
         reserve()
         # Never retry a potentially billable read (including 401/429).
         response = self.http.get(
             API + path,
             params=params,
             headers={
-                "Authorization": "Bearer " + token["access_token"],
+                "Authorization": "Bearer " + access,
             },
         )
         # Persist every completed GET before HTTP/JSON/schema validation. Never token responses.
@@ -342,7 +381,7 @@ class Budget:
         if not used.is_finite() or used < 0:
             raise PilotError("Invalid monthly reservation ledger; inspect private state.")
         if self.used + self.per_call > self.run_cap or used + self.per_call > self.month_cap:
-            raise PilotError("Estimated spend cap reached; no read sent.", code="spend_cap")
+            raise PilotError("Estimated spend cap reached; no request sent.", code="spend_cap")
         ledger[month] = str(used + self.per_call)
         self.store.write("budget.private.json", ledger)
         self.used += self.per_call
