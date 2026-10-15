@@ -3,12 +3,13 @@
 import copy
 import json
 import os
+import re
 import secrets
 from datetime import UTC, datetime
 
 import httpx
 
-from .core import PilotError, exact_id, post_fields
+from .core import PilotError, exact_id, post_fields, validate_page
 
 LIMITATIONS = [
     "API-visible observations only; no claim of all-history coverage or an atomic snapshot.",
@@ -101,48 +102,6 @@ def stream(kind, folder_id=None):
     return dict(
         kind=kind, folder_id=folder_id, next_token=None, pages=[], status="pending", reason=None
     )
-
-
-def validate_page(body, kind, page_size):
-    """Validate before changing checkpoint; retain partial positives, never negative claims."""
-    if not isinstance(body, dict):
-        raise PilotError("Malformed inventory response.", code="schema_error")
-    meta = body.get("meta")
-    errors = body.get("errors", [])
-    if (meta is not None and not isinstance(meta, dict)) or not isinstance(errors, list):
-        raise PilotError("Malformed inventory metadata/errors.", code="schema_error")
-    data = body.get("data", [])
-    if "data" not in body and not errors and (meta or {}).get("result_count") != 0:
-        raise PilotError("Missing inventory data/empty-page evidence.", code="schema_error")
-    if not isinstance(data, list) or len(data) > page_size:
-        raise PilotError("Unexpected inventory page size/shape.", code="schema_error")
-    token = (meta or {}).get("next_token")
-    if token is not None and (not isinstance(token, str) or not token):
-        raise PilotError("Malformed continuation token.", code="schema_error")
-    if "result_count" in (meta or {}) and (
-        type(meta["result_count"]) is not int or meta["result_count"] != len(data)
-    ):
-        raise PilotError("Inventory result count mismatch.", code="schema_error")
-    includes = body.get("includes", {})
-    if not isinstance(includes, dict) or any(
-        not isinstance(v, list) or any(not isinstance(i, dict) for i in v)
-        for v in includes.values()
-    ):
-        raise PilotError("Malformed inventory expansions.", code="schema_error")
-    for item in data:
-        if not isinstance(item, dict):
-            raise PilotError("Malformed inventory item.", code="schema_error")
-        try:
-            exact_id(item.get("id"))
-            if "author_id" in item:
-                exact_id(item["author_id"])
-        except PilotError:
-            raise PilotError("Malformed inventory item ID.", code="schema_error") from None
-        if kind == "folders" and not isinstance(item.get("name"), str):
-            raise PilotError("Missing original folder name.", code="schema_error")
-        if kind in ("main", "hydrate") and not isinstance(item.get("text"), str):
-            raise PilotError("Missing post text.", code="schema_error")
-    return data, token, errors, meta is not None
 
 
 class Inventory:
@@ -273,7 +232,7 @@ class Inventory:
         self.state["updated_at"] = now()
         self.store.write(self.name, self.state)
 
-    def add_post(self, post_id):
+    def add_post(self, post_id, observed_at=None):
         posts = self.state["posts"]
         if post_id not in posts:
             posts[post_id] = dict(
@@ -281,7 +240,7 @@ class Inventory:
                 canonical_url=f"https://x.com/i/status/{post_id}",
                 seen_in_main=False,
                 folder_ids=[],
-                first_observed_at=now(),
+                first_observed_at=observed_at or now(),
                 bookmark_time=None,
                 hydration_status="pending",
                 post=None,
@@ -295,26 +254,27 @@ class Inventory:
                 )
         return posts[post_id]
 
-    def accept_page(self, key, body, evidence):
+    def accept_page(self, key, body, evidence, *, observed_at=None):
         state = self.state
         item = state["streams"][key]
         data, next_token, errors, has_meta = validate_page(
             body, item["kind"], state["limits"]["page_size"]
         )
-        ids = [entry["id"] for entry in data]
+        raw_count = len(data)
         target = state["folders"] if key == "folders" else state["posts"]
         limit = state["limits"]["max_folders" if key == "folders" else "max_records"]
-        if len(target.keys() | set(ids)) > limit:
-            item.update(
-                status="blocked",
-                reason="record_limit",
-                rejected_page={
-                    "raw_count": len(data),
-                    "request_token": item["next_token"],
-                    "evidence": evidence,
-                },
-            )
-            return  # raw response retained; cursor does not advance past an uncommitted page
+        # max_results is a request parameter, not a response-schema constraint.
+        # Preserve existing memberships even when no space remains for new IDs.
+        retained, accepted_ids = [], set(target)
+        omitted_count = 0
+        for entry in data:
+            if entry["id"] in accepted_ids or len(accepted_ids) < limit:
+                retained.append(entry)
+                accepted_ids.add(entry["id"])
+            else:
+                omitted_count += 1
+        data = retained
+        ids = [entry["id"] for entry in data]
         seen_tokens = {p["request_token"] for p in item["pages"]}
         seen_tokens.add(item["next_token"])
         scoped, blocking = (
@@ -325,7 +285,9 @@ class Inventory:
         if key == "main":
             state["expansions"][evidence] = body.get("includes", {})
         reason = None
-        if blocking:
+        if omitted_count:
+            reason = "record_limit"
+        elif blocking:
             reason = "partial_errors"
         elif next_token is not None and next_token in seen_tokens:
             reason = "pagination_cycle"
@@ -345,7 +307,7 @@ class Inventory:
                     folder["names"].append(entry["name"])
                 state["streams"].setdefault("folder:" + post_id, stream("folder", post_id))
             else:
-                post = self.add_post(post_id)
+                post = self.add_post(post_id, observed_at)
                 if key == "main":
                     post.update(
                         seen_in_main=True,
@@ -363,19 +325,98 @@ class Inventory:
             dict(
                 request_token=item["next_token"],
                 next_token=next_token,
-                raw_count=len(data),
+                raw_count=raw_count,
+                retained_count=len(data),
+                omitted_count=omitted_count,
+                requested_page_size=state["limits"]["page_size"],
+                exceeded_requested_page_size=raw_count > state["limits"]["page_size"],
+                pagination_metadata_present=has_meta,
                 duplicate_count=duplicate_count,
                 ids=ids,
                 errors=errors,
                 evidence=evidence,
-                observed_at=now(),
+                observed_at=observed_at or now(),
             )
         )
         item.update(
-            next_token=next_token,
+            next_token=item["next_token"] if omitted_count else next_token,
             status="blocked" if reason else ("pending" if next_token else "exhausted"),
             reason=reason or (None if next_token else "api_end"),
         )
+
+    def recover(self, read_file):
+        """Reprocess one saved, rejected folder read without network or budget changes."""
+        if not re.fullmatch(r"read-[0-9a-f]{24}\.private\.json", read_file):
+            raise PilotError("Supply a saved read filename from this private state directory.")
+        saved = self.store.read(read_file)
+        state = self.state
+        if not isinstance(saved, dict) or saved.get("status") != 200 or state["in_flight"]:
+            raise PilotError("Recovery requires a completed HTTP 200 read and idle checkpoint.")
+        prefix = f"/2/users/{state['owner_id']}/bookmarks/folders"
+        endpoint = saved.get("endpoint")
+        key = next(
+            (
+                key
+                for key, item in state["streams"].items()
+                if item["kind"] in ("folders", "folder")
+                and endpoint == prefix + ("/" + item["folder_id"] if item["folder_id"] else "")
+            ),
+            None,
+        )
+        if key is None:
+            raise PilotError("Saved read does not match a discovered folder stream in this pass.")
+        item = state["streams"][key]
+        expected = {"max_results": str(state["limits"]["page_size"])}
+        if item["next_token"]:
+            expected["pagination_token"] = item["next_token"]
+        try:
+            observed = datetime.fromisoformat(saved["retrieved_at"])
+            within_pass = (
+                datetime.fromisoformat(state["started_at"])
+                <= observed
+                <= datetime.fromisoformat(state["updated_at"])
+            )
+        except (KeyError, TypeError, ValueError):
+            within_pass = False
+        if (
+            item["status"] != "blocked"
+            or item["reason"] != "schema_error"
+            or saved.get("request") != expected
+            or not within_pass
+            or item.get("failed_evidence", read_file) != read_file
+            or len(item["pages"]) >= state["limits"]["max_pages"]
+            or saved.get("private_file") != read_file
+        ):
+            raise PilotError(
+                "Saved read does not match this pass's rejected page; no changes made."
+            )
+        # Old checkpoints have no exact failed-read link. Accept only the known
+        # oversized-folder failure, and never turn that weaker association into
+        # negative category evidence.
+        legacy = "failed_evidence" not in item
+        if legacy:
+            body = saved.get("response")
+            if (
+                not isinstance(body, dict)
+                or not isinstance(body.get("data"), list)
+                or len(body["data"]) <= state["limits"]["page_size"]
+            ):
+                raise PilotError("Legacy recovery requires an oversized rejected folder page.")
+        self.accept_page(key, saved.get("response"), read_file, observed_at=saved["retrieved_at"])
+        if legacy:
+            state["consistent"] = False
+            state["continuity_notes"].append("legacy_read_recovered_by_endpoint_request_and_time")
+        item["recovered_at"] = now()
+        self.save()
+        return {
+            **self.summary(),
+            "offline_recovery": True,
+            "get_attempts_this_run": 0,
+            "lookup_requests_this_run": 0,
+            "estimated_reserved_usd": "0",
+            "private_export": self.export(),
+            "private_checkpoint": self.name,
+        }
 
     def all_folders_exhausted(self):
         return (
@@ -411,6 +452,11 @@ class Inventory:
             folders=len(state["folders"]),
             membership_counts=categories,
             hydration_counts=hydration,
+            lookup_batches_in_pass=len(state["hydration_batches"]),
+            lookup_returned_records_in_pass=sum(
+                len(batch["returned_ids"]) for batch in state["hydration_batches"]
+            ),
+            main_post_bodies=sum(p["seen_in_main"] for p in posts),
             streams=[
                 dict(
                     kind=s["kind"],
@@ -420,6 +466,10 @@ class Inventory:
                     has_next_page=bool(s["next_token"]),
                     raw_count=sum(p["raw_count"] for p in s["pages"]),
                     unique_count=len({i for p in s["pages"] for i in p["ids"]}),
+                    omitted_count=sum(p.get("omitted_count", 0) for p in s["pages"]),
+                    oversized_pages=sum(
+                        p.get("exceeded_requested_page_size", False) for p in s["pages"]
+                    ),
                 )
                 for s in state["streams"].values()
             ],
@@ -564,12 +614,15 @@ class Inventory:
                         path += "/" + item["folder_id"]
                 if item["next_token"]:
                     params["pagination_token"] = item["next_token"]
+                before = len(client.observations)
                 try:
                     body = get(path, params)
                     self.accept_page(active, body, client.observations[-1]["private_file"])
                 except PilotError as exc:
                     if exc.code in ("http_403", "http_404", "schema_error"):
                         item.update(status="blocked", reason=exc.code)
+                        if len(client.observations) > before:
+                            item["failed_evidence"] = client.observations[-1]["private_file"]
                     else:
                         raise
                 state["in_flight"] = False
@@ -595,6 +648,7 @@ class Inventory:
         return {
             **self.summary(),
             "get_attempts_this_run": calls,
+            "lookup_requests_this_run": reservations.get("hydrate", 0),
             "reservations_by_operation": {
                 op: {"requests": count, "estimated_reserved_usd": str(budget.per_call * count)}
                 for op, count in reservations.items()

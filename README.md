@@ -17,7 +17,8 @@ uv run ruff format --check .
 
 After OAuth setup, use `x-migrator inventory` for bounded, resumable reads and
 private portable JSONL exports with original folder IDs/names and coverage status.
-`x-migrator inventory-export` regenerates an export offline. See
+`x-migrator inventory-export` regenerates an export offline; `inventory-recover`
+can reprocess a saved rejected folder response without another API read. See
 [docs/INVENTORY.md](docs/INVENTORY.md) for commands, limits, restart rules and live
 verification still required. Partial category scans never become deletion permission.
 
@@ -35,9 +36,8 @@ verification still required. Partial category scans never become deletion permis
    not an API key or app-only bearer token). Alternatively, copy `.env.example` to
    ignored `.env` and fill it locally; use `uv run --env-file .env` in place of
    `uv run` for the auth, pilot and inventory commands. The CLI does not load it
-   automatically. Export `X_APP_OWNER_ID` in your invoking shell for commands using
-   `"$X_APP_OWNER_ID"`, or pass the verified numeric ID directly: `--env-file` cannot
-   populate that shell substitution.
+   automatically. Pilot and inventory read `X_APP_OWNER_ID` from that process
+   environment. An explicit `--app-owner-id` overrides it; no shell export is needed.
 4. Run `uv run x-migrator auth-start`, open the printed official authorization URL,
    and approve as the bookmark owner. It requests only
    `tweet.read users.read bookmark.read offline.access`. Write scope is deliberately
@@ -125,13 +125,9 @@ PYCODE
 Omit `--env-file .env` if `X_CLIENT_ID` is already exported. Both snippets print only
 identity fields locally, never tokens or bookmark bodies. Keep the resulting account
 ID/username in your local configuration; do not copy them into public examples,
-issues, PR comments or committed files. To set the shell variable without placing
-the value in command history, run this in Bash and paste the verified numeric ID:
-
-```sh
-read -r -p "Verified numeric X user ID: " X_APP_OWNER_ID
-export X_APP_OWNER_ID
-```
+issues, PR comments or committed files. Put the verified numeric ID in the
+`X_APP_OWNER_ID` entry of your ignored `.env` using your local editor. No shell
+substitution or export is needed when running with `uv run --env-file .env`.
 
 ## First real pilot: one command after OAuth setup
 
@@ -139,7 +135,7 @@ Set `X_APP_OWNER_ID` using [the identity instructions above](#find-your-numeric-
 confirm the account owns the app in Console, then run:
 
 ```sh
-uv run x-migrator pilot --app-owner-id "$X_APP_OWNER_ID" \
+uv run --env-file .env x-migrator pilot \
   --console-hard-cap-confirmed --auto-recharge-off-confirmed \
   --per-call-reserve-usd 0.10 --run-cap-usd 0.25 --month-cap-usd 1.00
 ```
@@ -190,7 +186,8 @@ FOS-163 and older examples use `tweet.fields`, `note_tweet`, `referenced_tweets`
 and `includes.tweets`. Default `--field-dialect post` follows the current endpoint
 reference, including author/media/reference expansions and all requested media fields.
 The legacy request is explicitly available as `--field-dialect tweet`; it includes
-nested referenced-post media expansion. Neither dialect is live-verified yet.
+nested referenced-post media expansion. The owner has verified the `post` dialect on the main bookmark endpoint.
+That does not establish a successful folder-only lookup; track it separately.
 There is **no automatic fallback or second paid request**. If the request is rejected,
 inspect Console/current docs, select the appropriate dialect, and rerun deliberately.
 Raw fields are retained without renaming or truncation. Current docs do not list
@@ -206,6 +203,9 @@ and Console balances/charges before and after. Never commit actual post text,
 IDs, pagination tokens, callback URLs, or response files. Synthetic tests are not
 proof of live access. Folder enumeration belongs to FOS-164; no folder request is
 made here. No claim of all-history coverage or unbookmark behavior is made.
+
+The [API audit](docs/API_AUDIT.md) records endpoint contracts, corrections and
+remaining live-verification gaps.
 
 Official references: [OAuth PKCE](https://docs.x.com/fundamentals/authentication/oauth-2-0/authorization-code),
 [pricing](https://docs.x.com/x-api/getting-started/pricing).

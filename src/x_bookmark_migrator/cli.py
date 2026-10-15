@@ -8,7 +8,7 @@ from pathlib import Path
 
 import httpx
 
-from .core import Budget, Client, PilotError, Store, auth_start, pilot
+from .core import Budget, Client, PilotError, Store, auth_start, exact_id, pilot
 from .inventory import Inventory
 
 
@@ -30,12 +30,20 @@ def main():
             if command == "inventory"
             else None,
         )
-        read.add_argument("--app-owner-id", required=True)
+        read.add_argument(
+            "--app-owner-id", help="Overrides X_APP_OWNER_ID from the process environment"
+        )
         read.add_argument("--console-hard-cap-confirmed", action="store_true")
         read.add_argument("--auto-recharge-off-confirmed", action="store_true")
-        read.add_argument("--per-call-reserve-usd", required=True)
-        read.add_argument("--run-cap-usd", default="0.25")
-        read.add_argument("--month-cap-usd", default="1.00")
+        reserve_default = os.environ.get("X_PER_CALL_RESERVE_USD")
+        read.add_argument(
+            "--per-call-reserve-usd",
+            default=reserve_default,
+            required=reserve_default is None,
+            help="Overrides X_PER_CALL_RESERVE_USD; an operator estimate",
+        )
+        read.add_argument("--run-cap-usd", default=os.environ.get("X_RUN_CAP_USD", "0.25"))
+        read.add_argument("--month-cap-usd", default=os.environ.get("X_MONTH_CAP_USD", "1.00"))
         read.add_argument("--field-dialect", choices=("post", "tweet"), default="post")
         if command == "inventory":
             read.add_argument("--resume", action="store_true")
@@ -64,13 +72,20 @@ def main():
                 help="Fresh pass default: 100; resume uses stored value and rejects changes",
             )
     sub.add_parser("inventory-export", help="Export the latest checkpoint offline")
+    recovery = sub.add_parser("inventory-recover", help="Recover a rejected folder read offline")
+    recovery.add_argument("--read-file", required=True)
     args = parser.parse_args()
     try:
-        if args.command == "inventory-export":
+        if args.command in ("inventory-export", "inventory-recover"):
             store = Store(args.state_dir)
             with store.locked():
                 inventory = Inventory.load(store)
-                print(json.dumps({**inventory.summary(), "private_export": inventory.export()}))
+                result = (
+                    inventory.recover(args.read_file)
+                    if args.command == "inventory-recover"
+                    else {**inventory.summary(), "private_export": inventory.export()}
+                )
+                print(json.dumps(result))
             return 0
         client_id = os.environ.get("X_CLIENT_ID")
         if not client_id:
@@ -79,6 +94,27 @@ def main():
             args.console_hard_cap_confirmed and args.auto_recharge_off_confirmed
         ):
             raise PilotError("Confirm Console hard spending limit and auto-recharge off first.")
+        if args.command in ("pilot", "inventory"):
+            owner_id = args.app_owner_id
+            source = "--app-owner-id"
+            if owner_id is None:
+                owner_id = os.environ.get("X_APP_OWNER_ID")
+                source = "X_APP_OWNER_ID"
+            if owner_id is None:
+                raise PilotError(
+                    "Set X_APP_OWNER_ID in .env (uv run --env-file .env), "
+                    "or supply --app-owner-id with your numeric X user ID."
+                )
+            try:
+                exact_id(owner_id)
+            except PilotError:
+                raise PilotError(
+                    f"{source} must contain your numeric X user ID (1–19 digits)."
+                ) from None
+            if args.command == "inventory" and (
+                not 1 <= args.max_calls <= 10000 or not 1 <= args.hydrate_batch_size <= 100
+            ):
+                raise PilotError("Invalid request or hydration batch limit.")
         store = Store(args.state_dir)
         with (
             store.locked(),
@@ -97,11 +133,11 @@ def main():
                     store, args.per_call_reserve_usd, args.run_cap_usd, args.month_cap_usd
                 )
                 if args.command == "pilot":
-                    result = pilot(client, budget, args.app_owner_id, args.field_dialect)
+                    result = pilot(client, budget, owner_id, args.field_dialect)
                 else:
                     inventory = Inventory(
                         store,
-                        args.app_owner_id,
+                        owner_id,
                         args.field_dialect,
                         resume=args.resume,
                         source_unchanged=args.source_unchanged_confirmed,
