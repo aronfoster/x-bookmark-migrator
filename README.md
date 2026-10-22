@@ -244,3 +244,11 @@ response evidence, budget and failure handling. Every attempt has a durable
 intent, and successful/ambiguous deletes are never repeated. All old inventory
 cursors become invalid before any deletion attempt. Retain the private state
 volume and removal receipts; do not delete them to retry or process a re-save.
+
+## Find archived posts without X
+
+[Offline discovery](docs/CATALOG.md) builds a portable exact-ID JSONL catalog and
+private browser index from existing restored batches. It includes full text,
+original categories, media receipts/Drive links and reversible per-attachment
+hide/show annotations. `catalog-build`, `catalog-lookup`, `catalog-annotate` and
+`catalog-raindrop-match` need no credentials and perform no network calls.
