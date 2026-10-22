@@ -5,7 +5,7 @@ import tempfile
 from pathlib import Path
 
 import test_archive
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import expect, sync_playwright
 from test_catalog import corpus
 
 from x_bookmark_migrator.catalog import annotate, build, publish
@@ -34,9 +34,11 @@ def main():
                 )
                 page.goto(output.path("index.html").as_uri())
                 page.locator("img").first.scroll_into_view_if_needed()
-                page.wait_for_function("document.querySelector('img').naturalWidth > 0")
+                expect(page.locator("img").first).to_have_js_property("naturalWidth", 1)
                 page.locator("video").first.evaluate("v => v.load()")
-                page.wait_for_function("document.querySelector('video').readyState >= 2")
+                # Locator assertions work under the catalog's no-script CSP;
+                # wait_for_function's string eval does not.
+                expect(page.locator("video").first).to_have_js_property("readyState", 4)
                 assert page.locator("video").first.evaluate("v => v.videoWidth") == 160
                 assert page.locator("video").first.evaluate("v => v.duration") == 1
                 page.locator("nav summary").click()
