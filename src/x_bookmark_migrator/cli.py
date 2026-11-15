@@ -8,7 +8,7 @@ from pathlib import Path
 
 import httpx
 
-from . import archive_cli, unbookmark_cli
+from . import archive_cli, catalog, unbookmark_cli
 from .archive import enrich_references
 from .core import Budget, Client, PilotError, Store, auth_start, exact_id, pilot
 from .inventory import Inventory, validate_run_limits
@@ -20,6 +20,7 @@ def main():
         "--state-dir", type=Path, default=Path.home() / ".local/state/x-bookmark-migrator"
     )
     sub = parser.add_subparsers(dest="command", required=True)
+    catalog.add_commands(sub)
     archive_cli.add_commands(sub)
     unbookmark_cli.add_commands(sub)
     auth = sub.add_parser("auth-start")
@@ -89,6 +90,9 @@ def main():
     recovery.add_argument("--read-file", required=True)
     args = parser.parse_args()
     try:
+        if args.command in catalog.COMMANDS:
+            print(json.dumps(catalog.run(args), ensure_ascii=False))
+            return 0
         if args.command in archive_cli.COMMANDS + unbookmark_cli.COMMANDS:
             result = (archive_cli if args.command in archive_cli.COMMANDS else unbookmark_cli).run(
                 args
