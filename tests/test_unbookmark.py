@@ -9,9 +9,21 @@ import httpx
 import pytest
 from test_archive import archive_batch, includes, inventory, media_http, photo, post
 from test_archive import storage as storage
+from test_raindrop import SkillServer, adapter_for
+from test_raindrop import item as raindrop_item
 
 from x_bookmark_migrator import cli
-from x_bookmark_migrator.core import SCOPES, WRITE_SCOPES, Budget, Client, PilotError, auth_start
+from x_bookmark_migrator.archive import restore_batch
+from x_bookmark_migrator.catalog import build, publish
+from x_bookmark_migrator.core import (
+    SCOPES,
+    WRITE_SCOPES,
+    Budget,
+    Client,
+    PilotError,
+    Store,
+    auth_start,
+)
 from x_bookmark_migrator.drive import digest, encode
 from x_bookmark_migrator.unbookmark import (
     apply_plan,
@@ -75,7 +87,7 @@ class XServer:
 
 
 @pytest.fixture
-def migration(storage):
+def migration(storage, tmp_path):
     store, drive, server, _ = storage
     inv = inventory(
         store,
@@ -94,7 +106,17 @@ def migration(storage):
             "expires_at": time.time() + 7200,
         },
     )
+    receipt = store.read(archived["private_receipt"])
+    restored = Store(tmp_path / "restored")
+    restore_batch(drive, receipt["manifest"]["file_id"], restored, receipt["manifest"]["sha256"])
+    catalog = Store(tmp_path / "catalog")
+    publish(catalog, build([(restored.root, store.path(archived["private_receipt"]))], catalog))
+    provider = SkillServer([raindrop_item(pid, int(pid)) for pid in ("101", "102", "103")])
+    adapter = adapter_for(tmp_path, provider)
     source = XServer(store)
+    source.catalog = catalog
+    source.provider = provider
+    source.adapter = adapter
     http = httpx.Client(transport=httpx.MockTransport(source.handle))
     client = Client(store, http, "app")
 
@@ -117,7 +139,12 @@ def migration(storage):
             name,
             "100",
             confirmed=True,
-            **kwargs,
+            **{
+                "catalog_dir": catalog.root,
+                "raindrop": adapter,
+                "legacy_helper_retired": True,
+                **kwargs,
+            },
         )
 
     yield store, drive, server, source, client, archived, plan, apply
@@ -208,6 +235,13 @@ def test_incomplete_item_does_not_prevent_other_verified_item(migration):
         store, drive, archive["private_receipt"], ["101", "102"], "100", acceptance_confirmed=True
     )
     assert result["blocked"] == 1 and result["verified"] == 1
+    receipt = store.read(archive["private_receipt"])
+    restored = Store(store.root.parent / "second-restore")
+    restore_batch(drive, receipt["manifest"]["file_id"], restored, receipt["manifest"]["sha256"])
+    publish(
+        source.catalog,
+        build([(restored.root, store.path(archive["private_receipt"]))], source.catalog),
+    )
     applied = apply(result["private_plan"])
     assert applied["states"] == {"blocked": 1, "unbookmarked": 1}
     assert len(source.deletes) == 1 and source.deletes[0].url.path.endswith("/102")
@@ -321,7 +355,14 @@ def test_definite_rejection_needs_explicit_retry_and_new_validation(migration, s
 def test_reserve_delete_and_followup_before_intent(migration, cap):
     store, drive, _, source, client, _, plan, _ = migration
     result = apply_plan(
-        store, drive, client, Budget(store, ".1", cap, "100"), plan(), "100", confirmed=True
+        store,
+        drive,
+        client,
+        Budget(store, ".1", cap, "100"),
+        plan(),
+        "100",
+        confirmed=True,
+        legacy_helper_retired=True,
     )
     assert result["stop_reason"] == "spend_cap"
     assert not source.deletes and not list(store.root.glob("*.intent.private.json"))
@@ -419,12 +460,28 @@ def test_cli_apply_and_reconcile_with_env_defaults(migration, monkeypatch, capsy
     monkeypatch.setattr(
         httpx, "Client", lambda **kw: actual(transport=httpx.MockTransport(route), **kw)
     )
+    from x_bookmark_migrator.raindrop import RaindropAdapter
+
+    monkeypatch.setattr(
+        RaindropAdapter, "_call", lambda self, *a, **k: source.provider.call(*a, **k)
+    )
+    apply_flags = [
+        "--catalog-dir",
+        str(source.catalog.root),
+        "--raindrop-ledger-dir",
+        str(source.adapter.store.root),
+        "--raindrop-script",
+        str(source.adapter.script),
+        "--legacy-removal-helper-retired",
+    ]
     base = ["x-migrator", "--state-dir", str(store.root)]
     flags = ["--plan-file", name, "--console-hard-cap-confirmed", "--auto-recharge-off-confirmed"]
-    monkeypatch.setattr(sys, "argv", base + ["unbookmark-apply"] + flags)
+    monkeypatch.setattr(sys, "argv", base + ["unbookmark-apply"] + flags + apply_flags)
     assert cli.main() == 1 and not source.calls
     capsys.readouterr()
-    monkeypatch.setattr(sys, "argv", base + ["unbookmark-apply", "--confirm-unbookmark"] + flags)
+    monkeypatch.setattr(
+        sys, "argv", base + ["unbookmark-apply", "--confirm-unbookmark"] + flags + apply_flags
+    )
     assert cli.main() == 0
     result = json.loads(capsys.readouterr().out)
     assert result["states"] == {"unbookmarked": 1}
@@ -652,6 +709,7 @@ def test_malformed_identity_is_safe_error_before_mutation(migration, data):
                 name,
                 "100",
                 confirmed=True,
+                legacy_helper_retired=True,
             )
     assert not source.deletes and not list(store.root.glob("*.intent.private.json"))
 
