@@ -33,6 +33,11 @@ IDs are exact decimal **strings**, never numeric JSON IDs. New primary links are
 exactly `https://x.com/i/status/<pid>`. `source.raindrop_post_id` accepts the
 FOS-216 official aliases, renamed handles, photo/video suffixes and i/web/status.
 Unsupported X links block complete matching; search alone never establishes absence.
+This includes profile/list/Space links under the accepted fail-closed contract;
+they are not silently discarded. A blocked provider summary identifies the numeric
+`raindrop_id`; offline inspection adds `blocking_raindrop_id`. Neither exposes the
+private URL. Changing which X paths may be ignored requires a shared-parser contract
+change coordinated with FOS-216, not a second parser in this adapter.
 
 `archive_ref` is either a concise archive URL or a dict containing exactly
 `manifest` and `payload` receipt objects. The structured form is retained privately;
@@ -67,10 +72,15 @@ All ensure operations hold the same exclusive private ledger lock. Every state
 write uses atomic replacement and file plus directory fsync; files are 0600 and
 the directory 0700 outside Git. Keep one stable ledger per Raindrop account and
 use that same directory for backfill/manual/scheduled callers. Do not reset it.
+The X state, catalog and Raindrop ledger directories must resolve to three distinct
+paths (including symlink resolution). Both CLI setup and apply reject overlap before
+external requests; separate `flock` acquisitions on one directory would conflict.
 
 1. Enumerate **all** active and Trash items, 50/page, with exact unique-count and
-   terminal-page checks. Repeat both complete scans and require identical contents.
-   Reject changed counts/content, duplicate item IDs, missing counts, and page-bound
+   terminal-page checks. Repeat both complete scans and require identical decision
+   fields: `_id`, `link`, `collection.$id`, `removed`, counts and page coverage.
+   Ignore title/cover/cache/lastUpdate enrichment; retain full second-pass items.
+   Reject changed decision fields, duplicate item IDs, missing counts, and page-bound
    exhaustion. Two stable observations are local policy, not a server snapshot.
 2. One exact active primary-ID match is independently GET-verified and adopted.
    Any matching Trash, multiple active matches, unsupported X links, or conflicting
@@ -88,6 +98,11 @@ use that same directory for backfill/manual/scheduled callers. Do not reset it.
 
 No blind write retries. HTTP 401/429/5xx, transport and malformed responses stop;
 numeric status/reset/Retry-After context is retained without remote error bodies.
+The adapter passes `--delay 600` for every operation; list-all forwards that delay
+to every page request. Standalone list-all also defaults to 600ms. This limits one
+sequential migrator to at most 100 requests/minute, leaving headroom below 120/min;
+other account clients can still consume that headroom and cause a safe 429 stop.
+Full scans remain per-item; no stale batch snapshot is reused for absence decisions.
 The prospective transaction stops the batch on retryable provider failures.
 No X DELETE follows an import/readback failure. Raindrop reads are outside X's
 paid-call ledger; actual provider/billing behavior remains separately observed.
@@ -161,3 +176,8 @@ verify actual active/Trash/count response shape, accept FOS-216 historical repai
 (including all private helper receipt formats), retire old bypass helpers, and
 explicitly resume the bounded FOS-168 workflow. No repeated photo/video/Drive
 demonstration is requested. Merging these PRs does not complete those requirements.
+Immediately after the pilot create, run a fresh inventory and confirm the new item
+is listed. Listing visibility after create is not a documented guarantee: delayed
+visibility during crash recovery can cause the one permitted recovery POST to
+duplicate an item and subsequently block. Stop rollout if the pilot exposes lag;
+do not treat two stable empty scans as proof of read-after-write consistency.

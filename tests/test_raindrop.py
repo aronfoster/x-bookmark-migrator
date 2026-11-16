@@ -237,3 +237,59 @@ def test_archive_reference_cannot_be_post_body(tmp_path):
     with pytest.raises(PilotError, match="https_url"):
         adapter.ensure_raindrop("101", "https://x.com/i/status/101", "Synthetic post body")
     assert not server.calls
+
+
+@pytest.mark.parametrize("command", [("list-all",), ("get", 1), ("add-json",)])
+def test_adapter_paces_reads_and_writes(tmp_path, monkeypatch, command):
+    adapter = RaindropAdapter(tmp_path / "ledger", Path(__file__).resolve())
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, '{"result":true}', "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    adapter._call(*command)
+    assert calls[0][2:5] == ["--json", "--delay", "600"]
+
+
+@pytest.mark.parametrize(
+    "link",
+    [
+        "https://x.com/synthetic-profile",
+        "https://twitter.com/i/lists/123",
+        "https://x.com/i/spaces/synthetic",
+        "https://x.com/u/status/101/analytics",
+    ],
+)
+def test_unsupported_x_links_identify_blocking_item_without_exposing_url(tmp_path, link):
+    server = SkillServer([item(rid=44, link=link)])
+    adapter = adapter_for(tmp_path, server)
+    with pytest.raises(PilotError) as exc:
+        adapter.ensure_raindrop("101", "https://x.com/i/status/101", "https://archive.invalid")
+    assert exc.value.summary["raindrop_id"] == 44
+    assert link not in str(exc.value.summary) and not server.posts
+    offline = inspect_inventory(snapshot(server.active), "101")
+    assert offline["state"] == "incomplete"
+    assert offline["reason"] == "unsupported_x_link"
+    assert offline["blocking_raindrop_id"] == 44
+
+
+def test_cli_rejects_symlinked_state_directory_before_adapter(tmp_path):
+    from types import SimpleNamespace
+
+    from x_bookmark_migrator.raindrop_cli import adapter_from_args
+
+    target = tmp_path / "private"
+    target.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(target, target_is_directory=True)
+    with pytest.raises(PilotError, match="distinct state directories"):
+        adapter_from_args(
+            SimpleNamespace(
+                state_dir=target,
+                catalog_dir=tmp_path / "catalog",
+                raindrop_ledger_dir=alias,
+                raindrop_script=Path(__file__).resolve(),
+            )
+        )

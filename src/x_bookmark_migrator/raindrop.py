@@ -17,7 +17,21 @@ from .inventory import now
 from .source import raindrop_post_id, source_url
 
 
-def blocked(reason, *, retryable=False, context=None):
+def require_distinct_state_dirs(**directories):
+    resolved = {}
+    for name, path in directories.items():
+        if path is None:
+            continue
+        canonical = Path(path).resolve()
+        if canonical in resolved:
+            raise PilotError(
+                f"{resolved[canonical]} and {name} must be distinct state directories.",
+                code="overlapping_state_directories",
+            )
+        resolved[canonical] = name
+
+
+def blocked(reason, *, retryable=False, context=None, raindrop_id=None):
     return PilotError(
         "Raindrop verification blocked: " + reason + ".",
         summary={
@@ -25,6 +39,7 @@ def blocked(reason, *, retryable=False, context=None):
             "retryable": retryable,
             "reason": reason,
             **({"provider": context} if context else {}),
+            **({"raindrop_id": raindrop_id} if raindrop_id is not None else {}),
         },
         code="blocked_raindrop_retryable" if retryable else "blocked_raindrop_conflict",
     )
@@ -78,7 +93,7 @@ def validate_inventory(snapshot):
             try:
                 raindrop_post_id(item["link"])
             except PilotError:
-                raise blocked("unsupported_x_link") from None
+                raise blocked("unsupported_x_link", raindrop_id=rid) from None
     return snapshot
 
 
@@ -95,7 +110,19 @@ def inspect_inventory(snapshot, pid):
             ]
             for key in ("active", "trash")
         }
-    except (PilotError, ValueError, TypeError, KeyError, AttributeError):
+    except PilotError as exc:
+        # IDs/reasons are local validated diagnostics; never expose the private URL.
+        return {
+            "state": "incomplete",
+            "raindrop_ids": [],
+            "reason": exc.summary.get("reason", "invalid_inventory"),
+            **(
+                {"blocking_raindrop_id": exc.summary["raindrop_id"]}
+                if "raindrop_id" in exc.summary
+                else {}
+            ),
+        }
+    except (ValueError, TypeError, KeyError, AttributeError):
         return {"state": "incomplete", "raindrop_ids": [], "reason": "invalid_inventory"}
     active, trash = matches["active"], matches["trash"]
     state = (
@@ -146,7 +173,7 @@ class RaindropAdapter:
     def _call(self, *args, payload=None):
         try:
             result = subprocess.run(
-                ["bash", str(self.script), "--json", *map(str, args)],
+                ["bash", str(self.script), "--json", "--delay", "600", *map(str, args)],
                 input=json.dumps(payload) if payload is not None else None,
                 capture_output=True,
                 text=True,

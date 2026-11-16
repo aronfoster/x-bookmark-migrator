@@ -39,6 +39,9 @@ def positive_media_only(payload, classification, payload_sha256):
     Captions/emoji/hashtags/quotes/reposts remain Raindrop-required. No heuristic
     decides that substantive prose is unimportant, and no mutable label suffices.
     """
+    inventory = payload.get("inventory_record")
+    if not isinstance(inventory, dict) or not isinstance(inventory.get("post"), dict):
+        return False
     pid = payload["post_id"]
     return (
         isinstance(classification, dict)
@@ -66,6 +69,15 @@ def positive_media_only(payload, classification, payload_sha256):
 
 
 def verify_discovery_now(pid, row, payload, catalog_dir, adapter):
+    try:
+        return _verify_discovery_now(pid, row, payload, catalog_dir, adapter)
+    except (KeyError, TypeError, AttributeError, UnicodeError):
+        raise PilotError(
+            "Discovery gate blocked: malformed discovery evidence.", code="blocked_discovery"
+        ) from None
+
+
+def _verify_discovery_now(pid, row, payload, catalog_dir, adapter):
     require(catalog_dir is not None, "catalog_required")
     output = Store(Path(catalog_dir))
     # Same lock used by catalog publication/curation: keep the selected snapshot

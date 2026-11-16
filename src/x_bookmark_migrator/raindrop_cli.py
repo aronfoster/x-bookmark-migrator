@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .catalog import private_bytes
 from .core import PilotError
-from .raindrop import RaindropAdapter
+from .raindrop import RaindropAdapter, require_distinct_state_dirs
 from .source import source_url
 
 COMMANDS = ("raindrop-inventory", "raindrop-ensure", "raindrop-verify")
@@ -18,6 +18,11 @@ def adapter_options(parser):
 
 
 def adapter_from_args(args):
+    require_distinct_state_dirs(
+        state_dir=getattr(args, "state_dir", None),
+        catalog_dir=getattr(args, "catalog_dir", None),
+        raindrop_ledger_dir=args.raindrop_ledger_dir,
+    )
     if not args.raindrop_script:
         raise PilotError("Set RAINDROP_SCRIPT or --raindrop-script to the existing skill script.")
     return RaindropAdapter(args.raindrop_ledger_dir, args.raindrop_script)

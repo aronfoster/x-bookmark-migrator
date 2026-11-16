@@ -17,6 +17,7 @@ from .core import API, PilotError, exact_id, validate_page
 from .discovery_gate import verify_discovery_now
 from .drive import digest, encode
 from .inventory import Inventory, now
+from .raindrop import require_distinct_state_dirs
 
 
 def require(condition, message, code="verification_failed"):
@@ -391,6 +392,11 @@ def apply_plan(
     legacy_helper_retired=False,
 ):
     require(confirmed, "Review the private plan and supply --confirm-unbookmark.")
+    require_distinct_state_dirs(
+        state_dir=store.root,
+        catalog_dir=catalog_dir,
+        raindrop_ledger_dir=raindrop.store.root if raindrop is not None else None,
+    )
     require(
         budget.per_call >= Decimal("0.005"),
         "Per-call reservation must cover at least the published $0.005 Bookmark write rate.",

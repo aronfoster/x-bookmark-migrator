@@ -73,6 +73,7 @@ def run(args):
         raise PilotError("Review the private plan and supply --confirm-unbookmark.")
     if args.command != "unbookmark-reconcile" and not args.drive_folder_id:
         raise PilotError("Set X_ARCHIVE_DRIVE_FOLDER_ID or --drive-folder-id.")
+    adapter = adapter_from_args(args) if args.command == "unbookmark-apply" else None
     store = Store(args.state_dir)
     with (
         store.locked(),
@@ -106,7 +107,7 @@ def run(args):
             confirmed=args.confirm_unbookmark,
             retry_rejected=args.retry_rejected,
             catalog_dir=args.catalog_dir,
-            raindrop=adapter_from_args(args),
+            raindrop=adapter,
             legacy_helper_retired=args.legacy_removal_helper_retired,
             max_calls=args.max_calls,
         )
