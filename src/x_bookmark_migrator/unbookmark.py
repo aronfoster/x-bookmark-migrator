@@ -14,6 +14,7 @@ import httpx
 
 from .archive import archive_evidence, category_for, media_format, plan_post
 from .core import API, PilotError, exact_id, validate_page
+from .discovery_gate import verify_discovery_now
 from .drive import digest, encode
 from .inventory import Inventory, now
 
@@ -135,7 +136,7 @@ def make_plan(store, drive, receipt_name, post_ids, owner_id, *, acceptance_conf
                 raise
             items.append({"post_id": pid, "state": "blocked", "reason": exc.code})
     plan = {
-        "schema_version": 1,
+        "schema_version": 2,
         "created_at": now(),
         "owner_id": owner_id,
         "inventory_checkpoint": inventory.name,
@@ -160,9 +161,12 @@ def make_plan(store, drive, receipt_name, post_ids, owner_id, *, acceptance_conf
     }
 
 
-def load_plan(store, name, owner_id):
+def load_plan(store, name, owner_id, *, allow_legacy=False):
     plan = store.read(name)
-    require(isinstance(plan, dict) and plan.get("schema_version") == 1, "Invalid unbookmark plan.")
+    require(
+        isinstance(plan, dict) and plan.get("schema_version") in ((1, 2) if allow_legacy else (2,)),
+        "Invalid or legacy unbookmark plan; create a v2 plan.",
+    )
     require(plan["owner_id"] == exact_id(owner_id), "Plan owner differs.")
     require(1 <= len(plan["items"]) <= 3, "Invalid pilot size.")
     ids = [exact_id(i["post_id"]) for i in plan["items"]]
@@ -382,6 +386,9 @@ def apply_plan(
     confirmed=False,
     retry_rejected=False,
     max_calls=20,
+    catalog_dir=None,
+    raindrop=None,
+    legacy_helper_retired=False,
 ):
     require(confirmed, "Review the private plan and supply --confirm-unbookmark.")
     require(
@@ -389,6 +396,9 @@ def apply_plan(
         "Per-call reservation must cover at least the published $0.005 Bookmark write rate.",
     )
     plan = load_plan(store, plan_name, owner_id)
+    require(
+        legacy_helper_retired, "Confirm private legacy removal helpers are disabled or gate-only."
+    )
     reads = Reads(client, budget, max_calls)
     # Check scope before any paid read or destructive intent.
     client.access_token(write=True)
@@ -450,9 +460,19 @@ def apply_plan(
             # Reserve DELETE AND its corroborating GET before any mutation.
             reads.reserve("delete")
             reads.reserve("after_window")
+            # This is the last external verification before intent and DELETE.
+            payload = json.loads(drive.verify(rows[pid]["payload"]))
+            discovery = verify_discovery_now(pid, rows[pid], payload, catalog_dir, raindrop)
         except PilotError as exc:
-            outcomes.append({"post_id": pid, "state": "blocked", "reason": exc.code})
-            if not exc.code.startswith("blocked_"):
+            outcomes.append(
+                {
+                    "post_id": pid,
+                    "state": "blocked",
+                    "reason": exc.code,
+                    "retryable": exc.code == "blocked_raindrop_retryable",
+                }
+            )
+            if not exc.code.startswith("blocked_") or exc.code == "blocked_raindrop_retryable":
                 stop = exc.code
                 break
             continue
@@ -470,6 +490,7 @@ def apply_plan(
             "plan_file": plan_name,
             "archive_manifest": plan["archive_receipt"]["manifest"],
             "verified": verified,
+            "discovery_gate": discovery,
             "folder_name_evidence": folder_evidence,
             "before": before,
             "inventory_post_ids": sorted(inventory.state["posts"]),
@@ -576,7 +597,7 @@ def save_report(store, plan_name, outcomes, reads, stop):
 
 def reconcile_plan(store, client, budget, plan_name, owner_id, *, max_calls=20):
     """Read-only recovery. Absence in a capped listing never resolves a lost DELETE."""
-    plan = load_plan(store, plan_name, owner_id)
+    plan = load_plan(store, plan_name, owner_id, allow_legacy=True)
     reads = Reads(client, budget, max_calls)
     check_identity(reads, owner_id)
     outcomes = []
