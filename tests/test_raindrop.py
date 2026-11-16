@@ -229,3 +229,11 @@ def test_offline_inspector_never_claims_freshness():
     assert inspect_inventory(snapshot([item()]), "101")["state"] == "active"
     assert inspect_inventory(snapshot([], [item(cid=-99)]), "101")["state"] == "trash"
     assert inspect_inventory({}, "101")["state"] == "incomplete"
+
+
+def test_archive_reference_cannot_be_post_body(tmp_path):
+    server = SkillServer()
+    adapter = adapter_for(tmp_path, server)
+    with pytest.raises(PilotError, match="https_url"):
+        adapter.ensure_raindrop("101", "https://x.com/i/status/101", "Synthetic post body")
+    assert not server.calls

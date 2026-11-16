@@ -470,6 +470,7 @@ def apply_plan(
                     "state": "blocked",
                     "reason": exc.code,
                     "retryable": exc.code == "blocked_raindrop_retryable",
+                    "failure_context": exc.summary,
                 }
             )
             if not exc.code.startswith("blocked_") or exc.code == "blocked_raindrop_retryable":

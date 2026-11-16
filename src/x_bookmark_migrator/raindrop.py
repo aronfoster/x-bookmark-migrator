@@ -8,6 +8,7 @@ import json
 import re
 import subprocess
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from .catalog import drive_link
 from .core import PilotError, Store, exact_id
@@ -232,6 +233,16 @@ class RaindropAdapter:
             and (not isinstance(category, str) or len(category) > 200)
         ):
             raise blocked("invalid_concise_archive_reference")
+        try:
+            archive_url = urlsplit(archive_link)
+            if (
+                archive_url.scheme != "https"
+                or not archive_url.netloc
+                or any(c.isspace() for c in archive_link)
+            ):
+                raise ValueError
+        except ValueError:
+            raise blocked("archive_reference_must_be_https_url") from None
         base = f"raindrop-{pid}"
         with self.store.locked():
             snapshot = self._enumerate()
