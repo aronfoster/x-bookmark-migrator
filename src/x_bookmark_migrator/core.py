@@ -19,6 +19,7 @@ SCOPES = frozenset("tweet.read users.read bookmark.read offline.access".split())
 WRITE_SCOPES = SCOPES | {"bookmark.write"}
 CALLBACK = "http://127.0.0.1:8765/callback"
 API = "https://api.x.com"
+TOKEN_ROTATION = "oauth-refresh.private.json"
 
 
 class PilotError(Exception):
@@ -220,6 +221,8 @@ class Client:
         self.client_id, self.client_secret = client_id, client_secret
 
     def token(self, data, prior=None, requested_scopes=SCOPES):
+        if prior is not None:
+            self.store.write(TOKEN_ROTATION, {"prior_sha256": self.token_hash(prior)})
         auth = (self.client_id, self.client_secret) if self.client_secret else None
         response = self.http.post(
             API + "/2/oauth2/token",
@@ -230,7 +233,8 @@ class Client:
             operation = "refresh" if data.get("grant_type") == "refresh_token" else "exchange"
             raise PilotError(
                 f"OAuth token {operation} rejected (HTTP {response.status_code}); "
-                "verify client configuration, then run auth-start and auth-finish again."
+                "verify client configuration, then run auth-start and auth-finish again.",
+                code="owner_reconsent_needed" if prior else "read_failed",
             )
         body = decode(response)
         scopes = body.get("scope", prior.get("scope") if prior else None)
@@ -252,6 +256,8 @@ class Client:
         saved = {key: body[key] for key in ("access_token", "refresh_token")}
         saved.update(scope=scopes, expires_at=time.time() + lifetime, client_id=self.client_id)
         self.store.write("tokens.private.json", saved)
+        if prior is not None:
+            self.store.write(TOKEN_ROTATION, None)
         return saved
 
     def finish(self, redirect):
@@ -285,8 +291,23 @@ class Client:
             requested_scopes=pending.get("scopes", SCOPES),
         )
 
+    @staticmethod
+    def token_hash(token):
+        return hashlib.sha256(
+            (json.dumps(token, ensure_ascii=False, sort_keys=True) + "\n").encode()
+        ).hexdigest()
+
     def access_token(self, *, write=False):
         token = self.store.read("tokens.private.json")
+        marker = self.store.read(TOKEN_ROTATION)
+        if marker:
+            if self.token_hash(token) == marker["prior_sha256"]:
+                raise PilotError("Owner OAuth re-consent needed.", code="owner_reconsent_needed")
+            # New token already durable: finish cleanup after a crash, never reuse old refresh.
+            self.store.write(TOKEN_ROTATION, None)
+        deferred = self.store.read("worker-defer.private.json")
+        if deferred and deferred["until"] > time.time():
+            raise PilotError("Provider retry is deferred.", code="retry_deferred")
         if not isinstance(token, dict) or token.get("client_id") != self.client_id:
             raise PilotError("Run auth-start and auth-finish for this client first.")
         scopes = set(token.get("scope", "").split())

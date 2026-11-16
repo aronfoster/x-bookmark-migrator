@@ -8,7 +8,7 @@ from pathlib import Path
 
 import httpx
 
-from . import archive_cli, catalog, raindrop_cli, repair_cli, unbookmark_cli
+from . import archive_cli, catalog, raindrop_cli, repair_cli, unbookmark_cli, worker_cli
 from .archive import enrich_references
 from .core import Budget, Client, PilotError, Store, auth_start, exact_id, pilot
 from .inventory import Inventory, validate_run_limits
@@ -20,6 +20,7 @@ def main():
         "--state-dir", type=Path, default=Path.home() / ".local/state/x-bookmark-migrator"
     )
     sub = parser.add_subparsers(dest="command", required=True)
+    worker_cli.add_commands(sub)
     catalog.add_commands(sub)
     repair_cli.add_commands(sub)
     archive_cli.add_commands(sub)
@@ -92,6 +93,11 @@ def main():
     recovery.add_argument("--read-file", required=True)
     args = parser.parse_args()
     try:
+        if args.command in worker_cli.COMMANDS:
+            result = worker_cli.run(args)
+            if not result.get("quiet"):
+                print(json.dumps(result))
+            return 1 if result.get("stop_reason") else 0
         if args.command in raindrop_cli.COMMANDS:
             print(json.dumps(raindrop_cli.run(args)))
             return 0

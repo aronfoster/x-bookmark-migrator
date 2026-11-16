@@ -1,0 +1,153 @@
+# Bounded daily worker (FOS-168)
+
+The `worker` command composes the existing inventory, archive, independent Drive
+restore, catalog, shared Raindrop adapter and v2 unbookmark transaction. It does
+not run an LLM, Docker, shell commands from configuration, or a daemon. Deployment
+units and owner commands belong to private `openclaw-config/deploy/docker-stack`.
+
+**Code/tests are not runtime acceptance.** The historical source-link repair,
+prospective Raindrop pilot, effective desktop skill synchronization, retirement of
+private legacy helpers, budget observations, exact host paths/account/mounts, and
+owner authorization remain rollout gates. Never activate using example values.
+
+## Modes and configuration
+
+All modes use the existing state directory and its shared exclusive `lock`.
+`--dry-run` and `--report-only` make **zero provider requests**, including OAuth,
+X paid reads, Drive reads/writes and Raindrop operations. They never construct a
+provider client. The only local write is acquiring/creating the shared lock.
+`--once --live` permits paid X reads and Drive/archive/catalog writes, but cannot
+create Raindrops or DELETE. Adding `--allow-delete` explicitly permits both and
+requires every local rollout gate. There is no default live mode.
+
+```sh
+x-migrator --state-dir /private/state worker --config /private/worker.json --dry-run
+x-migrator --state-dir /private/state worker --config /private/worker.json --report-only
+# Separately authorized, non-destructive with respect to source bookmarks:
+x-migrator --state-dir /private/state worker --config /private/worker.json --once --live
+# Only after independent reviews and explicit owner live/delete approval:
+x-migrator --state-dir /private/state worker --config /private/worker.json --once --live --allow-delete
+```
+
+Paths here are placeholders. Keep config outside Git, mode 0600; state, restore,
+catalog and the shared Raindrop ledger must be disjoint, mode 0700 and owned by
+the ordinary runtime account. Preserve existing X/Drive credentials in the
+original state directory and existing Raindrop authentication. `X_CLIENT_ID` and
+optional `X_CLIENT_SECRET` come from the protected existing environment. No new
+OAuth store, rclone grant or second Raindrop client is introduced.
+
+Private JSON configuration fields:
+
+| Field | Required value |
+| --- | --- |
+| `schema_version` | `1` |
+| `owner_id`, `drive_folder_id` | Locally verified existing identities |
+| `catalog_dir`, `restore_dir`, `raindrop_ledger_dir`, `raindrop_script` | Verified absolute paths to existing runtime resources |
+| `max_items` | 1–50; start at 1 for local acceptance |
+| `max_calls` | 1–100; shared across inventory/enrichment/DELETE and reserved after-reads |
+| `max_batches` | 1–100 existing archive receipts to adopt per invocation |
+| `dialect` | Existing observed `post` or `tweet` profile |
+| `run_cap_usd` | Positive reservation limit, at most 20 |
+| `reservation_usd` | Positive **whole-request** conservative reserves for every operation below; no implicit prices |
+| `helper_descriptors` | All reviewed private helper mappings using `REPAIR.md`; empty only when the local audit proves no out-of-tree attempts |
+| `gates` | Explicit booleans below, initially false |
+
+Reservations must specify `identity`, `main`, `folders`, `folder`, `hydrate`,
+`folder_names`, `before_window`, `delete`, `after_window`, `reconcile_window`,
+`other`. Enrichment uses the conservative `other` allowance. Account for resource
+counts, expansions and folder over-return, **not just cost per one resource**.
+`delete` cannot be below $0.005. Bounds are local spending policy, not a guarantee
+of provider charges; owner-controlled Console hard limits remain mandatory.
+
+Live gates: `live_authorized`, `console_cap_confirmed`, `auto_recharge_off`,
+`removal_sources_complete`. DELETE additionally requires `archive_restore_accepted`,
+`legacy_helpers_retired`, `fos166_runtime_accepted`, `fos216_backfill_accepted`.
+Do not assert these merely because dependencies merged. Re-consent uses existing
+interactive auth commands; the worker never opens a consent flow.
+
+Before live execution, store the latest reviewed Console observation as
+`worker-billing.private.json` with `actual_usd` (decimal string) and `observed_at`
+(ISO timestamp). Preserve prior evidence independently. The worker reports actual
+observations and reservations separately. It sums **every month** in the existing
+`budget.private.json` and conservatively adds the actual observation when enforcing
+$20. This intentionally double-counts potentially overlapping historical usage
+until an independently reviewed reconciliation exists. It never clears/rebases a
+ledger or silently renews the allowance. New reservations survive failed requests
+and crashes, and per-operation counts/amounts appear in each private run report.
+
+## Recovery and safety
+
+* Existing immutable archive receipts are restored and adopted before a new pass.
+  Every native removal intent and reviewed legacy-helper mapping is scanned with
+  the shared FOS-216 parser. Confirmed, unknown and rejected attempts hold the
+  exact ID; a later re-save is **not** inferred to be the old generation. The only
+  automatic retry is a validated native HTTP 429 rejection after its durable reset,
+  with a completely fresh archive/category/discovery gate and new attempt receipt.
+  Re-save or other rejection resolution needs a separately reviewed disposition. Missing,
+  orphaned, changed or incomplete receipts fail closed.
+* One daily pass reads bounded first windows (one page per stream, 200 retained
+  records, 20 folders). No old positional cursor is resumed after DELETE or
+  restart. Existing permanent blockers and attempts are excluded from hydration;
+  known transient media failures get a daily retry. Unknown category is retained;
+  this inherited transaction requires a positively identified single named folder.
+  Confirmed unfiled items remain blocked under the current pilot contract.
+* Each selected removal gets a fresh remote restore/hash check, merged catalog
+  publication, fresh plan, and the existing v2 apply gate. Non-media records use
+  the shared idempotent create/adopt adapter and its final fresh exact-ID GET.
+  The narrow existing affirmative media-only test is unchanged. Source/article
+  bodies never enter Raindrop fields.
+* Atomic create-only restore now has an explicit `existing_ok` recovery option:
+  identical owner-only regular files may be reused **after fresh remote reads**;
+  conflicting bytes and symlinks fail. Partial temp files are never accepted as
+  final restores. Default standalone restore still refuses existing destinations.
+* Publication merges all prior records/versions and reapplies annotations under
+  the catalog lock. The state lock also excludes manual migration commands. Lock
+  order is state → catalog → Raindrop. Catalog publication is complete before
+  apply takes its own catalog lock; no nested acquisition of the same lock.
+* HTTP 429 reset/Retry-After is persisted before handing the response back to the
+  provider code. The whole worker stops. Every later HTTP request is checked
+  against that durable deadline; missing headers use a conservative 15 minutes.
+  Raindrop's numeric failure context is preserved through the shared adapter.
+  A lightweight systemd tick checks due time every five minutes; no external call
+  occurs before reset, and ordinary successful runs remain daily. This is bounded
+  retry scheduling, not a sleeping process or paid retry loop.
+* OAuth rotation writes an intent before refresh and stores the new token atomically
+  before other work. All normal CLI clients respect it. An interruption with the
+  old token still installed stops as `owner_reconsent_needed`; a new durable token
+  permits cleanup without another refresh. `invalid_grant` never loops.
+* DELETE intent/response/result/window files remain authoritative. No worker
+  exception handler retries an uncertain or successful DELETE. A missing response is unknown, even when a
+  current listing no longer contains that ID. Post-delete reads remain part of
+  the inherited transaction; a failure stops the run with the successful receipt
+  retained.
+
+`worker.private.json` contains the resumable queue and per-stream observed IDs,
+counts, blocked state and window exposure. `worker-report.private.json` contains
+counts, failures, cumulative reservations and billing observations. Detailed IDs,
+paths, categories and provider evidence remain private. Empty/not-due/deferred
+runs exit quietly; failed work reports a nonzero exit. No report claims inaccessible
+history complete or equates new observed IDs with proven older bookmark age.
+
+Before upgrading code or rebuilding a full catalog manually, use the same state
+lock and catalog lock in that order. Preserve the published catalog and annotations;
+never build a one-batch replacement over the complete catalog. The worker merges
+partial batches; the standalone `catalog-build` command still expects the complete
+batch list. Do not overwrite the pinned checkout while a worker is running.
+
+## First-party contracts rechecked 2026-11-16
+
+| Reference | Contract / remaining uncertainty |
+| --- | --- |
+| [OAuth PKCE/refresh](https://docs.x.com/fundamentals/authentication/oauth-2-0/authorization-code) | `offline.access` refresh; conservatively treat interrupted rotation as uncertain. Live rotation behavior remains a local acceptance check. |
+| [Main bookmarks](https://docs.x.com/x-api/users/get-bookmarks) | Full post objects and endpoint pagination. Daily discovery is bounded, not all-history proof. |
+| [Folder list](https://docs.x.com/x-api/users/get-bookmark-folders), [folder contents](https://docs.x.com/x-api/users/get-bookmarks-by-folder-id) | Request pagination parameters do not establish complete response coverage; retain positive exact identity. |
+| [Post hydration](https://docs.x.com/x-api/posts/get-posts-by-ids) | Exact requested IDs; retain original expansions/reference provenance. |
+| [Bookmark DELETE](https://docs.x.com/x-api/users/delete-bookmark) | Existing exact-ID transaction; generic `bookmarked:true` example is not accepted as removal success. |
+| [Rate limits](https://docs.x.com/x-api/fundamentals/rate-limits) | Main 180/15 min; folder list/members 50/15 min; DELETE 50/15 min. Response deadlines govern deferral. |
+| [Pricing](https://docs.x.com/x-api/getting-started/pricing) | Owned Reads eligibility is conditional; folder prices and actual account charges require Console evidence. Never hardcode a per-run or monthly renewal of $20. |
+| [systemd timers](https://www.freedesktop.org/software/systemd/man/latest/systemd.timer.html), [execution](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html) | Non-root service plus persistent local tick. Catch-up can run immediately when enabled; install and enable are separate. |
+| [OpenClaw payloads](https://docs.openclaw.ai/automation/cron-jobs/payloads) | Current command payload capability is not proof the installed Gateway supports it; no admin job or Docker access is requested. |
+
+All automatic tests use invented data and mock providers. Local tests do not prove
+installed versions, live billing, archive mount access, Raindrop list visibility,
+scheduled execution, or owner acceptance.
