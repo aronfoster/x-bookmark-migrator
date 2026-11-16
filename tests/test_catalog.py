@@ -379,3 +379,70 @@ def test_annotation_and_raindrop_cli_paths(corpus, monkeypatch, capsys):
         "coverage": "not_established",
         "create_authorized": False,
     }
+
+
+def test_source_sidecar_immutable_archives_and_distinct_reference_links(corpus):
+    batch, output, restored, _ = corpus
+    originals = {p.name: p.read_bytes() for p in restored.root.iterdir()}
+    records = build([batch], output)
+    publish(output, records)
+    sidecar = output.path("source-links.jsonl").read_bytes()
+    rows = [json.loads(line) for line in sidecar.splitlines()]
+    assert [r["source_post_id"] for r in rows] == ["101", "102", "103"]
+    assert all(
+        r["source_post_url"] == f"https://x.com/i/status/{r['source_post_id']}" for r in rows
+    )
+    quote = lookup(read_catalog(output), "104")[0]
+    assert quote["source_post_id"] == "103"
+    assert quote["source_post_url"] == "https://x.com/i/status/103"
+    child = next(p for p in quote["versions"][0]["posts"] if p["id"] == "104")
+    assert child["source_post_url"] == "https://x.com/i/status/104"
+    page = output.path("index.html").read_text()
+    assert page.count("Open original saved X post</a>") == 3
+    assert "Referenced post on X</a>" in page
+    publish(output, build([batch], output))
+    assert output.path("source-links.jsonl").read_bytes() == sidecar
+    assert {p.name: p.read_bytes() for p in restored.root.iterdir()} == originals
+
+
+def test_category_override_and_media_curation_survive_rebuild(corpus):
+    batch, output, _, _ = corpus
+    output.write(
+        "annotations.private.json",
+        {
+            "category_overrides": {"101": "Synthetic owner override"},
+            "101:1:photo-1": {"browse_visibility": "hidden", "description": "Keep me"},
+        },
+    )
+    publish(output, build([batch], output))
+    record = read_catalog(output)[0]
+    assert record["category_override"] == "Synthetic owner override"
+    assert record["versions"][0]["folders"][0]["names"] == ["Synthetic category"]
+    assert record["versions"][0]["media"][0]["description"] == "Keep me"
+    assert record["versions"][0]["media"][0]["browse_visibility"] == "hidden"
+    assert "Synthetic owner override" in output.path("index.html").read_text()
+    original = output.path("catalog.jsonl").read_bytes()
+    publish(output, build([batch], output))
+    assert output.path("catalog.jsonl").read_bytes() == original
+
+
+def test_legacy_catalog_lookup_gets_source_links_without_rewriting(corpus):
+    batch, output, _, _ = corpus
+    records = build([batch], output)
+    for r in records:
+        r.pop("source_post_id")
+        r.pop("source_post_url")
+    raw = b"".join(encode(r) for r in records)
+    output.path("catalog.jsonl").write_bytes(raw)
+    output.path("catalog.jsonl").chmod(0o600)
+    result = read_catalog(output)
+    assert result[0]["source_post_id"] == "101"
+    assert output.path("catalog.jsonl").read_bytes() == raw
+
+
+def test_unsupported_x_link_cannot_be_skipped_in_saved_raindrop_matching():
+    with pytest.raises(PilotError):
+        raindrop_matches(
+            "101",
+            [{"result": True, "items": [{"_id": 8, "link": "https://mobile.x.com/unsupported"}]}],
+        )
