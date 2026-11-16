@@ -504,7 +504,7 @@ def archive_batch(inventory, drive, media_http, *, post_ids=None, limit=5):
     }
 
 
-def restore_batch(drive, manifest_id, output, expected_sha256):
+def restore_batch(drive, manifest_id, output, expected_sha256, *, existing_ok=False):
     """Fresh remote reads, no X, source browser, local inventory or upload journal."""
     raw = drive.download(manifest_id, 8 * 1024 * 1024)
     if (
@@ -534,7 +534,7 @@ def restore_batch(drive, manifest_id, output, expected_sha256):
             or payload.get("archive_status") != row["archive_status"]
         ):
             raise PilotError("Manifest/payload association mismatch.")
-        create_local(output, pid + ".json", data)
+        create_local(output, pid + ".json", data, existing_ok=existing_ok)
         for asset in payload["media"]:
             if "storage" not in asset:
                 if not payload["blockers"]:
@@ -546,11 +546,13 @@ def restore_batch(drive, manifest_id, output, expected_sha256):
             index = asset["index"]
             if type(index) is not int or not 1 <= index <= 100:
                 raise PilotError("Invalid media index.")
-            create_local(output, f"{pid}_{asset_id}_{index:02d}.{extension}", data)
+            create_local(
+                output, f"{pid}_{asset_id}_{index:02d}.{extension}", data, existing_ok=existing_ok
+            )
             files += 1
         blocked += bool(payload["blockers"])
         verified += not payload["blockers"]
-    create_local(output, "manifest.jsonl", raw)
+    create_local(output, "manifest.jsonl", raw, existing_ok=existing_ok)
     return {
         "records": len(rows),
         "media_files": files,
@@ -561,11 +563,32 @@ def restore_batch(drive, manifest_id, output, expected_sha256):
     }
 
 
-def create_local(store, name, data):
+def create_local(store, name, data, *, existing_ok=False):
+    """Atomic create-only bytes; optional exact-match recovery after interrupted restore."""
+    import tempfile
+
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
         raise PilotError("Unsafe reconstruction filename.")
-    fd = os.open(store.path(name), os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, "wb") as stream:
-        stream.write(data)
-        stream.flush()
-        os.fsync(stream.fileno())
+    path = store.path(name)
+    if existing_ok and path.exists():
+        from .publication import publication_bytes
+
+        if publication_bytes(path) != data:
+            raise PilotError("Existing restore bytes differ from independent remote readback.")
+        return
+    fd, temporary = tempfile.mkstemp(dir=store.root, suffix=".private.tmp")
+    try:
+        if hasattr(store, "prepare_public_fd"):
+            store.prepare_public_fd(fd)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, path)
+        directory = os.open(store.root, os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        os.unlink(temporary)

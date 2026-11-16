@@ -252,3 +252,9 @@ private browser index from existing restored batches. It includes full text,
 original categories, media receipts/Drive links and reversible per-attachment
 hide/show annotations. `catalog-build`, `catalog-lookup`, `catalog-annotate` and
 `catalog-raindrop-match` need no credentials and perform no network calls.
+
+## Daily deterministic worker
+
+See [the bounded worker and rollout contract](docs/WORKER.md) for offline audit,
+explicit live modes, cumulative budget, crash recovery and non-root scheduling.
+Installation and activation remain separate owner-reviewed actions.

@@ -554,7 +554,7 @@ class Inventory:
             raise
         return name
 
-    def run(self, client, budget, *, max_calls=10, hydrate_batch_size=100):
+    def run(self, client, budget, *, max_calls=10, hydrate_batch_size=100, skip_hydration=()):
         validate_run_limits(max_calls, hydrate_batch_size)
         calls = 0
         reservations = {}
@@ -582,7 +582,10 @@ class Inventory:
             )
 
             def reserve():
-                budget.reserve()
+                if hasattr(budget, "reserve_operation"):
+                    budget.reserve_operation(operation)
+                else:
+                    budget.reserve()
                 reservations[operation] = reservations.get(operation, 0) + 1
 
             return client.get(path, params, reserve)
@@ -638,7 +641,9 @@ class Inventory:
                 self.save()
             active = None
             while pending := [
-                p["id"] for p in state["posts"].values() if p["hydration_status"] == "pending"
+                p["id"]
+                for p in state["posts"].values()
+                if p["hydration_status"] == "pending" and p["id"] not in skip_hydration
             ][:hydrate_batch_size]:
                 body = get("/2/tweets", {"ids": ",".join(pending), **post_fields(state["dialect"])})
                 self.accept_hydration(pending, body, client.observations[-1]["private_file"])

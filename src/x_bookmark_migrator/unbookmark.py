@@ -196,7 +196,10 @@ class Reads:
             "Request limit reached; stopped before next request.",
             "request_limit",
         )
-        self.budget.reserve()
+        if hasattr(self.budget, "reserve_operation"):
+            self.budget.reserve_operation(operation)
+        else:
+            self.budget.reserve()
         self.reservations[operation] += 1
 
     def get(self, path, params, operation, *, prepaid=False):
