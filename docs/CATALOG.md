@@ -1,3 +1,7 @@
+The November 16 source-link repair and mandatory Raindrop policy are documented in
+[REPAIR.md](REPAIR.md). The historical optional-Raindrop notes below are superseded
+for future deletion and retrospective repair; the catalog commands stay offline.
+
 # Offline archive discovery (FOS-166 Phase 1)
 
 The migrator owns a portable JSONL catalog, exact-ID CLI lookup, reversible

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import httpx
 
-from . import archive_cli, catalog, raindrop_cli, unbookmark_cli
+from . import archive_cli, catalog, raindrop_cli, repair_cli, unbookmark_cli
 from .archive import enrich_references
 from .core import Budget, Client, PilotError, Store, auth_start, exact_id, pilot
 from .inventory import Inventory, validate_run_limits
@@ -21,6 +21,7 @@ def main():
     )
     sub = parser.add_subparsers(dest="command", required=True)
     catalog.add_commands(sub)
+    repair_cli.add_commands(sub)
     archive_cli.add_commands(sub)
     unbookmark_cli.add_commands(sub)
     raindrop_cli.add_commands(sub)
@@ -94,6 +95,10 @@ def main():
         if args.command in raindrop_cli.COMMANDS:
             print(json.dumps(raindrop_cli.run(args)))
             return 0
+        if args.command in repair_cli.COMMANDS:
+            result = repair_cli.run(args)
+            print(json.dumps(result))
+            return 1 if result.get("blocked") else 0
         if args.command in catalog.COMMANDS:
             print(json.dumps(catalog.run(args), ensure_ascii=False))
             return 0

@@ -1,6 +1,7 @@
 """Run explicitly in CI: real browser, synthetic PNG/H.264, no remote accounts."""
 
 import base64
+import os
 import tempfile
 from pathlib import Path
 
@@ -23,7 +24,9 @@ def main():
             records = build([batch], output)
             publish(output, records)
             with sync_playwright() as playwright:
-                browser = playwright.chromium.launch()
+                browser = playwright.chromium.launch(
+                    executable_path=os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE")
+                )
                 page = browser.new_page()
                 remote = []
                 page.route(
@@ -33,6 +36,12 @@ def main():
                     "https://**", lambda route: (remote.append(route.request.url), route.abort())
                 )
                 page.goto(output.path("index.html").as_uri())
+                for pid in ("101", "102", "103"):
+                    source = page.locator(f"#post-{pid}").get_by_role(
+                        "link", name="Open original saved X post", exact=True
+                    )
+                    expect(source).to_be_visible()
+                    expect(source).to_have_attribute("href", f"https://x.com/i/status/{pid}")
                 page.locator("img").first.scroll_into_view_if_needed()
                 expect(page.locator("img").first).to_have_js_property("naturalWidth", 1)
                 page.locator("video").first.evaluate("v => v.load()")
