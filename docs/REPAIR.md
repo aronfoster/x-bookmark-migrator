@@ -21,6 +21,11 @@ these interfaces in their November 16 implementation coordination comments:
   remain in the audit report. The resolved category override, or the selected
   snapshot category, is passed as `category=` (first 200 characters for the
   adapter note limit); full original and override values stay in the report.
+  Without an override, this is the stable archive category key (`folder-<id>` or
+  `unfiled`), not a human-readable folder name. Original folder names remain in
+  the private report's `original_categories[].folders[].names`. Review/import
+  any desired display override before the first create: adoption never rewrites
+  an existing item's note.
 - `inspect_inventory(snapshot, pid)` and `validate_receipt(receipt, pid)` are the
   **FOS-166-owned** offline readers. Saved active inventory plus matching valid
   receipt is historical readback evidence (`fresh:false`), never current proof.
@@ -67,6 +72,9 @@ into this explicit mapping during supervised local acceptance; their private
 format is not available in this repository. Do not overwrite them or infer an
 owner override from changed archive provenance. Save the complete existing
 annotations file when adding the mapping; retain attachment entries unchanged.
+Rebuild with all batches referenced by that annotations file. Overrides for IDs
+outside a partial build fail closed; do not remove valid annotations merely to
+make a partial build succeed.
 
 ## Offline audit
 
@@ -211,7 +219,8 @@ The default pilot limit is three; an explicitly reviewed limit can be at most 10
 `repair-backfill-<run-id>.private.json` is a run report embedding unchanged adapter results,
 not a second durable create ledger. Blocked rows retain the adapter code, fixed
 reason, numeric blocking item ID and whitelisted numeric provider status/retry
-context; no exception message, URL, subprocess output or provider body is copied. A crash before that report is saved is
+context (the adapter's bounded decimal strings normalize to integers in the
+report); no exception message, URL, subprocess output or provider body is copied. A crash before that report is saved is
 recovered by rerunning through the adapter's existing intent/receipt protocol.
 The command has no X client or DELETE capability and does not reopen rejected or
 never-attempted records. FOS-166 owns prospective migration for those records.

@@ -439,11 +439,15 @@ def backfill(report, adapter, selected_ids, *, confirmed=False, limit=3):
             provider = summary.get("provider")
             if isinstance(provider, dict):
                 detail["provider"] = {
-                    k: v
+                    k: int(v)
                     for k, v in provider.items()
                     if k in ("http_status", "reset", "retry_after", "remaining")
-                    and type(v) is int
-                    and v >= 0
+                    and (
+                        type(v) is int
+                        and 0 <= v < 10**20
+                        or isinstance(v, str)
+                        and re.fullmatch(r"[0-9]{1,20}", v)
+                    )
                 }
             if type(summary.get("raindrop_id")) is int and summary["raindrop_id"] > 0:
                 detail["blocking_raindrop_id"] = summary["raindrop_id"]

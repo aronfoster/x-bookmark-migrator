@@ -574,22 +574,20 @@ def test_malformed_native_and_helper_evidence_are_specific_errors(tmp_path):
 def test_failure_report_keeps_only_structured_safe_diagnostics(corpus, tmp_path):
     _, report = audit(corpus, tmp_path)
 
+    from x_bookmark_migrator.raindrop import blocked
+
     class Failed:
         def ensure_raindrop(self, *args, **kwargs):
-            raise PilotError(
-                "PRIVATE body https://secret.invalid",
-                code="blocked_raindrop_retryable",
-                summary={
-                    "reason": "provider_request_failed",
-                    "raindrop_id": 7,
-                    "provider": {
-                        "http_status": 429,
-                        "retry_after": 15,
-                        "remaining": False,
-                        "reset": "PRIVATE",
-                        "body": "PRIVATE",
-                    },
-                    "url": "PRIVATE",
+            raise blocked(
+                "provider_request_failed",
+                retryable=True,
+                raindrop_id=7,
+                context={
+                    "http_status": "429",
+                    "retry_after": "15",
+                    "remaining": False,
+                    "reset": "PRIVATE",
+                    "body": "PRIVATE",
                 },
             )
 
@@ -728,3 +726,58 @@ def test_backfill_reruns_keep_paired_reports_and_create_once(corpus, tmp_path, m
     for report in reports:
         assert report.with_name(report.name.replace("backfill", "audit")).exists()
     assert all((args.output_dir / name).read_bytes() == raw for name, raw in original.items())
+
+
+@pytest.mark.parametrize("value", [True, -1, "-1", "1.5", "1e2", "９９", "9" * 21, "PRIVATE"])
+def test_provider_diagnostic_rejects_non_decimal_values(corpus, tmp_path, value):
+    from x_bookmark_migrator.raindrop import blocked
+
+    _, report = audit(corpus, tmp_path)
+
+    class Failed:
+        def ensure_raindrop(self, *args, **kwargs):
+            raise blocked("provider_request_failed", context={"http_status": value})
+
+    result = backfill(report, Failed(), ["101"], confirmed=True)
+    assert result["results"][0]["provider"] == {}
+
+
+def test_real_adapter_numeric_stderr_reaches_backfill_report(corpus, tmp_path, monkeypatch):
+    from subprocess import CompletedProcess
+
+    from x_bookmark_migrator import raindrop
+
+    _, report = audit(corpus, tmp_path)
+    script = tmp_path / "synthetic-skill.sh"
+    script.write_text("# Synthetic path; subprocess is replaced, never executed.\n")
+    calls = []
+
+    def failed_run(args, **kwargs):
+        calls.append(args)
+        return CompletedProcess(
+            args,
+            1,
+            stdout="",
+            stderr=json.dumps(
+                {
+                    "http_status": "429",
+                    "retry_after": "15",
+                    "reset": "1234567890",
+                    "remaining": "0",
+                    "message": "PRIVATE provider body",
+                }
+            ),
+        )
+
+    monkeypatch.setattr(raindrop.subprocess, "run", failed_run)
+    adapter = raindrop.RaindropAdapter(tmp_path / "ledger", script)
+    result = backfill(report, adapter, ["101", "102"], confirmed=True)
+    assert len(calls) == 1 and calls[0][-1] == "list-all"
+    assert result["results"][0]["provider"] == {
+        "http_status": 429,
+        "retry_after": 15,
+        "reset": 1234567890,
+        "remaining": 0,
+    }
+    assert result["summary"]["processed"] == 1 and result["summary"]["blocked"]
+    assert "PRIVATE" not in json.dumps(result)
