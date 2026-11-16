@@ -165,8 +165,18 @@ def build(batches, output):
 
 
 def apply_annotations(records, annotations):
+    if not isinstance(annotations, dict):
+        raise PilotError("Invalid media annotations object.")
+    overrides = annotations.get("category_overrides", {})
+    if not isinstance(overrides, dict):
+        raise PilotError("Category overrides must be an object.")
+    for pid, override in overrides.items():
+        if post_id(pid) != pid or pid not in {r["post_id"] for r in records}:
+            raise PilotError("Category override refers to an absent saved primary record.")
+        if not isinstance(override, str) or not 1 <= len(override.strip()) <= 1000:
+            raise PilotError("Invalid category override.")
     for record in records:
-        override = annotations.get("category_overrides", {}).get(record["post_id"])
+        override = overrides.get(record["post_id"])
         if override is not None:
             if not isinstance(override, str) or not 1 <= len(override) <= 1000:
                 raise PilotError("Invalid category override.")

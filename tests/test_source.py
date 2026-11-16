@@ -51,5 +51,44 @@ def test_foreign_domains_and_exact_ids():
         assert raindrop_post_id(url) is None
         with pytest.raises(PilotError):
             post_id(url)
-    assert post_id("00101") == "00101"
+    with pytest.raises(PilotError):
+        post_id("00101")
     assert post_id("101") != post_id("1010")
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["0", "00", "0101", "https://x.com/a/status/0101", "https://twitter.com./i/status/0101"],
+)
+def test_zero_padded_identity_is_blocked(value):
+    with pytest.raises(PilotError):
+        post_id(value)
+    if "://" in value:
+        with pytest.raises(PilotError):
+            raindrop_post_id(value)
+
+
+@pytest.mark.parametrize("host", ["x.com.", "mobile.twitter.com.", "WWW.X.COM."])
+def test_trailing_dot_is_same_x_host(host):
+    assert raindrop_post_id(f"https://{host}/a/status/101") == "101"
+    with pytest.raises(PilotError):
+        raindrop_post_id(f"https://{host}/home")
+
+
+@pytest.mark.parametrize(
+    "link",
+    ["mailto:a@example.invalid", "x.com/a/status/101", "https://t.co/abc", "https://t.co./abc"],
+)
+def test_ambiguous_primary_links_block_absence(link):
+    with pytest.raises(PilotError):
+        raindrop_post_id(link)
+
+
+@pytest.mark.parametrize(
+    "overrides", [[], None, {"0101": "label"}, {"999": "label"}, {"101": None}, {"101": " "}]
+)
+def test_invalid_category_overrides_fail_closed(overrides):
+    from x_bookmark_migrator.catalog import apply_annotations
+
+    with pytest.raises(PilotError):
+        apply_annotations([{"post_id": "101", "versions": []}], {"category_overrides": overrides})
