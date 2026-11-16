@@ -223,3 +223,31 @@ def test_25_32_43_checkpoint_is_not_new_gate_evidence():
         for key, ids in groups.items()
     }
     assert missing == {"removed": 25, "queued": 32, "blocked": 43}
+
+
+@pytest.mark.parametrize("pair", ["state_catalog", "state_ledger", "catalog_ledger"])
+def test_overlapping_state_dirs_zero_external_calls(migration, pair):
+    store, _, _, source, _, _, plan, apply = migration
+    name = plan()
+    catalog_dir = source.catalog.root
+    if pair == "state_catalog":
+        catalog_dir = store.root
+    elif pair == "state_ledger":
+        source.adapter.store = store
+    else:
+        source.adapter.store = source.catalog
+    with pytest.raises(PilotError, match="distinct state directories"):
+        apply(name, catalog_dir=catalog_dir)
+    assert not source.calls and not source.provider.calls
+    assert_no_delete_or_intent(store, source)
+
+
+def test_malformed_catalog_version_is_reported_as_blocked(migration, monkeypatch):
+    store, _, _, source, _, _, plan, apply = migration
+    name = plan()
+    records = read_catalog(source.catalog)
+    del records[0]["versions"]
+    monkeypatch.setattr("x_bookmark_migrator.discovery_gate.read_catalog", lambda _: records)
+    assert apply(name)["blocked"]
+    assert not source.provider.calls
+    assert_no_delete_or_intent(store, source)

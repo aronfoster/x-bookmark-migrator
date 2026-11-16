@@ -1,5 +1,12 @@
 # Verified archive-to-unbookmark pilot (FOS-167)
 
+**2026-11-16 override:** [FOS-166 mandatory discovery gate](RAINDROP.md) supersedes
+the original optional-Raindrop workflow below. New apply requires v2 plans,
+primary catalog/source-link proof, fresh active exact-ID Raindrop GET or the
+positive media-only exception, and local retirement of legacy removal helpers.
+The old commands below are historical context and lack the new required flags.
+No live resumption is authorized by this implementation.
+
 This implements a **1–3-item named-folder pilot** through the official X API.
 It removes bookmarks, never Posts. It is ready for code review; no live deletion,
 deployed-runtime storage acceptance, or actual billing is claimed by this PR.

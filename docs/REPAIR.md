@@ -18,7 +18,9 @@ these interfaces in their November 16 implementation coordination comments:
   `ensure_raindrop(pid, source_url, archive_ref, *, category=None) -> dict`.
   Backfill passes `archive_ref={"manifest": ..., "payload": ...}` from the first fully verified
   primary snapshot in deterministic manifest/payload hash order. All versions
-  remain in the audit report.
+  remain in the audit report. The resolved category override, or the selected
+  snapshot category, is passed as `category=` (first 200 characters for the
+  adapter note limit); full original and override values stay in the report.
 - `inspect_inventory(snapshot, pid)` and `validate_receipt(receipt, pid)` are the
   **FOS-166-owned** offline readers. Saved active inventory plus matching valid
   receipt is historical readback evidence (`fresh:false`), never current proof.
@@ -33,10 +35,16 @@ is implied by either PR, local tests, saved inventory or merged code.
 
 ## Source links and immutable evidence
 
-The shared parser accepts decimal strings without numeric coercion; x.com and
+The shared parser accepts positive decimal strings without numeric coercion or
+leading zeros; x.com and
  twitter.com with www/m/mobile; handle/status, i/status and i/web/status; optional
 photo/N or video/N, queries and fragments. A known X-host unsupported path is an
 error during dedupe, never silently skipped. Renames do not change identity.
+Single trailing DNS dots normalize to the same host; unresolved t.co links and
+non-HTTP(S)/malformed primary links block absence inference. See CATALOG.md for
+the local normalization policy. Preserve existing bookmarks if unsupported X
+profile/list/search links block; obtain a shared-contract disposition before
+proceeding, never edit or omit owner bookmarks to clear the gate.
 
 New archive payload/manifest rows have `source_post_id` and `source_post_url`.
 Existing hashed manifests, payloads and media are never rewritten. A catalog
@@ -66,7 +74,13 @@ All examples below use synthetic placeholders. Source files must be owner-only
 regular files. Audit output belongs in its own private directory, outside Git.
 The command rebuilds an in-memory catalog from hash-checked restored batches and
 original receipts; it does not trust an edited/stale catalog as archival evidence.
-It writes only the private audit report and prints counts, not IDs, paths or content.
+It writes private per-run reports and prints counts, not IDs, paths or content.
+`repair-audit-<run-id>.private.json` and `repair-backfill-<run-id>.private.json`
+share one random run identifier; each invocation preserves previous reports.
+Output must not overlap the catalog, adapter ledger, restored batches, removal
+directories, saved receipts or any input file (including mapped helper sources).
+Symlink aliases and ancestor/descendant overlaps are checked before locks/writes.
+Sibling private files may share a parent; keep output in its own child directory.
 
 ```sh
 uv run x-migrator repair-audit \
@@ -82,7 +96,12 @@ Repeat `--batch`, `--removal-dir` and `--helper-format` for every source. Add
 `--raindrop-receipt-dir /private/raindrop-ledger` to use the FOS-166 validators.
 No provider call occurs in audit, including with saved Raindrop inputs.
 
-Every native intent is read, not just successful/latest attempts. Raw response
+Every native intent is read, not just successful/latest attempts. Each filename
+must match the owner/post hash, and indices must be contiguous from zero within
+each supplied ledger; a missing first/intermediate intent fails the scan. Keep
+each native ledger intact rather than partitioning it across input directories.
+An entirely absent ledger or missing final attempt still requires the explicit
+all-sources inventory; sequence validation alone cannot detect that loss. Raw response
 identity/hashes and existing result receipts are cross-checked. Missing response
 means unknown; mismatched evidence stays unknown with a blocker. Orphan response
 or result files fail the scan. The scanner never calls `result_for` because that
@@ -121,7 +140,8 @@ private helper and receipts unchanged and independently review the mapping.
 ```
 
 Pointers are JSON Pointers; rows must be an array. Each file's count/hash is
-checked; each row must have a primary string ID. Unmapped outcomes become unknown
+checked; each row must have a primary string ID. Duplicate resolved source files
+across descriptors are rejected rather than counted twice. Unmapped outcomes become unknown
 and blocked. The report retains the descriptor hash, source file hash and row
 index, plus the private format description. Invalid/missing IDs, inaccessible or
 corrupt evidence fail rather than disappear from totals. Missing helper mapping,
@@ -136,9 +156,15 @@ retain source link, all original archive receipts/hashes/categories, display
 overrides, deletion attempts/outcome, classification evidence, Raindrop state/IDs,
 Drive/catalog links and repair blockers. The summary cross-tabs all five reporting
 categories by confirmed removed / unknown / rejected / never attempted.
+`non_media_missing_raindrop` means missing **verified readback**, including
+unchecked inventory and active items without a matching receipt. The row state
+distinguishes these from confirmed absence; they are not unrecoverable records.
 
 The default is ambiguous and **Raindrop-required**. Empty text in every archived
 post plus complete verified media can establish a positive media-only exception.
+This automatic case is deliberately narrow: any retained t.co URL is text and
+prevents exemption. It does not strip links or infer their meaning. For real
+media-only records with such text, use a hash-bound `--classifications` review.
 Emoji/hashtags with an image are not automatically exempt. Optional
 `--classifications` supplies an owner-only JSON object keyed by primary ID:
 
@@ -182,8 +208,10 @@ preserved state. Trash/conflicts/incomplete archival evidence block; 401/429,
 partial inventory and uncertain create stop this pass, with no caller retry.
 The default pilot limit is three; an explicitly reviewed limit can be at most 100.
 
-`repair-backfill.private.json` is a run report embedding unchanged adapter results,
-not a second durable create ledger. A crash before that report is saved is
+`repair-backfill-<run-id>.private.json` is a run report embedding unchanged adapter results,
+not a second durable create ledger. Blocked rows retain the adapter code, fixed
+reason, numeric blocking item ID and whitelisted numeric provider status/retry
+context; no exception message, URL, subprocess output or provider body is copied. A crash before that report is saved is
 recovered by rerunning through the adapter's existing intent/receipt protocol.
 The command has no X client or DELETE capability and does not reopen rejected or
 never-attempted records. FOS-166 owns prospective migration for those records.
@@ -199,6 +227,12 @@ Primary `link`, object `collection.$id`, active 0 versus Trash -99 and maximum
 50/page are documented. Search is not exact-ID lookup. Provider error handling,
 full stable inventory and durable ensure/readback tests belong to FOS-166; FOS-216
 consumes that implementation. No X endpoint/auth behavior changes here.
+
+Before the separately authorized live create pilot, run the shared read-only
+Raindrop inventory, resolve any unsupported-link block without modifying owner
+metadata, and republish the catalog/gallery with `source-links.jsonl`. Schedule
+curation outside adapter/gate operations that hold the catalog lock. The pilot
+must also confirm immediate post-create list visibility, count and Trash shapes.
 
 Required local evidence after independent review: every original helper intent
 accounted for; real 100-record hashes/counts; current saved Raindrop inventory and

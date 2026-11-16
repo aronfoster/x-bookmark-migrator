@@ -10,6 +10,7 @@ import httpx
 
 from .core import PilotError, exact_id, post_fields, validate_page
 from .drive import digest, encode, read_bounded
+from .source import source_url as post_source_url
 
 
 def source_url(value):
@@ -279,7 +280,7 @@ def plan_post(post, includes):
         posts.append(
             {
                 "id": pid,
-                "permalink": f"https://x.com/i/status/{pid}",
+                "permalink": post_source_url(pid),
                 "text": text,
                 "text_field": text_field,
                 "author": author,
@@ -392,7 +393,7 @@ def archive_batch(inventory, drive, media_http, *, post_ids=None, limit=5):
             "schema_version": 1,
             "post_id": pid,
             "source_post_id": pid,
-            "source_post_url": f"https://x.com/i/status/{pid}",
+            "source_post_url": post_source_url(pid),
             "category": category,
             "folders": folders,
             "inventory_record": record,
@@ -460,7 +461,7 @@ def archive_batch(inventory, drive, media_http, *, post_ids=None, limit=5):
                 "schema_version": 1,
                 "post_id": pid,
                 "source_post_id": pid,
-                "source_post_url": f"https://x.com/i/status/{pid}",
+                "source_post_url": post_source_url(pid),
                 "category": category,
                 "folders": folders,
                 "payload": saved,

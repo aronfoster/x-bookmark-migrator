@@ -22,6 +22,7 @@ from x_bookmark_migrator.repair import (
     scan_helper,
     scan_native,
 )
+from x_bookmark_migrator.unbookmark import attempt_base
 
 
 @pytest.fixture
@@ -30,7 +31,7 @@ def corpus(storage, tmp_path):  # noqa: F811
 
 
 def native(store, pid, status=None, body=None, number=0):
-    base = f"unbookmark-synthetic-{pid}-{number:06d}"
+    base = f"{attempt_base('900', pid)}-{number:06d}"
     intent = {
         "schema_version": 1,
         "state": "unbookmark_requested",
@@ -224,8 +225,8 @@ class Adapter:
         self.calls = []
         self.error = error
 
-    def ensure_raindrop(self, pid, url, archive_ref):
-        self.calls.append((pid, url, archive_ref))
+    def ensure_raindrop(self, pid, url, archive_ref, *, category=None):
+        self.calls.append((pid, url, archive_ref, category))
         if self.error:
             raise PilotError("Synthetic provider error", code=self.error)
         return {"source_post_id": pid, "source_post_url": url, "raindrop_id": 7}
@@ -353,7 +354,7 @@ def test_audit_cli_offline_redacted_and_requires_helper_coverage(
     assert not summary["removal_coverage_complete"]
     assert summary["catalog_records"] == 3
     assert "101" not in stdout and "Synthetic category" not in stdout
-    report = json.loads((tmp_path / "audit/repair-audit.private.json").read_text())
+    report = json.loads(next((tmp_path / "audit").glob("repair-audit-*.private.json")).read_text())
     assert "private_batch_helper_not_audited" in report["coverage"]["blockers"]
 
 
@@ -467,3 +468,263 @@ def test_removal_archive_mismatch_blocks_repair(corpus, tmp_path):
     with pytest.raises(PilotError):
         backfill(result, adapter, ["101"], confirmed=True)
     assert not adapter.calls
+
+
+@pytest.mark.parametrize("indices", [[1], [0, 2], [0, 1, 3]])
+def test_missing_native_intent_never_certifies_coverage(tmp_path, indices):
+    store = Store(tmp_path / "evidence")
+    for i in indices:
+        native(store, "101", 200, {"data": {"bookmarked": False}}, number=i)
+    with pytest.raises(PilotError, match="sequence is incomplete"):
+        scan_native(store.root)
+
+
+def test_contiguous_attempts_preserve_unknown_and_validate_filename(tmp_path):
+    store = Store(tmp_path / "evidence")
+    native(store, "101", 200, {"data": {"bookmarked": False}})
+    native(store, "101", number=1)
+    base = native(store, "102")
+    assert len(scan_native(store.root)) == 3
+    path = store.path(base + ".intent.private.json")
+    path.rename(store.path("unbookmark-wrong-000000.intent.private.json"))
+    with pytest.raises(PilotError, match="filename/identity"):
+        scan_native(store.root)
+
+
+@pytest.mark.parametrize("state", ["missing", "unverified", "active_unverified", "verified"])
+def test_non_media_cross_tab_distinguishes_unverified_from_exception(corpus, tmp_path, state):
+    records, _ = audit(corpus, tmp_path)
+    report = reconcile(
+        records,
+        [],
+        decisions={
+            "101": {
+                "content_binding": content_binding(records[0]),
+                "classification": "non_media",
+                "basis": "archive_review",
+                "reason": "Synthetic text",
+            }
+        },
+        inspect_raindrop=lambda pid: {"state": state},
+    )
+    row = report["rows"][0]
+    expected = "non_media_valid_raindrop" if state == "verified" else "non_media_missing_raindrop"
+    assert row["report_category"] == expected
+    assert ("raindrop_readback_unverified" in row["blockers"]) == (
+        state in ("unverified", "active_unverified")
+    )
+
+
+@pytest.mark.parametrize("override", [None, "Curated category", "x" * 1000])
+def test_category_comes_from_selected_archive_or_override(corpus, tmp_path, override):
+    from test_raindrop import SkillServer, adapter_for
+
+    records, _ = audit(corpus, tmp_path)
+    if override:
+        records[0]["category_override"] = override
+    report = reconcile(
+        records, [{"post_id": "101", "outcome": "confirmed_removed"}], coverage={"complete": True}
+    )
+    row = report["rows"][0]
+    chosen = next(
+        v
+        for v in records[0]["versions"]
+        if v["manifest"] == row["repair_archive_ref"]["manifest"]
+        and v["payload_receipt"] == row["repair_archive_ref"]["payload"]
+    )
+    expected = (override or chosen["category"])[:200]
+    server = SkillServer()
+    result = backfill(report, adapter_for(tmp_path, server), ["101"], confirmed=True)
+    assert result["summary"]["verified"] == 1
+    assert server.posts[0][1]["note"].endswith("Original category: " + expected)
+    assert row["category_override"] == override
+
+
+def test_helper_duplicate_file_across_descriptors_is_rejected(tmp_path):
+    store = Store(tmp_path / "helper")
+    first = helper(store, [{"id": "101", "state": "lost"}])
+    store.write("second.private.json", store.read(first.name))
+    seen = set()
+    scan_helper(first, seen_files=seen)
+    with pytest.raises(PilotError, match="duplicate"):
+        scan_helper(store.path("second.private.json"), seen_files=seen)
+
+
+@pytest.mark.parametrize("bad", [None, [], "invalid"])
+def test_malformed_decisions_are_specific_errors(corpus, tmp_path, bad):
+    records, _ = audit(corpus, tmp_path)
+    with pytest.raises(PilotError, match="Classification"):
+        classification(records[0], {"101": bad})
+
+
+def test_malformed_native_and_helper_evidence_are_specific_errors(tmp_path):
+    store = Store(tmp_path / "evidence")
+    base = native(store, "101")
+    store.write(base + ".intent.private.json", {"schema_version": 1})
+    with pytest.raises(PilotError, match="intent identity"):
+        scan_native(store.root)
+    spec = helper(store, [])
+    body = store.read(spec.name)
+    del body["records_pointer"]
+    store.write(spec.name, body)
+    with pytest.raises(PilotError, match="field pointers"):
+        scan_helper(spec)
+
+
+def test_failure_report_keeps_only_structured_safe_diagnostics(corpus, tmp_path):
+    _, report = audit(corpus, tmp_path)
+
+    class Failed:
+        def ensure_raindrop(self, *args, **kwargs):
+            raise PilotError(
+                "PRIVATE body https://secret.invalid",
+                code="blocked_raindrop_retryable",
+                summary={
+                    "reason": "provider_request_failed",
+                    "raindrop_id": 7,
+                    "provider": {
+                        "http_status": 429,
+                        "retry_after": 15,
+                        "remaining": False,
+                        "reset": "PRIVATE",
+                        "body": "PRIVATE",
+                    },
+                    "url": "PRIVATE",
+                },
+            )
+
+    result = backfill(report, Failed(), ["101", "102"], confirmed=True)
+    failure = result["results"][0]
+    assert failure["reason"] == "provider_request_failed"
+    assert failure["code"] == "blocked_raindrop_retryable"
+    assert failure["provider"] == {"http_status": 429, "retry_after": 15}
+    assert failure["blocking_raindrop_id"] == 7
+    assert "PRIVATE" not in json.dumps(result)
+    assert result["summary"]["processed"] == 1
+
+
+def cli_args(corpus, tmp_path):
+    import argparse
+
+    from x_bookmark_migrator.repair_cli import add_commands
+
+    parser = argparse.ArgumentParser()
+    add_commands(parser.add_subparsers(dest="command", required=True))
+
+    batch, output, _, _ = corpus
+    state = Store(tmp_path / "attempts")
+    native(state, "101")
+    return parser.parse_args(
+        [
+            "repair-audit",
+            "--catalog-dir",
+            str(output.root),
+            "--output-dir",
+            str(tmp_path / "reports"),
+            "--batch",
+            str(batch[0]),
+            str(batch[1]),
+            "--removal-dir",
+            str(state.root),
+            "--expected-records",
+            "3",
+        ]
+    )
+
+
+def test_rerun_keeps_both_private_reports(corpus, tmp_path):
+    from x_bookmark_migrator.repair_cli import run
+
+    args = cli_args(corpus, tmp_path)
+    run(args)
+    first = next(args.output_dir.glob("repair-audit-*.private.json"))
+    original = first.read_bytes()
+    run(args)
+    assert len(list(args.output_dir.glob("repair-audit-*.private.json"))) == 2
+    assert first.read_bytes() == original
+
+
+@pytest.mark.parametrize(
+    "collision",
+    [
+        "catalog_child",
+        "catalog_parent",
+        "batch_child",
+        "removal_child",
+        "ledger",
+        "symlink",
+        "classification",
+        "helper_source",
+    ],
+)
+def test_overlapping_output_rejected_before_writes_or_provider(
+    corpus, tmp_path, monkeypatch, collision
+):
+    from x_bookmark_migrator import repair_cli
+
+    args = cli_args(corpus, tmp_path)
+    if collision == "catalog_child":
+        args.output_dir = args.catalog_dir / "nested"
+    elif collision == "catalog_parent":
+        args.output_dir = args.catalog_dir.parent
+    elif collision == "batch_child":
+        from pathlib import Path
+
+        args.output_dir = Path(args.batch[0][0]) / "nested"
+    elif collision == "removal_child":
+        args.output_dir = args.removal_dir[0] / "nested"
+    elif collision == "ledger":
+        args.raindrop_ledger_dir = args.output_dir / "ledger"
+    elif collision == "symlink":
+        alias = tmp_path / "alias"
+        alias.symlink_to(args.catalog_dir, target_is_directory=True)
+        args.output_dir = alias / "nested"
+    elif collision == "classification":
+        args.classifications = args.output_dir / "decisions.json"
+    else:
+        evidence = Store(args.output_dir)
+        spec = helper(evidence, [{"id": "101", "state": "lost"}])
+        # Descriptor outside output, source explicitly inside it.
+        other = Store(tmp_path / "descriptor")
+        data = evidence.read(spec.name)
+        data["files"][0]["path"] = str(evidence.path("helper.private.json"))
+        other.write(spec.name, data)
+        args.helper_format = [other.path(spec.name)]
+
+    def forbidden(*a, **kw):
+        pytest.fail("Overlap must fail before writes/locks or provider initialization")
+
+    monkeypatch.setattr(repair_cli, "Store", forbidden)
+    monkeypatch.setattr(repair_cli, "shared_raindrop", forbidden)
+    with pytest.raises(PilotError, match="overlap"):
+        repair_cli.run(args)
+
+
+def test_backfill_reruns_keep_paired_reports_and_create_once(corpus, tmp_path, monkeypatch):
+    from test_raindrop import SkillServer, adapter_for
+
+    from x_bookmark_migrator import repair_cli
+
+    args = cli_args(corpus, tmp_path)
+    helper_store = Store(tmp_path / "helper")
+    args.helper_format = [helper(helper_store, [])]
+    args.command = "repair-backfill"
+    args.all_removal_sources_confirmed = True
+    args.confirm_raindrop_writes = True
+    args.raindrop_ledger_dir = tmp_path / "ledger"
+    args.raindrop_script = tmp_path / "synthetic-skill"
+    args.post_id = ["101"]
+    args.limit = 3
+    server = SkillServer()
+    adapter = adapter_for(tmp_path, server)
+    module = repair_cli.shared_raindrop()
+    monkeypatch.setattr(module, "RaindropAdapter", lambda *a: adapter)
+    assert repair_cli.run(args)["verified"] == 1
+    original = {p.name: p.read_bytes() for p in args.output_dir.glob("*.private.json")}
+    assert repair_cli.run(args)["verified"] == 1
+    assert len(server.posts) == 1
+    reports = list(args.output_dir.glob("repair-backfill-*.private.json"))
+    assert len(reports) == 2
+    for report in reports:
+        assert report.with_name(report.name.replace("backfill", "audit")).exists()
+    assert all((args.output_dir / name).read_bytes() == raw for name, raw in original.items())

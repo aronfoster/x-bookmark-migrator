@@ -1,6 +1,7 @@
 """Offline repair audit entry point. Provider execution is a separate explicit command."""
 
 import json
+import secrets
 from pathlib import Path
 
 from .catalog import build, private_bytes
@@ -60,25 +61,44 @@ def offline_inspector(args, records):
     )
 
 
+def overlap(a, b):
+    return a.is_relative_to(b) or b.is_relative_to(a)
+
+
 def run(args):
     if args.command == "repair-backfill" and not args.confirm_raindrop_writes:
         raise PilotError("Backfill requires explicit --confirm-raindrop-writes.")
     if args.expected_records < 1:
         raise PilotError("Expected archive population must be positive.")
-    catalog, output = Store(args.catalog_dir), Store(args.output_dir)
-    if (
-        catalog.root == output.root
-        or any(output.root == Path(b[0]).resolve() for b in args.batch)
-        or any(output.root == d.resolve() for d in args.removal_dir)
-    ):
-        raise PilotError("Audit output must be separate from source evidence and catalog.")
+    # Resolve aliases and reject overlap before Store creates/chmods directories
+    # or acquires locks. Sibling evidence files may share a parent with output.
+    catalog_root, output_root = args.catalog_dir.resolve(), args.output_dir.resolve()
+    ledger = getattr(args, "raindrop_ledger_dir", None)
+    writable = [catalog_root, output_root] + ([ledger.resolve()] if ledger else [])
+    if any(overlap(a, b) for i, a in enumerate(writable) for b in writable[i + 1 :]):
+        raise PilotError("Repair catalog, output and ledger directories must not overlap.")
+    sources = [Path(p).resolve() for batch in args.batch for p in batch]
+    directories = list(dict.fromkeys(d.resolve() for d in args.removal_dir))
+    descriptors = list(dict.fromkeys(d.resolve() for d in args.helper_format))
+    sources.extend(directories + descriptors)
+    sources.extend(
+        p.resolve()
+        for p in (args.classifications, args.raindrop_inventory, args.raindrop_receipt_dir)
+        if p is not None
+    )
+    if any(overlap(output_root, path) for path in sources):
+        raise PilotError("Audit output must not overlap source evidence.")
+    attempts, seen_files = [], set()
+    for directory in directories:
+        attempts.extend(scan_native(directory))
+    for descriptor in descriptors:
+        attempts.extend(scan_helper(descriptor, seen_files=seen_files))
+    if any(overlap(output_root, Path(path)) for path in seen_files):
+        raise PilotError("Audit output must not overlap helper source evidence.")
+    catalog, output = Store(catalog_root), Store(output_root)
+    run_id = secrets.token_hex(16)
     with catalog.locked(), output.locked():
         records = build(args.batch, catalog)
-        attempts = []
-        for directory in dict.fromkeys(args.removal_dir):
-            attempts.extend(scan_native(directory))
-        for descriptor in dict.fromkeys(args.helper_format):
-            attempts.extend(scan_helper(descriptor))
         blockers = []
         if not args.all_removal_sources_confirmed:
             blockers.append("all_removal_sources_not_attested")
@@ -94,12 +114,12 @@ def run(args):
             coverage={"complete": not blockers, "blockers": blockers},
             inspect_raindrop=offline_inspector(args, records),
         )
-        output.write("repair-audit.private.json", report)
+        output.write(f"repair-audit-{run_id}.private.json", report)
         if args.command == "repair-backfill":
             module = shared_raindrop()
             adapter = module.RaindropAdapter(args.raindrop_ledger_dir, args.raindrop_script)
             result = backfill(report, adapter, args.post_id, confirmed=True, limit=args.limit)
-            output.write("repair-backfill.private.json", result)
+            output.write(f"repair-backfill-{run_id}.private.json", result)
             return result["summary"]
         return {
             **report["summary"],

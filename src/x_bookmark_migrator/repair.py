@@ -2,6 +2,7 @@
 
 import copy
 import json
+import re
 from collections import Counter
 from pathlib import Path
 
@@ -9,7 +10,7 @@ from .catalog import private_bytes, source_sidecar
 from .core import PilotError, exact_id
 from .drive import digest, encode
 from .source import source_url
-from .unbookmark import classify
+from .unbookmark import attempt_base, classify
 
 OUTCOMES = ("confirmed_removed", "outcome_unknown", "rejected", "never_attempted")
 CATEGORIES = (
@@ -28,7 +29,11 @@ STATES = {
 
 def read_json(path):
     raw = private_bytes(path)
-    return json.loads(raw), {"path": str(Path(path).absolute()), "sha256": digest(raw)}
+    try:
+        value = json.loads(raw)
+    except (ValueError, UnicodeError):
+        raise PilotError("Malformed private JSON evidence.") from None
+    return value, {"path": str(Path(path).resolve()), "sha256": digest(raw)}
 
 
 def scan_native(directory):
@@ -42,11 +47,18 @@ def scan_native(directory):
         for path in root.glob(f"unbookmark-*.{suffix}.private.json"):
             if path.name.removesuffix(f".{suffix}.private.json") not in bases:
                 raise PilotError("Orphan removal receipt: supply its original intent.")
-    attempts = []
+    attempts, sequences = [], {}
     for path in intents:
         intent, evidence = read_json(path)
+        if not isinstance(intent, dict) or not {"post_id", "owner_id"} <= intent.keys():
+            raise PilotError("Invalid historical removal intent identity.")
         pid = exact_id(intent["post_id"])
         owner = exact_id(intent["owner_id"])
+        prefix = attempt_base(owner, pid)
+        match = re.fullmatch(re.escape(prefix) + r"-([0-9]{6})\.intent\.private\.json", path.name)
+        if match is None:
+            raise PilotError("Historical removal intent filename/identity mismatch.")
+        sequences.setdefault(prefix, []).append(int(match[1]))
         endpoint = f"/2/users/{owner}/bookmarks/{pid}"
         if (
             intent.get("schema_version") != 1
@@ -63,7 +75,8 @@ def scan_native(directory):
             response, proof = read_json(response_path)
             sources.append(proof)
             if (
-                response.get("intent_sha256") != digest(encode(intent))
+                not isinstance(response, dict)
+                or response.get("intent_sha256") != digest(encode(intent))
                 or response.get("endpoint") != endpoint
                 or type(response.get("status")) is not int
             ):
@@ -75,6 +88,7 @@ def scan_native(directory):
             sources.append(proof)
             if (
                 response is None
+                or not isinstance(result, dict)
                 or result.get("state") != state
                 or result.get("intent_sha256") != digest(encode(intent))
                 or result.get("response_sha256") != digest(encode(response))
@@ -92,6 +106,8 @@ def scan_native(directory):
                 "blockers": blockers,
             }
         )
+    if any(sorted(indices) != list(range(len(indices))) for indices in sequences.values()):
+        raise PilotError("Historical removal attempt sequence is incomplete.")
     return attempts
 
 
@@ -108,11 +124,12 @@ def pointer(value, path):
     return value
 
 
-def scan_helper(descriptor_path):
+def scan_helper(descriptor_path, *, seen_files=None):
     """No guessed local format: explicit reviewed mapping + hash-bound source files."""
     spec, spec_ref = read_json(descriptor_path)
     if (
-        spec.get("schema_version") != 1
+        not isinstance(spec, dict)
+        or spec.get("schema_version") != 1
         or not isinstance(spec.get("format_description"), str)
         or not spec["format_description"].strip()
         or spec.get("all_intents_included") is not True
@@ -122,8 +139,22 @@ def scan_helper(descriptor_path):
         or any(v not in OUTCOMES[:3] for v in spec["outcome_map"].values())
     ):
         raise PilotError("Document and inventory the private helper format before audit.")
-    attempts, seen = [], set()
+    for field in ("records_pointer", "post_id_pointer", "outcome_pointer"):
+        value = spec.get(field)
+        if not isinstance(value, str) or (value and not value.startswith("/")):
+            raise PilotError("Helper descriptor requires valid field pointers.")
+    attempts = []
+    seen = seen_files if seen_files is not None else set()
     for item in spec["files"]:
+        if (
+            not isinstance(item, dict)
+            or not isinstance(item.get("path"), str)
+            or not isinstance(item.get("sha256"), str)
+            or not re.fullmatch(r"[a-f0-9]{64}", item["sha256"])
+            or type(item.get("record_count")) is not int
+            or item["record_count"] < 0
+        ):
+            raise PilotError("Invalid helper source file descriptor.")
         path = Path(descriptor_path).parent / item["path"]
         data, evidence = read_json(path)
         if evidence["sha256"] != item["sha256"] or evidence["path"] in seen:
@@ -157,9 +188,10 @@ def content_binding(record):
 def classification(record, decisions):
     """Only empty-text complete media or explicit hash-bound evidence is exempt."""
     evidence = decisions.get(record["post_id"])
-    if evidence is not None:
+    if record["post_id"] in decisions:
         if (
-            evidence.get("content_binding") != content_binding(record)
+            not isinstance(evidence, dict)
+            or evidence.get("content_binding") != content_binding(record)
             or evidence.get("classification") not in ("media_only", "non_media", "ambiguous")
             or evidence.get("basis") not in ("owner_review", "archive_review")
             or not isinstance(evidence.get("reason"), str)
@@ -190,7 +222,10 @@ def reconcile(records, attempts, *, decisions=None, coverage=None, inspect_raind
 
     inspect_raindrop is supplied by FOS-166; this module never parses provider pages.
     """
-    decisions = decisions or {}
+    if decisions is None:
+        decisions = {}
+    if not isinstance(decisions, dict):
+        raise PilotError("Classification evidence must be an object keyed by primary ID.")
     coverage = coverage or {"complete": False, "blockers": ["removal_sources_not_attested"]}
     by_id = {}
     for record in records:
@@ -259,6 +294,11 @@ def reconcile(records, attempts, *, decisions=None, coverage=None, inspect_raind
                 chosen = min(
                     usable, key=lambda v: (v["manifest"]["sha256"], v["payload_receipt"]["sha256"])
                 )
+                # Retain full original labels and overrides above; the shared
+                # adapter's concise note contract allows at most 200 characters.
+                row["repair_category"] = (record.get("category_override") or chosen["category"])[
+                    :200
+                ]
                 row["repair_archive_ref"] = {
                     "manifest": chosen["manifest"],
                     "payload": chosen["payload_receipt"],
@@ -300,7 +340,7 @@ def reconcile(records, attempts, *, decisions=None, coverage=None, inspect_raind
             else "non_media_valid_raindrop"
             if state == "verified"
             else "non_media_missing_raindrop"
-            if state == "missing"
+            if state in ("missing", "unverified", "active_unverified")
             else "exceptional_unrecoverable"
         )
         if kind != "media_only" and state in ("unverified", "active_unverified"):
@@ -385,10 +425,29 @@ def backfill(report, adapter, selected_ids, *, confirmed=False, limit=3):
         try:
             # Adapter holds the lock, refreshes full inventory, recovers uncertain
             # POSTs and returns only after fresh GET. Do not implement retries here.
-            receipt = adapter.ensure_raindrop(pid, source_url(pid), row["repair_archive_ref"])
+            receipt = adapter.ensure_raindrop(
+                pid, source_url(pid), row["repair_archive_ref"], category=row["repair_category"]
+            )
         except PilotError as exc:
-            # Error messages may contain provider material: persist only its code.
-            results.append({"source_post_id": pid, "state": "blocked", "reason": exc.code})
+            # Only the shared adapter's structured diagnostics, never exception
+            # messages, URLs, subprocess output or raw provider bodies.
+            detail = {"code": exc.code, "reason": exc.code}
+            summary = exc.summary if isinstance(exc.summary, dict) else {}
+            reason = summary.get("reason")
+            if isinstance(reason, str) and re.fullmatch(r"[a-z_]{1,80}", reason):
+                detail["reason"] = reason
+            provider = summary.get("provider")
+            if isinstance(provider, dict):
+                detail["provider"] = {
+                    k: v
+                    for k, v in provider.items()
+                    if k in ("http_status", "reset", "retry_after", "remaining")
+                    and type(v) is int
+                    and v >= 0
+                }
+            if type(summary.get("raindrop_id")) is int and summary["raindrop_id"] > 0:
+                detail["blocking_raindrop_id"] = summary["raindrop_id"]
+            results.append({"source_post_id": pid, "state": "blocked", **detail})
             break
         results.append({"source_post_id": pid, "state": "verified", "receipt": receipt})
     return {

@@ -183,3 +183,28 @@ After review/merge, when the owner chooses to participate:
 No desktop access, production OpenClaw invocation, live personal account reads or
 writes, X unbookmark, Drive mutation, or Raindrop creation occurred in development.
 Synthetic tests cannot establish those authenticated acceptance results or cost.
+
+
+### Exact source identity and dedupe policy (FOS-216 review)
+
+The shared parser treats IDs as positive decimal strings of at most 19 digits,
+without leading zeros. It accepts x.com/twitter.com, www/m/mobile aliases,
+`/<handle>/status/<id>`, `/i/status/<id>`, `/i/web/status/<id>`, optional
+`/photo/N` or `/video/N`, trailing slash, query and fragment, and a single trailing
+DNS root dot. These are local normalization rules, not X API response guarantees.
+New archive source fields call the same formatter.
+
+`catalog-raindrop-match` now fails closed rather than skipping unsupported X links.
+The same rule applies to FOS-166 full-list dedupe: even a saved X profile, list,
+search or home URL blocks absence inference. Missing/malformed/non-HTTP(S) links
+also block; this is a deliberately conservative input contract, not a claim about
+which schemes Raindrop stores. Unresolved t.co short links block because the local
+parser cannot establish their target without a network lookup. No redirects are
+followed. Ordinary foreign HTTP(S) links are ignored.
+
+Run the separately authorized read-only Raindrop inventory before any create pilot.
+If it reports unsupported links, preserve existing bookmarks and metadata, record
+the numeric blocking IDs privately, and resolve the shared-parser contract in
+FOS-216 before proceeding. Do not delete, rewrite or omit bookmarks to bypass it.
+Category overrides must name existing exact primary IDs; invalid or unknown keys
+stop rebuild so importing a mistyped private category sidecar cannot silently fail.
