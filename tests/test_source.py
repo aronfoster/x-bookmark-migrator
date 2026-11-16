@@ -1,0 +1,55 @@
+"""Synthetic identities only; exercise the parser shared with FOS-166."""
+
+import pytest
+
+from x_bookmark_migrator.catalog import post_id as legacy_post_id
+from x_bookmark_migrator.core import PilotError
+from x_bookmark_migrator.source import post_id, raindrop_post_id, source_url
+
+
+@pytest.mark.parametrize(
+    "host", [p + h for h in ("x.com", "twitter.com") for p in ("", "www.", "mobile.", "m.")]
+)
+@pytest.mark.parametrize("path", ["old_name/status", "renamed/status", "i/status", "i/web/status"])
+@pytest.mark.parametrize("suffix", ["", "/", "/photo/1", "/video/12", "/photo/2/?s=20#fragment"])
+def test_aliases(host, path, suffix):
+    pid = "9007199254740993"
+    url = f"https://{host}/{path}/{pid}{suffix}"
+    assert post_id(url) == legacy_post_id(url) == raindrop_post_id(url) == pid
+    assert source_url(url) == f"https://x.com/i/status/{pid}"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://x.com/home",
+        "https://mobile.twitter.com/search?q=101",
+        "https://x.com/a/status/101/extra",
+        "https://x.com/a/status/101/photo/0",
+        "https://x.com:443/i/status/101",
+        "https://user@x.com/i/status/101",
+        "https://x.com/a/status/1010/video/x",
+        "https://x.com/a/status/１０１",
+        "ftp://x.com/a/status/101",
+        "https://x.com/a/status/101\n",
+    ],
+)
+def test_unsupported_x_link_blocks_dedupe(url):
+    with pytest.raises(PilotError):
+        raindrop_post_id(url)
+
+
+@pytest.mark.parametrize("value", [101, 101.0, True, None, "1e2", "x101"])
+def test_ids_never_coerced(value):
+    with pytest.raises(PilotError):
+        post_id(value)
+
+
+def test_foreign_domains_and_exact_ids():
+    assert legacy_post_id is post_id
+    for url in ("https://x.com.evil.invalid/a/status/101", "https://example.invalid/?x=101"):
+        assert raindrop_post_id(url) is None
+        with pytest.raises(PilotError):
+            post_id(url)
+    assert post_id("00101") == "00101"
+    assert post_id("101") != post_id("1010")

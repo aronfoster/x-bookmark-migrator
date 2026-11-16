@@ -391,6 +391,8 @@ def archive_batch(inventory, drive, media_http, *, post_ids=None, limit=5):
         payload = {
             "schema_version": 1,
             "post_id": pid,
+            "source_post_id": pid,
+            "source_post_url": f"https://x.com/i/status/{pid}",
             "category": category,
             "folders": folders,
             "inventory_record": record,
@@ -457,6 +459,8 @@ def archive_batch(inventory, drive, media_http, *, post_ids=None, limit=5):
                 "type": "post",
                 "schema_version": 1,
                 "post_id": pid,
+                "source_post_id": pid,
+                "source_post_url": f"https://x.com/i/status/{pid}",
                 "category": category,
                 "folders": folders,
                 "payload": saved,
