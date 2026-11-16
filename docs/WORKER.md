@@ -29,12 +29,26 @@ x-migrator --state-dir /private/state worker --config /private/worker.json --onc
 x-migrator --state-dir /private/state worker --config /private/worker.json --once --live --allow-delete
 ```
 
-Paths here are placeholders. Keep config outside Git, mode 0600; state, restore,
-catalog and the shared Raindrop ledger must be disjoint, mode 0700 and owned by
-the ordinary runtime account. Preserve existing X/Drive credentials in the
+Paths here are placeholders. Keep config outside Git. Live config is root-owned
+0640 with read access only for the dedicated runtime group, under root-protected
+ancestors. The runtime UID must differ from every agent UID. State and the shared
+Raindrop ledger stay runtime-owned 0700; credentials/receipts/locks stay 0600.
+Catalog and restored publication roots may opt into an audited reader group via
+mode 2750 (setgid, group read/traverse only); published bytes use 0640. Their
+`publication_reader_gid` must match the explicit local profile. Private 0700 roots
+remain the default outside this deployment. All four roots must be disjoint.
+The reader gains no write access to deletion state, annotations, classification
+files or locks. Preserve those owner-only files and their existing curation;
+perform curation commands through the owner-supervised runtime account. Preserve existing X/Drive credentials in the
 original state directory and existing Raindrop authentication. `X_CLIENT_ID` and
 optional `X_CLIENT_SECRET` come from the protected existing environment. No new
-OAuth store, rclone grant or second Raindrop client is introduced.
+OAuth store, rclone grant or second Raindrop client is introduced. The shared
+Raindrop adapter accepts an explicit `raindrop_script_sha256`: the worker requires
+it and rechecks the bytes before every invocation. Its script and ancestors must
+be root-owned, without group/other write or ACL grants, outside agent workspaces.
+`RAINDROP_TOKEN` must be supplied by the protected EnvironmentFile; a minimal
+subprocess environment removes BASH_ENV/ENV and HOME credential sourcing. Manual
+non-worker adapter callers retain their existing behavior.
 
 Private JSON configuration fields:
 
@@ -50,6 +64,8 @@ Private JSON configuration fields:
 | `run_cap_usd` | Positive reservation limit, at most 20 |
 | `reservation_usd` | Positive **whole-request** conservative reserves for every operation below; no implicit prices |
 | `helper_descriptors` | All reviewed private helper mappings using `REPAIR.md`; empty only when the local audit proves no out-of-tree attempts |
+| `raindrop_script_sha256` | Reviewed SHA256 of the protected Raindrop script; required for DELETE |
+| `publication_reader_gid` | Explicit reader GID for 2750 catalog/restore roots, or null for private roots |
 | `gates` | Explicit booleans below, initially false |
 
 Reservations must specify `identity`, `main`, `folders`, `folder`, `hydrate`,
@@ -97,7 +113,7 @@ and crashes, and per-operation counts/amounts appear in each private run report.
   The narrow existing affirmative media-only test is unchanged. Source/article
   bodies never enter Raindrop fields.
 * Atomic create-only restore now has an explicit `existing_ok` recovery option:
-  identical owner-only regular files may be reused **after fresh remote reads**;
+  identical owner-written regular files (private or explicit reader-group-only) may be reused **after fresh remote reads**;
   conflicting bytes and symlinks fail. Partial temp files are never accepted as
   final restores. Default standalone restore still refuses existing destinations.
 * Publication merges all prior records/versions and reapplies annotations under
@@ -110,7 +126,15 @@ and crashes, and per-operation counts/amounts appear in each private run report.
   Raindrop's numeric failure context is preserved through the shared adapter.
   A lightweight systemd tick checks due time every five minutes; no external call
   occurs before reset, and ordinary successful runs remain daily. This is bounded
-  retry scheduling, not a sleeping process or paid retry loop.
+  retry scheduling, not a sleeping process or paid retry loop. Before any provider
+  work, the worker durably records the next daily deadline. Non-rate-limit failures
+  (including filesystem/schema exceptions) retain a full-day deferral; a hard kill
+  or inability to write a later error report cannot erase the prewritten deadline.
+  Retryable Raindrop errors without provider reset evidence also wait a day.
+  Per-item retry deadlines survive shared-batch adoption and govern queue selection;
+  an entirely delayed queue retains its inventory instead of invalidating queued
+  receipts with a new discovery pass. Fixed failure text goes to stderr/journald;
+  detailed evidence stays in the protected report.
 * OAuth rotation writes an intent before refresh and stores the new token atomically
   before other work. All normal CLI clients respect it. An interruption with the
   old token still installed stops as `owner_reconsent_needed`; a new durable token

@@ -14,14 +14,13 @@ from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-import httpx
-
 from .archive import archive_batch, enrich_references, restore_batch
-from .catalog import apply_annotations, build, private_bytes, publish, read_catalog
-from .core import TOKEN_ROTATION, Client, PilotError, Store
+from .catalog import apply_annotations, build, publish, read_catalog
+from .core import TOKEN_ROTATION, Client, PilotError
 from .discovery_gate import positive_media_only
 from .drive import digest
 from .inventory import Inventory
+from .publication import PublicationStore, publication_bytes
 from .repair import scan_helper, scan_native
 from .source import source_url
 from .unbookmark import apply_plan, latest_attempt, make_plan
@@ -320,17 +319,22 @@ class Worker:
     def adopt(self, receipt_name, inventory):
         receipt = self.store.read(receipt_name)
         manifest = receipt["manifest"]
-        root = Store(self.restore_root / manifest["sha256"])
+        child = self.restore_root / manifest["sha256"]
+        parent = PublicationStore(self.restore_root)
+        if not child.exists() and parent.reader_gid is not None:
+            child.mkdir(mode=0o700)
+            child.chmod(0o2750)  # setgid inherited from audited parent
+        root = PublicationStore(child)
         # Fresh independent GET/hash readback; create_local tolerates identical crash remnants.
         restore_batch(self.drive, manifest["file_id"], root, manifest["sha256"], existing_ok=True)
         incoming = build([(root.root, self.store.path(receipt_name))], self.catalog)
         merge_publication(self.catalog, incoming)
         rows = [
-            json.loads(line) for line in private_bytes(root.path("manifest.jsonl")).splitlines()
+            json.loads(line) for line in publication_bytes(root.path("manifest.jsonl")).splitlines()
         ]
         for row in rows:
             pid = row["post_id"]
-            payload = json.loads(private_bytes(root.path(pid + ".json")))
+            payload = json.loads(publication_bytes(root.path(pid + ".json")))
             current = inventory.state["posts"].get(pid)
             matches = current == payload.get("inventory_record")
             state = (
@@ -345,7 +349,10 @@ class Worker:
                 if (
                     pid not in self.held
                     and previous["receipt"] == receipt_name
-                    and previous["state"] in ("blocked", "retryable")
+                    and (
+                        previous["state"] in ("blocked", "retryable")
+                        or previous.get("retry_at", 0) > self.clock()
+                    )
                 ):
                     # Re-publishing a shared batch must not silently clear an item's hold.
                     continue
@@ -480,12 +487,17 @@ class Worker:
             }
         self.save()
 
+    def queued(self, pid, item):
+        return (
+            item["state"] == "queued"
+            and pid not in self.held
+            and item.get("retry_at", 0) <= self.clock()
+        )
+
     def drain(self, inventory):
-        selected = [
-            pid
-            for pid, item in self.state["items"].items()
-            if item["state"] == "queued" and pid not in self.held
-        ][: self.config["max_items"]]
+        selected = [pid for pid, item in self.state["items"].items() if self.queued(pid, item)][
+            : self.config["max_items"]
+        ]
         for pid in selected:
             self.gate.check()
             item = self.state["items"][pid]
@@ -495,11 +507,15 @@ class Worker:
             self.adopt(item["receipt"], inventory)
             item = self.state["items"][pid]
             root = Path(item["restore_dir"])
-            payload = json.loads(private_bytes(root / (pid + ".json")))
+            payload = json.loads(publication_bytes(root / (pid + ".json")))
             rows = [
-                json.loads(line) for line in private_bytes(root / "manifest.jsonl").splitlines()
+                json.loads(line) for line in publication_bytes(root / "manifest.jsonl").splitlines()
             ]
-            row = next(r for r in rows if r["post_id"] == pid)
+            row = next((r for r in rows if r["post_id"] == pid), None)
+            if row is None:
+                raise PilotError(
+                    "Queued ID is absent from restored manifest.", code="archive_mismatch"
+                )
             with self.catalog.locked():
                 classification = (self.catalog.read("media-only.private.json") or {}).get(pid)
             try:
@@ -513,9 +529,19 @@ class Worker:
                         },
                     )
             except PilotError as exc:
+                retry_at = self.clock() + 86400
+                if exc.code == "blocked_raindrop_retryable":
+                    context = (exc.summary or {}).get("provider", {})
+                    self.gate.save(
+                        "raindrop",
+                        reset=context.get("reset"),
+                        retry_after=context.get("retry_after"),
+                        seconds=86400,
+                    )
+                    retry_at = self.store.read(DEFER)["until"]
                 item.update(
                     state="queued" if exc.code == "blocked_raindrop_retryable" else "blocked",
-                    retry_at=self.clock() + 86400,
+                    retry_at=retry_at,
                     failure_reason=exc.code,
                     discovery_state="raindrop_unverified",
                 )
@@ -583,6 +609,8 @@ class Worker:
         if self.clock() < self.state["next_daily"]:
             return {"quiet": True, "not_due": True}
         stop = None
+        self.state["next_daily"] = self.clock() + 86400
+        self.save()  # Must succeed before any provider call, including bootstrap.
         try:
             if self.store.read("inventory-active.private.json"):
                 inventory = Inventory.load(self.store)
@@ -592,30 +620,46 @@ class Worker:
                     )
             else:
                 inventory = None
-            queued = any(
-                i["state"] == "queued" and pid not in self.held
-                for pid, i in self.state["items"].items()
-            )
+            queued = any(self.queued(pid, i) for pid, i in self.state["items"].items())
             if not queued:
+                delayed = [
+                    i.get("retry_at", 0)
+                    for pid, i in self.state["items"].items()
+                    if i["state"] == "queued"
+                    and pid not in self.held
+                    and i.get("retry_at", 0) > self.clock()
+                ]
+                if delayed:
+                    # Keep the inventory bound to queued receipts; a new pass would invalidate it.
+                    self.state["next_daily"] = min(delayed)
+                    self.save()
+                    return {"quiet": True, "not_due": True}
                 inventory = self.discover()
             if allow_delete:
                 self.drain(inventory)
             if inventory:
                 self.coverage(inventory)
             self.state["next_daily"] = self.clock() + 86400
-        except (PilotError, httpx.HTTPError) as exc:
-            stop = exc.code if isinstance(exc, PilotError) else "transport_error"
-            # A provider failure stops the entire run; no further X/Drive/Raindrop requests.
-            if isinstance(exc, PilotError) and exc.code == "blocked_raindrop_retryable":
-                context = (exc.summary or {}).get("provider", {})
+        except Exception as exc:
+            # Never serialize exception text (paths, tokens and provider bodies may be present).
+            stop = exc.code if isinstance(exc, PilotError) else "worker_failure"
+            context = (exc.summary or {}).get("provider", {}) if isinstance(exc, PilotError) else {}
+            if stop == "blocked_raindrop_retryable" and not self.gate.remaining():
                 self.gate.save(
-                    "raindrop", reset=context.get("reset"), retry_after=context.get("retry_after")
+                    "raindrop",
+                    reset=context.get("reset"),
+                    retry_after=context.get("retry_after"),
+                    seconds=86400,
                 )
-            elif not self.gate.remaining():
-                self.gate.save(
-                    "worker",
-                    seconds=86400 if stop in ("owner_reconsent_needed", "spend_cap") else 900,
-                )
+            # Only a durably observed rate limit may shorten the prewritten daily deadline.
+            saved = self.store.read(DEFER) or {}
+            if (
+                saved.get("provider") in ("x", "drive", "media", "raindrop")
+                and self.gate.remaining()
+            ):
+                self.state["next_daily"] = saved["until"]
+            else:
+                self.gate.save("worker", seconds=86400)
         self.save()
         report = {
             **snapshot(self.store, self.config.get("helper_descriptors", [])),

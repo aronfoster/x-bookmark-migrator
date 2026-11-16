@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 from pathlib import Path
 
 import httpx
@@ -9,6 +10,7 @@ import httpx
 from .catalog import private_bytes
 from .core import PilotError, Store, exact_id
 from .drive import Drive
+from .publication import PublicationStore
 from .raindrop import RaindropAdapter, require_distinct_state_dirs
 from .worker import (
     GATES,
@@ -40,8 +42,32 @@ def add_commands(sub):
     p.add_argument("--scheduled", action="store_true", help="Observe persisted daily due time")
 
 
+def protected_config(path):
+    path = Path(path)
+    st = path.lstat()
+    if (
+        path.is_symlink()
+        or not path.is_file()
+        or st.st_uid != 0
+        or st.st_mode & 0o137
+        or st.st_gid not in {os.getgid(), *os.getgroups()}
+    ):
+        raise PilotError("Live worker configuration must be root-owned and runtime-group readable.")
+    for parent in path.parents:
+        ps = parent.lstat()
+        if parent.is_symlink() or ps.st_uid != 0 or ps.st_mode & 0o022:
+            raise PilotError("Live configuration ancestors must be root-protected.")
+    if any(x.startswith("system.posix_acl") for x in os.listxattr(path)):
+        raise PilotError("Live configuration ACLs are not permitted.")
+    return path.read_bytes()
+
+
 def load_config(path):
-    config = json.loads(private_bytes(path))
+    try:
+        raw = private_bytes(path)
+    except PilotError:
+        raw = protected_config(path)
+    config = json.loads(raw)
     if config.get("schema_version") != 1:
         raise PilotError("Unsupported worker configuration.")
     exact_id(config["owner_id"])
@@ -84,7 +110,7 @@ def run(args):
     with store.locked():
         if offline:
             catalog_path = Path(config["catalog_dir"])
-            catalog = Store(catalog_path) if catalog_path.is_dir() else None
+            catalog = PublicationStore(catalog_path) if catalog_path.is_dir() else None
             result = snapshot(store, config.get("helper_descriptors", []), catalog)
             # Billing evidence is whitelisted: no arbitrary private notes enter stdout.
             bill = result.pop("actual_billing")
@@ -106,6 +132,7 @@ def run(args):
         )
         if any(config.get("gates", {}).get(g) is not True for g in required):
             raise PilotError("Local rollout/owner authorization gates are not satisfied.")
+        protected_config(args.config)
         if os.getuid() == 0:
             raise PilotError("Worker must run as an ordinary non-root account.")
         if not os.environ.get("X_CLIENT_ID"):
@@ -128,10 +155,36 @@ def run(args):
             catalog_dir=config["catalog_dir"],
             raindrop_ledger_dir=config["raindrop_ledger_dir"],
         )
-        catalog = Store(Path(config["catalog_dir"]))
-        restore = Store(Path(config["restore_dir"]))
+        catalog = PublicationStore(Path(config["catalog_dir"]))
+        restore = PublicationStore(Path(config["restore_dir"]))
+        for output in (catalog, restore):
+            if output.reader_gid != config.get("publication_reader_gid"):
+                raise PilotError("Publication reader group differs from reviewed configuration.")
+        if args.allow_delete and not re.fullmatch(
+            r"[0-9a-f]{64}", config.get("raindrop_script_sha256") or ""
+        ):
+            raise PilotError("Reviewed Raindrop script hash is required.")
+        if args.allow_delete:
+            script = Path(config["raindrop_script"])
+            for path in (script, *script.parents):
+                st = path.lstat()
+                if (
+                    path.is_symlink()
+                    or st.st_uid != 0
+                    or st.st_mode & 0o022
+                    or any(x.startswith("system.posix_acl") for x in os.listxattr(path))
+                ):
+                    raise PilotError(
+                        "Worker Raindrop code must be root-protected outside agent storage."
+                    )
+            if not os.environ.get("RAINDROP_TOKEN"):
+                raise PilotError("Explicit Raindrop environment token is required.")
         adapter = (
-            RaindropAdapter(config["raindrop_ledger_dir"], config["raindrop_script"])
+            RaindropAdapter(
+                config["raindrop_ledger_dir"],
+                config["raindrop_script"],
+                script_sha256=config["raindrop_script_sha256"],
+            )
             if args.allow_delete
             else None
         )

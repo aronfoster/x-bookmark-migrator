@@ -397,8 +397,10 @@ def test_crash_at_each_removal_receipt_boundary_never_replays(
         return create(name, value)
 
     monkeypatch.setattr(store, "create", crash)
-    with pytest.raises(OSError):
-        make_worker(migration, tmp_path, max_items=1).run(allow_delete=True)
+    assert (
+        make_worker(migration, tmp_path, max_items=1).run(allow_delete=True)["stop_reason"]
+        == "worker_failure"
+    )
     monkeypatch.setattr(store, "create", create)
     before = len([r for r in migration[3].deletes if r.url.path.endswith("/101")])
     make_worker(migration, tmp_path, max_items=1).run(allow_delete=True)
@@ -511,7 +513,9 @@ def test_definite_delete_429_retries_only_after_reset_with_new_verified_intent(m
     assert make_worker(migration, tmp_path).run(allow_delete=True)["deferred"]
     migration[0].write(DEFER, {"until": 0})  # Synthetic clock advance, not a rollout instruction.
     source.status = 200
-    result = make_worker(migration, tmp_path, max_items=1).run(allow_delete=True)
+    retry = make_worker(migration, tmp_path, max_items=1)
+    retry.state["next_daily"] = 0  # Clock advance includes the saved due deadline.
+    result = retry.run(allow_delete=True)
     assert result["confirmed_removed"] == 1
     assert len(source.deletes) == 2
     attempts = list(migration[0].root.glob("unbookmark-*.intent.private.json"))
@@ -527,3 +531,223 @@ def test_republishing_shared_batch_does_not_clear_permanent_item_hold(migration,
     w.adopt(migration[5]["private_receipt"], inv)
     assert w.state["items"]["101"]["state"] == "blocked"
     assert w.state["items"]["102"]["state"] == "queued"
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        OSError("private path"),
+        ValueError("secret"),
+        KeyError("token"),
+        StopIteration(),
+        PilotError("Drive grant revoked", code="drive_failure"),
+    ],
+)
+def test_failure_after_paid_discovery_defers_every_scheduled_tick(
+    migration, tmp_path, monkeypatch, failure
+):
+    w = make_worker(migration, tmp_path)
+    w.bootstrap(Inventory.load(migration[0]))
+    for item in w.state["items"].values():
+        item["state"] = "blocked"
+    w.save()
+    requests = []
+
+    def discover():
+        w.budget.reserve_operation("main")
+        requests.append("paid-read")
+        raise failure
+
+    monkeypatch.setattr(w, "discover", discover)
+    before = time.time()
+    result = w.run()
+    assert result["stop_reason"] in ("worker_failure", "drive_failure")
+    assert w.store.read(JOURNAL)["next_daily"] >= before + 86400
+    assert "secret" not in json.dumps(result) and "private path" not in json.dumps(result)
+    for offset in (300, 900, 3600, 86000):
+        restarted = make_worker(migration, tmp_path)
+        restarted.clock = lambda offset=offset: before + offset
+        restarted.gate.clock = restarted.clock
+        assert restarted.run()["deferred"]
+    assert requests == ["paid-read"]
+
+
+def test_hard_crash_and_full_state_after_paid_work_keep_prepaid_daily_deadline(
+    migration, tmp_path, monkeypatch
+):
+    w = make_worker(migration, tmp_path)
+    deadline = []
+
+    def crash(*args):
+        deadline.append(w.store.read(JOURNAL)["next_daily"])
+        raise KeyboardInterrupt  # Simulates process death, intentionally not caught.
+
+    monkeypatch.setattr(w, "bootstrap", crash)
+    with pytest.raises(KeyboardInterrupt):
+        w.run()
+    assert deadline[0] > time.time() + 86000
+    assert make_worker(migration, tmp_path).run()["not_due"]
+
+
+def test_raindrop_retry_deadline_survives_shared_batch_and_skips_only_delayed_item(
+    migration, tmp_path
+):
+    w = make_worker(migration, tmp_path, max_items=1)
+    inv = Inventory.load(migration[0])
+    w.bootstrap(inv)
+    item = w.state["items"]["101"]
+    item.update(state="queued", retry_at=time.time() + 86400)
+    w.save()
+    w.adopt(item["receipt"], inv)
+    assert not w.queued("101", w.state["items"]["101"])
+    w.drain(inv)
+    assert migration[3].deletes[-1].url.path.endswith("/102")
+    assert w.state["items"]["101"]["retry_at"] > time.time()
+
+
+def test_reader_group_projection_preserves_private_state_and_real_delete_gate(migration, tmp_path):
+    import os
+
+    from x_bookmark_migrator.publication import PublicationStore
+
+    w = make_worker(migration, tmp_path, max_items=1)
+    w.catalog.root.chmod(0o2750)
+    w.catalog = PublicationStore(w.catalog.root)
+    w.restore_root.mkdir(mode=0o700)
+    w.restore_root.chmod(0o2750)
+    # Local fixture already contains a private catalog; publication replaces it with reader bytes.
+    result = w.run(allow_delete=True)
+    assert result["confirmed_removed"] == 1
+    for name in ("index.html", "catalog.jsonl", "source-links.jsonl"):
+        st = w.catalog.path(name).stat()
+        assert st.st_mode & 0o777 == 0o640 and st.st_gid == os.getgid()
+    assert w.store.root.stat().st_mode & 0o777 == 0o700
+    assert w.store.path(JOURNAL).stat().st_mode & 0o777 == 0o600
+    root = Path(w.state["items"]["101"]["restore_dir"])
+    assert root.stat().st_mode & 0o7777 == 0o2750
+    assert (root / "101.json").stat().st_mode & 0o777 == 0o640
+    assert w.catalog.path("lock").stat().st_mode & 0o777 == 0o600
+    assert len(read_catalog(w.catalog)) == 3
+
+
+def test_reader_group_never_allows_group_write_or_private_store_access(tmp_path):
+    from x_bookmark_migrator.publication import PublicationStore, publication_bytes
+
+    root = tmp_path / "publications"
+    root.mkdir(mode=0o700)
+    root.chmod(0o2750)
+    PublicationStore(root)
+    with pytest.raises(PilotError):
+        Store(root)
+    path = root / "catalog.jsonl"
+    path.write_text("synthetic")
+    path.chmod(0o660)
+    with pytest.raises(PilotError):
+        publication_bytes(path)
+    root.chmod(0o2770)
+    with pytest.raises(PilotError):
+        PublicationStore(root)
+
+
+def test_pinned_adapter_rechecks_bytes_and_never_sources_home(tmp_path, monkeypatch):
+    from x_bookmark_migrator.raindrop import RaindropAdapter
+
+    script = tmp_path / "skill.sh"
+    script.write_text("printf '{\"result\":true}\\n'\n")
+    adapter = RaindropAdapter(
+        tmp_path / "ledger", script, script_sha256=digest(script.read_bytes())
+    )
+    monkeypatch.delenv("RAINDROP_TOKEN", raising=False)
+    with pytest.raises(PilotError, match="explicit_environment_token_required"):
+        adapter._call("get", 1)
+    monkeypatch.setenv("RAINDROP_TOKEN", "synthetic-token")
+    poison = tmp_path / "poison.sh"
+    marker = tmp_path / "executed"
+    poison.write_text(f'touch "{marker}"\n')
+    monkeypatch.setenv("BASH_ENV", str(poison))
+    assert adapter._call("get", 1) == {"result": True}
+    assert not marker.exists()
+    script.write_text("exit 99\n")
+    with pytest.raises(PilotError, match="script_pin_mismatch"):
+        adapter._call("get", 1)
+    assert not marker.exists()
+
+
+def test_all_delayed_queue_preserves_inventory_without_new_discovery(
+    migration, tmp_path, monkeypatch
+):
+    w = make_worker(migration, tmp_path)
+    inv = Inventory.load(migration[0])
+    w.bootstrap(inv)
+    for item in w.state["items"].values():
+        item["retry_at"] = time.time() + 86400
+    w.save()
+    monkeypatch.setattr(w, "discover", lambda: pytest.fail("must not invalidate queued inventory"))
+    before = len(migration[2].calls), len(migration[3].calls)
+    assert w.run(allow_delete=True)["not_due"]
+    assert before == (len(migration[2].calls), len(migration[3].calls))
+    assert Inventory.load(migration[0]).name == inv.name
+
+
+def test_raindrop_missing_reset_waits_day_and_reset_sets_item_deadline(
+    migration, tmp_path, monkeypatch
+):
+    from x_bookmark_migrator.raindrop import blocked
+
+    w = make_worker(migration, tmp_path)
+    before = time.time()
+
+    def fail(*args, **kwargs):
+        raise blocked("transport", retryable=True)
+
+    monkeypatch.setattr(w.raindrop, "ensure_raindrop", fail)
+    assert w.run(allow_delete=True)["stop_reason"] == "blocked_raindrop_retryable"
+    assert w.state["items"]["101"]["retry_at"] >= before + 86400
+    assert w.store.read(DEFER)["until"] >= before + 86400
+
+
+def test_drive_failure_after_real_inventory_does_not_repeat_paid_reads(
+    migration, tmp_path, monkeypatch
+):
+    from test_archive import includes, post
+
+    from x_bookmark_migrator import worker
+
+    source = migration[3]
+    original = source.handle
+
+    def handle(req):
+        if req.url.path == "/2/users/100/bookmarks":
+            source.calls.append(req)
+            return httpx.Response(
+                200,
+                json={"data": [post("104")], "includes": includes([]), "meta": {"result_count": 1}},
+            )
+        if req.url.path == "/2/tweets":
+            source.calls.append(req)
+            return httpx.Response(
+                200,
+                json={
+                    "data": [post(pid) for pid in req.url.params["ids"].split(",")],
+                    "includes": includes([]),
+                },
+            )
+        return original(req)
+
+    migration[4].http = httpx.Client(transport=httpx.MockTransport(handle))
+    w = make_worker(migration, tmp_path)
+    w.bootstrap(Inventory.load(migration[0]))
+    for item in w.state["items"].values():
+        item["state"] = "blocked"
+    w.save()
+
+    def archive_failure(*args, **kwargs):
+        assert source.calls  # Real inventory requests already happened.
+        raise PilotError("Synthetic revoked Drive grant", code="drive_failure")
+
+    monkeypatch.setattr(worker, "archive_batch", archive_failure)
+    assert w.run()["stop_reason"] == "drive_failure"
+    assert w.budget.used > 0
+    before = len(source.calls), len(migration[2].calls)
+    assert make_worker(migration, tmp_path).run()["deferred"]
+    assert before == (len(source.calls), len(migration[2].calls))

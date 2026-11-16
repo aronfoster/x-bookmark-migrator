@@ -571,13 +571,15 @@ def create_local(store, name, data, *, existing_ok=False):
         raise PilotError("Unsafe reconstruction filename.")
     path = store.path(name)
     if existing_ok and path.exists():
-        from .catalog import private_bytes
+        from .publication import publication_bytes
 
-        if private_bytes(path) != data:
+        if publication_bytes(path) != data:
             raise PilotError("Existing restore bytes differ from independent remote readback.")
         return
     fd, temporary = tempfile.mkstemp(dir=store.root, suffix=".private.tmp")
     try:
+        if hasattr(store, "prepare_public_fd"):
+            store.prepare_public_fd(fd)
         with os.fdopen(fd, "wb") as stream:
             stream.write(data)
             stream.flush()

@@ -5,6 +5,7 @@ Saved inventories/receipts are historical evidence, never deletion authorization
 """
 
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -164,18 +165,40 @@ def validate_receipt(receipt, pid):
 
 
 class RaindropAdapter:
-    def __init__(self, ledger_dir: Path, script: Path):
+    def __init__(self, ledger_dir: Path, script: Path, *, script_sha256=None):
         self.store = Store(Path(ledger_dir))
         self.script = Path(script)
+        self.script_sha256 = script_sha256
         if not self.script.is_absolute() or not self.script.is_file():
             raise blocked("absolute_existing_skill_path_required")
 
     def _call(self, *args, payload=None):
+        environment = None
+        if self.script_sha256 is not None:
+            try:
+                if (
+                    not re.fullmatch(r"[0-9a-f]{64}", self.script_sha256)
+                    or self.script.is_symlink()
+                    or digest(self.script.read_bytes()) != self.script_sha256
+                ):
+                    raise blocked("script_pin_mismatch")
+            except OSError:
+                raise blocked("script_pin_unavailable") from None
+            if not os.environ.get("RAINDROP_TOKEN"):
+                raise blocked("explicit_environment_token_required")
+            # No BASH_ENV/ENV, shell options, loader/Python hooks, or HOME fallback.
+            environment = {
+                "PATH": "/usr/bin:/bin",
+                "HOME": "/nonexistent",
+                "RAINDROP_TOKEN": os.environ["RAINDROP_TOKEN"],
+                "LANG": "C.UTF-8",
+            }
         try:
             result = subprocess.run(
-                ["bash", str(self.script), "--json", "--delay", "600", *map(str, args)],
+                ["/bin/bash", str(self.script), "--json", "--delay", "600", *map(str, args)],
                 input=json.dumps(payload) if payload is not None else None,
                 capture_output=True,
+                **({"env": environment} if environment is not None else {}),
                 text=True,
                 timeout=3600 if args == ("list-all",) else 75,
             )

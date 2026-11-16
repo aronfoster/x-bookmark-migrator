@@ -97,6 +97,11 @@ def main():
             result = worker_cli.run(args)
             if not result.get("quiet"):
                 print(json.dumps(result))
+            if result.get("stop_reason"):
+                print(
+                    "Worker stopped; inspect protected report before next daily attempt.",
+                    file=sys.stderr,
+                )
             return 1 if result.get("stop_reason") else 0
         if args.command in raindrop_cli.COMMANDS:
             print(json.dumps(raindrop_cli.run(args)))

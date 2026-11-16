@@ -3,9 +3,10 @@
 from html.parser import HTMLParser
 from pathlib import Path
 
-from .catalog import private_bytes, read_catalog
-from .core import PilotError, Store
+from .catalog import read_catalog
+from .core import PilotError
 from .drive import digest
+from .publication import PublicationStore, publication_bytes
 from .raindrop import inspect_inventory, validate_receipt
 from .source import source_url
 
@@ -79,7 +80,7 @@ def verify_discovery_now(pid, row, payload, catalog_dir, adapter):
 
 def _verify_discovery_now(pid, row, payload, catalog_dir, adapter):
     require(catalog_dir is not None, "catalog_required")
-    output = Store(Path(catalog_dir))
+    output = PublicationStore(Path(catalog_dir))
     # Same lock used by catalog publication/curation: keep the selected snapshot
     # stable through the last provider GET. apply writes proof before DELETE.
     with output.locked():
@@ -106,7 +107,7 @@ def _verify_discovery_now(pid, row, payload, catalog_dir, adapter):
             and version.get("folders") == row["folders"],
             "catalog_content_mismatch",
         )
-        html = private_bytes(output.root / "index.html")
+        html = publication_bytes(output.root / "index.html")
         links = SourceLinks()
         links.feed(html.decode())
         require(("post-" + pid, canonical) in links.links, "visible_original_link_required")

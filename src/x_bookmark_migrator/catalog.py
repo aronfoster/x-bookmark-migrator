@@ -9,8 +9,9 @@ from pathlib import Path
 from urllib.parse import quote
 
 from .archive import media_format
-from .core import PilotError, Store, exact_id
+from .core import PilotError, exact_id
 from .drive import digest, drive_id, encode
+from .publication import PublicationStore, publication_bytes
 from .source import post_id as post_id
 from .source import raindrop_post_id, source_url
 
@@ -46,7 +47,7 @@ def private_bytes(path):
 
 
 def checked_bytes(path, receipt):
-    data = private_bytes(path)
+    data = publication_bytes(path)
     if digest(data) != receipt["sha256"] or len(data) != receipt["size_bytes"]:
         raise PilotError("Catalog input differs from its archive receipt.")
     return data
@@ -345,6 +346,8 @@ def render(records):
 def atomic_bytes(output, name, data):
     fd, temporary = tempfile.mkstemp(dir=output.root)
     try:
+        if isinstance(output, PublicationStore):
+            output.prepare_public_fd(fd)
         with os.fdopen(fd, "wb") as stream:
             stream.write(data)
             stream.flush()
@@ -365,7 +368,7 @@ def publish(output, records):
 
 def read_catalog(output):
     records = [
-        json.loads(line) for line in private_bytes(output.path("catalog.jsonl")).splitlines()
+        json.loads(line) for line in publication_bytes(output.path("catalog.jsonl")).splitlines()
     ]
     if any(r.get("schema_version") != 1 for r in records):
         raise PilotError("Unsupported catalog version.")
@@ -431,7 +434,7 @@ def run(args):
             args.post, [json.loads(private_bytes(p)) for p in args.page_file]
         )
         return {"matches": matches, "coverage": "not_established", "create_authorized": False}
-    output = Store(args.catalog_dir)
+    output = PublicationStore(args.catalog_dir)
     with output.locked():
         if args.command == "catalog-build":
             records = build(args.batch, output)
