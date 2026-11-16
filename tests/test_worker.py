@@ -654,8 +654,13 @@ def test_pinned_adapter_rechecks_bytes_and_never_sources_home(tmp_path, monkeypa
 
     script = tmp_path / "skill.sh"
     script.write_text("printf '{\"result\":true}\\n'\n")
+    helper = tmp_path / "list_all.py"
+    helper.write_text("# synthetic helper\n")
     adapter = RaindropAdapter(
-        tmp_path / "ledger", script, script_sha256=digest(script.read_bytes())
+        tmp_path / "ledger",
+        script,
+        script_sha256=digest(script.read_bytes()),
+        helper_sha256=digest(helper.read_bytes()),
     )
     monkeypatch.delenv("RAINDROP_TOKEN", raising=False)
     with pytest.raises(PilotError, match="explicit_environment_token_required"):
@@ -751,3 +756,32 @@ def test_drive_failure_after_real_inventory_does_not_repeat_paid_reads(
     before = len(source.calls), len(migration[2].calls)
     assert make_worker(migration, tmp_path).run()["deferred"]
     assert before == (len(source.calls), len(migration[2].calls))
+
+
+@pytest.mark.parametrize("change", ["modify", "remove", "symlink", "missing_pin"])
+def test_pinned_enumerator_change_blocks_before_any_subprocess(tmp_path, monkeypatch, change):
+    from x_bookmark_migrator import raindrop
+
+    script = tmp_path / "raindrop.sh"
+    helper = tmp_path / "list_all.py"
+    script.write_text("# synthetic shell\n")
+    helper.write_text("# synthetic enumerator\n")
+    adapter = raindrop.RaindropAdapter(
+        tmp_path / "ledger",
+        script,
+        script_sha256=digest(script.read_bytes()),
+        helper_sha256=digest(helper.read_bytes()),
+    )
+    monkeypatch.setenv("RAINDROP_TOKEN", "synthetic")
+    monkeypatch.setattr(raindrop.subprocess, "run", lambda *a, **k: pytest.fail("must not execute"))
+    if change == "modify":
+        helper.write_text("# changed enumerator\n")
+    elif change == "remove":
+        helper.unlink()
+    elif change == "symlink":
+        helper.unlink()
+        helper.symlink_to(script)
+    else:
+        adapter.helper_sha256 = None
+    with pytest.raises(PilotError, match="script_pin_mismatch"):
+        adapter._call("list-all")

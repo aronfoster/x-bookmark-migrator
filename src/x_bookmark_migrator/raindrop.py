@@ -165,10 +165,11 @@ def validate_receipt(receipt, pid):
 
 
 class RaindropAdapter:
-    def __init__(self, ledger_dir: Path, script: Path, *, script_sha256=None):
+    def __init__(self, ledger_dir: Path, script: Path, *, script_sha256=None, helper_sha256=None):
         self.store = Store(Path(ledger_dir))
         self.script = Path(script)
         self.script_sha256 = script_sha256
+        self.helper_sha256 = helper_sha256
         if not self.script.is_absolute() or not self.script.is_file():
             raise blocked("absolute_existing_skill_path_required")
 
@@ -176,12 +177,18 @@ class RaindropAdapter:
         environment = None
         if self.script_sha256 is not None:
             try:
-                if (
-                    not re.fullmatch(r"[0-9a-f]{64}", self.script_sha256)
-                    or self.script.is_symlink()
-                    or digest(self.script.read_bytes()) != self.script_sha256
+                for path, expected in (
+                    (self.script, self.script_sha256),
+                    (self.script.with_name("list_all.py"), self.helper_sha256),
                 ):
-                    raise blocked("script_pin_mismatch")
+                    if (
+                        not isinstance(expected, str)
+                        or not re.fullmatch(r"[0-9a-f]{64}", expected)
+                        or path.is_symlink()
+                        or not path.is_file()
+                        or digest(path.read_bytes()) != expected
+                    ):
+                        raise blocked("script_pin_mismatch")
             except OSError:
                 raise blocked("script_pin_unavailable") from None
             if not os.environ.get("RAINDROP_TOKEN"):

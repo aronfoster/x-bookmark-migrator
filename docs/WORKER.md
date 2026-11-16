@@ -43,8 +43,10 @@ perform curation commands through the owner-supervised runtime account. Preserve
 original state directory and existing Raindrop authentication. `X_CLIENT_ID` and
 optional `X_CLIENT_SECRET` come from the protected existing environment. No new
 OAuth store, rclone grant or second Raindrop client is introduced. The shared
-Raindrop adapter accepts an explicit `raindrop_script_sha256`: the worker requires
-it and rechecks the bytes before every invocation. Its script and ancestors must
+Raindrop adapter accepts explicit `raindrop_script_sha256` and
+`raindrop_helper_sha256` (the sibling `list_all.py`): the worker requires both and
+rechecks both files before every invocation, including GET. The complete dedicated
+script directory and its ancestors must
 be root-owned, without group/other write or ACL grants, outside agent workspaces.
 `RAINDROP_TOKEN` must be supplied by the protected EnvironmentFile; a minimal
 subprocess environment removes BASH_ENV/ENV and HOME credential sourcing. Manual
@@ -64,7 +66,8 @@ Private JSON configuration fields:
 | `run_cap_usd` | Positive reservation limit, at most 20 |
 | `reservation_usd` | Positive **whole-request** conservative reserves for every operation below; no implicit prices |
 | `helper_descriptors` | All reviewed private helper mappings using `REPAIR.md`; empty only when the local audit proves no out-of-tree attempts |
-| `raindrop_script_sha256` | Reviewed SHA256 of the protected Raindrop script; required for DELETE |
+| `raindrop_script_sha256` | Reviewed SHA256 of protected raindrop.sh; required for DELETE |
+| `raindrop_helper_sha256` | Reviewed SHA256 of sibling list_all.py; required for DELETE |
 | `publication_reader_gid` | Explicit reader GID for 2750 catalog/restore roots, or null for private roots |
 | `gates` | Explicit booleans below, initially false |
 

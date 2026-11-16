@@ -160,13 +160,15 @@ def run(args):
         for output in (catalog, restore):
             if output.reader_gid != config.get("publication_reader_gid"):
                 raise PilotError("Publication reader group differs from reviewed configuration.")
-        if args.allow_delete and not re.fullmatch(
-            r"[0-9a-f]{64}", config.get("raindrop_script_sha256") or ""
+        if args.allow_delete and any(
+            not re.fullmatch(r"[0-9a-f]{64}", config.get(key) or "")
+            for key in ("raindrop_script_sha256", "raindrop_helper_sha256")
         ):
-            raise PilotError("Reviewed Raindrop script hash is required.")
+            raise PilotError("Reviewed Raindrop script and list_all.py hashes are required.")
         if args.allow_delete:
             script = Path(config["raindrop_script"])
-            for path in (script, *script.parents):
+            # Protect the complete helper directory, including possible Python imports.
+            for path in (script.parent, *script.parents, *script.parent.rglob("*")):
                 st = path.lstat()
                 if (
                     path.is_symlink()
@@ -184,6 +186,7 @@ def run(args):
                 config["raindrop_ledger_dir"],
                 config["raindrop_script"],
                 script_sha256=config["raindrop_script_sha256"],
+                helper_sha256=config["raindrop_helper_sha256"],
             )
             if args.allow_delete
             else None
