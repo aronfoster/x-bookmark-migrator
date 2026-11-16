@@ -75,7 +75,6 @@ def test_exact_identity(value):
         "https://evil.invalid/x.com/a/status/101",
         "https://x.com@evil.invalid/a/status/101",
         "https://x.com:443/a/status/101",
-        "https://x.com/a/status/101/photo/1",
         "https://x.com/a/status/１０１",
     ],
 )

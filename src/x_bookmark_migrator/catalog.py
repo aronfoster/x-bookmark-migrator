@@ -4,33 +4,18 @@ import copy
 import html
 import json
 import os
-import re
 import tempfile
 from pathlib import Path
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote
 
 from .archive import media_format
 from .core import PilotError, Store, exact_id
 from .drive import digest, drive_id, encode
+from .source import post_id as post_id
+from .source import raindrop_post_id, source_url
 
 VISIBILITIES = ("featured", "ordinary", "hidden")
 ROLES = ("important", "illustrative", "incidental", "unknown")
-
-
-def post_id(value):
-    """Exact numeric identity; never substring-search URLs or coerce JSON numbers."""
-    if isinstance(value, str) and re.fullmatch(r"[0-9]{1,19}", value):
-        return exact_id(value)
-    if isinstance(value, str):
-        url = urlsplit(value)
-        match = re.fullmatch(r"/(?:[A-Za-z0-9_]+|i)/status/([0-9]{1,19})/?", url.path)
-        if (
-            url.scheme in ("http", "https")
-            and url.netloc.lower() in ("x.com", "www.x.com", "twitter.com", "www.twitter.com")
-            and match
-        ):
-            return exact_id(match[1])
-    raise PilotError("Expected an exact numeric post ID or supported X status URL.")
 
 
 def raindrop_matches(value, pages):
@@ -41,10 +26,7 @@ def raindrop_matches(value, pages):
         if page.get("result") is not True or not isinstance(page.get("items"), list):
             raise PilotError("Raindrop list response failed; no absence inference is safe.")
         for item in page["items"]:
-            try:
-                match = post_id(item.get("link")) == pid
-            except PilotError:
-                continue
+            match = raindrop_post_id(item.get("link")) == pid
             if match:
                 rid = item.get("_id")
                 if type(rid) is not int or rid <= 0:
@@ -158,7 +140,9 @@ def build(batches, output):
                 {
                     "schema_version": 1,
                     "post_id": pid,
-                    "canonical_url": f"https://x.com/i/status/{pid}",
+                    "canonical_url": source_url(pid),
+                    "source_post_id": pid,
+                    "source_post_url": source_url(pid),
                     "deletion_eligible": False,
                     "versions": [],
                 },
@@ -175,11 +159,18 @@ def build(batches, output):
         record["versions"].sort(
             key=lambda v: (v["manifest"]["sha256"], v["payload_receipt"]["sha256"])
         )
-    return apply_annotations(result, output.read("annotations.private.json") or {})
+    return apply_annotations(
+        add_source_links(result), output.read("annotations.private.json") or {}
+    )
 
 
 def apply_annotations(records, annotations):
     for record in records:
+        override = annotations.get("category_overrides", {}).get(record["post_id"])
+        if override is not None:
+            if not isinstance(override, str) or not 1 <= len(override) <= 1000:
+                raise PilotError("Invalid category override.")
+            record["category_override"] = override
         for version in record["versions"]:
             for asset in version["media"]:
                 note = annotations.get(asset["asset_id"], {})
@@ -197,6 +188,46 @@ def apply_annotations(records, annotations):
                     preservation_state="archived_raw" if "storage" in asset else "not_archived",
                 )
     return records
+
+
+def add_source_links(records):
+    """Upgrade only derived copies; raw payloads/manifests are never rewritten."""
+    records = copy.deepcopy(records)
+    for record in records:
+        pid = exact_id(record["post_id"])
+        record.update(source_post_id=pid, source_post_url=source_url(pid))
+        for version in record["versions"]:
+            seen = set()
+            for post in version["posts"]:
+                child = exact_id(post["id"])
+                if child in seen:
+                    raise PilotError("Duplicate archived post identity.")
+                seen.add(child)
+                if post.get("permalink") and post_id(post["permalink"]) != child:
+                    raise PilotError("Archived permalink identity mismatch.")
+                post.update(source_post_id=child, source_post_url=source_url(child))
+            for asset in version["media"]:
+                asset.update(
+                    source_post_id=pid,
+                    source_post_url=source_url(pid),
+                    attachment_post_url=source_url(exact_id(asset["post_id"])),
+                )
+    return records
+
+
+def source_sidecar(records):
+    return [
+        {
+            "schema_version": 1,
+            "source_post_id": exact_id(r["post_id"]),
+            "source_post_url": source_url(r["post_id"]),
+            "archives": [
+                {"manifest": v["manifest"], "payload_receipt": v["payload_receipt"]}
+                for v in r["versions"]
+            ],
+        }
+        for r in sorted(records, key=lambda r: r["post_id"])
+    ]
 
 
 def lookup(records, value, asset_id=None):
@@ -235,6 +266,8 @@ def render(records):
     ]
     categories = {}
     for record in records:
+        if record.get("category_override"):
+            categories.setdefault(record["category_override"], set()).add(record["post_id"])
         for version in record["versions"]:
             labels = [f"{' / '.join(f['names'])} ({f['id']})" for f in version["folders"]] or [
                 version["category"]
@@ -250,6 +283,12 @@ def render(records):
         parts.append(
             f'<article id="post-{esc(record["post_id"])}"><h2>Post {esc(record["post_id"])}</h2>'
         )
+        parts.append(
+            f'<p><a href="{esc(source_url(record["post_id"]))}" rel="noreferrer">'
+            "Open original saved X post</a></p>"
+        )
+        if record.get("category_override"):
+            parts.append(f"<p>Category override: {esc(record['category_override'])}</p>")
         for v in record["versions"]:
             categories = ", ".join(f"{' / '.join(f['names'])} ({f['id']})" for f in v["folders"])
             parts.append(f"<h3>{esc(categories or v['category'])}</h3>")
@@ -258,8 +297,14 @@ def render(records):
                 f'<a href="{esc(v["payload_url"])}" rel="noreferrer">Archived JSON on Drive</a>'
             )
             for post in v["posts"]:
+                label = (
+                    "Saved primary post" if post["id"] == record["post_id"] else "Referenced post"
+                )
                 parts.append(
                     f"<details><summary>Full saved text · {esc(post['id'])}</summary>"
+                    f'<p><a href="{esc(source_url(post["id"]))}" rel="noreferrer">'
+                    f"{label}"
+                    " on X</a></p>"
                     f"<pre>{esc(post.get('text') or 'Text unavailable')}</pre></details>"
                 )
             for a in sorted(v["media"], key=lambda a: a["browse_visibility"] != "featured"):
@@ -301,9 +346,11 @@ def atomic_bytes(output, name, data):
 
 
 def publish(output, records):
+    records = add_source_links(records)
     page = render(records).encode()
     atomic_bytes(output, "catalog.jsonl", b"".join(encode(r) for r in records))
     atomic_bytes(output, "index.html", page)
+    atomic_bytes(output, "source-links.jsonl", b"".join(encode(r) for r in source_sidecar(records)))
 
 
 def read_catalog(output):
@@ -312,7 +359,7 @@ def read_catalog(output):
     ]
     if any(r.get("schema_version") != 1 for r in records):
         raise PilotError("Unsupported catalog version.")
-    return records
+    return add_source_links(records)
 
 
 def annotate(output, records, key, *, visibility=None, role=None, description=None):
