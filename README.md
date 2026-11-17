@@ -258,3 +258,8 @@ hide/show annotations. `catalog-build`, `catalog-lookup`, `catalog-annotate` and
 See [the bounded worker and rollout contract](docs/WORKER.md) for offline audit,
 explicit live modes, cumulative budget, crash recovery and non-root scheduling.
 Installation and activation remain separate owner-reviewed actions.
+
+For the existing protected encrypted bundle, see the
+[owner recovery and Déjà Dup handoff](docs/BACKUP_RECOVERY.md). It distinguishes
+completed capture from the remaining key preservation, complete manifest checks
+and real off-host restore acceptance. Private desktop command binding is required.

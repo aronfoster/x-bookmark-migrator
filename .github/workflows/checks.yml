@@ -8,6 +8,8 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-24.04
+    env:
+      REQUIRE_CRYPTO_REHEARSAL: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
