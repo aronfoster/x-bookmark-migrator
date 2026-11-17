@@ -358,12 +358,38 @@ def atomic_bytes(output, name, data):
             os.unlink(temporary)
 
 
-def publish(output, records):
+def projection_bytes(records):
     records = add_source_links(records)
-    page = render(records).encode()
-    atomic_bytes(output, "catalog.jsonl", b"".join(encode(r) for r in records))
-    atomic_bytes(output, "index.html", page)
-    atomic_bytes(output, "source-links.jsonl", b"".join(encode(r) for r in source_sidecar(records)))
+    return {
+        "catalog.jsonl": b"".join(encode(r) for r in records),
+        "index.html": render(records).encode(),
+        "source-links.jsonl": b"".join(encode(r) for r in source_sidecar(records)),
+    }
+
+
+def publish(output, records):
+    for name, data in projection_bytes(records).items():
+        atomic_bytes(output, name, data)
+
+
+def verify_publication(output, records, expected_records=None):
+    """Check persisted bytes against a fresh archive/annotation build, without repair."""
+    if expected_records is not None and (
+        type(expected_records) is not int
+        or expected_records < 1
+        or len(records) != expected_records
+    ):
+        raise PilotError("Published archive population does not match the expected count.")
+    for name, expected in projection_bytes(records).items():
+        if publication_bytes(output.path(name)) != expected:
+            raise PilotError("Published catalog projections differ from archives/annotations.")
+    return {
+        "verified": True,
+        "records": len(records),
+        "network_calls": 0,
+        "reader_access": "not_tested",
+        "deletion_eligible": False,
+    }
 
 
 def read_catalog(output):
@@ -472,6 +498,7 @@ def annotate(output, records, key, *, visibility=None, role=None, description=No
 
 COMMANDS = (
     "catalog-build",
+    "catalog-verify",
     "catalog-lookup",
     "catalog-check",
     "catalog-annotate",
@@ -487,7 +514,7 @@ def add_commands(sub):
             p.add_argument("--page-file", action="append", required=True)
             continue
         p.add_argument("--catalog-dir", type=Path, required=True)
-        if command == "catalog-build":
+        if command in ("catalog-build", "catalog-verify"):
             p.add_argument(
                 "--batch",
                 nargs=2,
@@ -495,6 +522,8 @@ def add_commands(sub):
                 required=True,
                 metavar=("RESTORED_DIR", "BATCH_RECEIPT"),
             )
+            if command == "catalog-verify":
+                p.add_argument("--expected-records", type=int, required=True)
         elif command == "catalog-check":
             p.add_argument("--expected-records", type=int, required=True)
             p.add_argument("--expected-media", type=int)
@@ -533,10 +562,14 @@ def run(args):
             expected_media=args.expected_media,
             annotations=annotations,
         )
+    if args.command == "catalog-verify" and not args.catalog_dir.is_dir():
+        raise PilotError("Publication must exist before verification.")
     output = PublicationStore(args.catalog_dir)
     with output.locked():
-        if args.command == "catalog-build":
+        if args.command in ("catalog-build", "catalog-verify"):
             records = build(args.batch, output)
+            if args.command == "catalog-verify":
+                return verify_publication(output, records, args.expected_records)
             publish(output, records)
             return {"records": len(records), "network_calls": 0, "deletion_eligible": False}
         records = read_catalog(output)

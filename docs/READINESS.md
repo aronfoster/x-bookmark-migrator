@@ -14,7 +14,7 @@ skill and ledger; FOS-216 owns publication and historical reconciliation.
    setup, installed skill synchronization, or the old protected program build.
 2. Review this changeset independently, then use the separately accepted release
    at its exact pin. The previously installed release lacks `catalog-check` and
-   native-helper provenance support. Never edit that protected release in place.
+   native-helper provenance support (and archive-bound `catalog-verify`). Never edit that protected release in place.
    Any owner-run release installation must follow the existing protected-build
    procedure; no agent receives sudo, runtime impersonation, or Docker access.
 3. Read the existing private preparation manifest and staged output. The local
@@ -27,7 +27,9 @@ skill and ledger; FOS-216 owns publication and historical reconciliation.
    The staged complete catalog already imported curation. Do not import it again
    from a guessed format or replace it with a one-batch catalog.
 
-Use private observed paths only. In the following templates, `XM` is the absolute
+Use private observed paths only. `uv run python` in the offline diagnostic example
+denotes the same already installed protected Python environment as XM; do not
+install/fetch dependencies during acceptance. In the following templates, `XM` is the absolute
 reviewed installed x-migrator executable; `CATALOG`, `ANNOTATIONS`, `LEDGER`,
 `SKILL`, `AUDIT`, `PROVENANCE`, `SNAPSHOT` and `PID` are owner-shell variables
 resolved from the existing private manifest. They are not shell configuration to
@@ -65,7 +67,16 @@ locks, state, credentials and Raindrop ledger remain private. Do not recursively
 make the state/receipt stores reader-accessible. The repair CLI supports the
 2750 publication root while retaining private annotation/receipt checks.
 
-As the owner-supervised runtime identity, after releasing publication locks:
+As the owner-supervised runtime identity, after releasing publication locks,
+first bind all persisted projections to the original archives and annotations:
+
+```sh
+"$XM" catalog-verify --catalog-dir "$CATALOG" "${BATCH_ARGS[@]}" --expected-records 103
+```
+
+This fresh in-memory archive/annotation build catches even a self-consistent but
+stale/edited catalog generation. It acquires the writer lock; run it separately
+from the reader checks. It does not publish or grant reader access. Then:
 
 ```sh
 "$XM" catalog-check --catalog-dir "$CATALOG" --expected-records 103 \
@@ -114,7 +125,7 @@ all wrappers, invocation sites or reports have been found or retired.
 
 Inventory the two original helper sources, original summary markers, all nine
 native reports, every native ledger and any additional source discovered. Hash
-original bytes; inspect call sites, alternate copies and scheduled entry points.
+original bytes (including every original native intent); inspect call sites, alternate copies and scheduled entry points.
 Retain originals. Review a private native-delegation descriptor using the schema
 in [REPAIR.md](REPAIR.md#native-delegating-wrappers). It references the actual run
 reports, not rewritten outcomes. Map native `/outcomes`, `/post_id`, `/attempt`,
@@ -128,6 +139,9 @@ creates no duplicate removal attempts. Native unknowns remain unknown. Additiona
 independent helper attempts still use existing `--helper-format` descriptors.
 Do not fabricate an empty descriptor to satisfy coverage. Mark
 `--all-removal-sources-confirmed` only after the independent local source inventory.
+For later FOS-168 configuration, native-only wrappers add no `helper_descriptors`
+entries: native scanning already counts them. Retain this provenance audit as
+evidence for separately reviewed completeness/retirement gates.
 Retirement is separate: disable old invocation paths or prove exclusive delegation
 to the new hardened gate; a provenance descriptor explicitly does not certify it.
 
@@ -170,6 +184,65 @@ X/profile/list/search, unresolved t.co, malformed or non-HTTP links remain stric
 blockers. Numeric blocking Raindrop ID is returned; inspect that item privately
 without rewriting/removing it. The first blocker is reported, not an exhaustive
 list. Do not repeatedly rescan a known blocker or weaken the accepted parser.
+
+For an unsupported-link stop where the adapter did not save the snapshot, obtain
+one complete diagnostic snapshot through the **same** existing skill (GETs only),
+after the authorized read-only window is established. Set RUN to a fresh private
+0700 evidence directory disjoint from source/ledger/publication directories:
+
+```sh
+(umask 077; set -o noclobber; bash "$SKILL" --json --delay 600 list-all > "$RUN/inventory-before.private.json")
+```
+
+Require successful helper exit. Never treat a failed/partial capture as valid.
+Offline diagnostics use the existing validator/parser/inspector, not a second
+matching algorithm. Run this in the protected runtime with `RUN` set in the
+command environment; it performs no provider calls and prints only counts:
+
+```sh
+RUN="$RUN" uv run python - <<'PY'
+import json, os
+from pathlib import Path
+from x_bookmark_migrator.catalog import private_bytes
+from x_bookmark_migrator.core import PilotError
+from x_bookmark_migrator.raindrop import validate_inventory, inspect_inventory
+from x_bookmark_migrator.source import raindrop_post_id
+root = Path(os.environ['RUN'])
+snapshot = json.loads(private_bytes(root / 'inventory-before.private.json'))
+valid, reason = True, None
+try:
+    validate_inventory(snapshot)
+except PilotError as exc:
+    valid, reason = False, (exc.summary or {}).get('reason', exc.code)
+ids, unsupported = set(), []
+for scope in ('active', 'trash'):
+    for item in snapshot.get(scope, {}).get('items', []):
+        try:
+            pid = raindrop_post_id(item.get('link'))
+        except PilotError:
+            unsupported.append({'scope': scope, 'raindrop_id': item.get('_id')})
+        else:
+            if pid is not None:
+                ids.add(pid)
+# The shared inspector owns duplicate/Trash decisions; invalid global coverage
+# yields no active/absent conclusion for any ID.
+checks = {pid: inspect_inventory(snapshot, pid) for pid in sorted(ids)}
+report = {'coverage_valid': valid, 'reason': reason, 'unsupported': unsupported,
+          'exact_primary_checks': checks, 'create_authorized': False}
+with open(root / 'inventory-diagnostics.private.json', 'x',
+          opener=lambda path, flags: os.open(path, flags, 0o600)) as out:
+    json.dump(report, out)
+print(json.dumps({'coverage_valid': valid, 'unsupported': len(unsupported),
+                  'conflicts': sum(r['state'] == 'conflict' for r in checks.values()) if valid else None}))
+raise SystemExit(0 if valid and not any(r['state'] == 'conflict' for r in checks.values()) else 1)
+PY
+```
+
+On successful adapter enumeration, alternatively copy its canonical snapshot to
+`$RUN/inventory-before.private.json` with exclusive creation for those diagnostics.
+Do not rescan a known blocker repeatedly. These diagnostics enumerate unsupported
+IDs in the saved snapshot and use the shared inspector for duplicate/Trash states;
+they do not filter the snapshot or grant permission to create.
 
 On success, preserve `raindrop-inventory.private.json` as an immutable per-phase
 copy outside the mutable ledger path; set SNAPSHOT to that private copy. Repeat

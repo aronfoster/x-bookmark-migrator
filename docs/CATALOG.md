@@ -234,3 +234,11 @@ commands and archive validators retain their ownership checks. This is not live
 Drive proof, a removal gate, or a multi-file transaction; publication must be
 quiescent, and changed projection bytes during the check fail. See
 [READINESS.md](READINESS.md) for preservation and rollback/stop behavior.
+
+For archive-bound writer verification before reader checks, use `catalog-verify
+--catalog-dir DIR --batch RESTORED RECEIPT ... --expected-records 103`. Supply all
+eight batch pairs. It builds expected projections in memory from receipt-verified
+archives plus canonical annotations and compares persisted bytes exactly. It
+acquires the writer lock but never republishes. This detects an internally
+consistent edited/stale catalog; `catalog-check` separately tests actual reader
+access and all expected local media. Neither is current remote Drive proof.

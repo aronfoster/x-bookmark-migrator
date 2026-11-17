@@ -269,6 +269,7 @@ Example (all names, IDs and hashes below are synthetic):
   "reviewed_by": "local independent reviewer",
   "format_description": "Reviewed wrappers delegate exclusively to native apply_plan",
   "helper_sources": [{"path": "wrapper.py", "sha256": "<64 lowercase hex characters>"}],
+  "native_intents": [{"path": "original.intent.private.json", "sha256": "<64 lowercase hex characters>"}],
   "files": [{"path": "run.private.json", "sha256": "<64 lowercase hex characters>", "record_count": 2}],
   "records_pointer": "/outcomes",
   "post_id_pointer": "/post_id",
@@ -284,7 +285,8 @@ Example (all names, IDs and hashes below are synthetic):
 ```
 
 List every source/summary marker whose code/provenance was reviewed in
-`helper_sources`, and every original run report in `files`. The checker binds
+`helper_sources`, every reviewed native intent in `native_intents`, and every original run report
+in `files`. The checker binds
 original hashes, counts every row, compares IDs/outcomes to native intent evidence,
 and requires one-to-one coverage of the supplied native intents. A reviewed
 `not_attempted` row must have no attempt (missing/null); it is retained as a

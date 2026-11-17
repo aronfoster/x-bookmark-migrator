@@ -783,7 +783,7 @@ def test_real_adapter_numeric_stderr_reaches_backfill_report(corpus, tmp_path, m
     assert "PRIVATE" not in json.dumps(result)
 
 
-def native_provenance(store, base):
+def native_provenance(store, base, state):
     store.write("wrapper.private.json", {"synthetic_code": "delegates exclusively to apply_plan"})
     rows = [
         {"id": "101", "attempt": base, "state": "removed"},
@@ -796,6 +796,12 @@ def native_provenance(store, base):
         "all_reports_included": True,
         "reviewed_by": "synthetic reviewer",
         "format_description": "Synthetic native-delegating wrapper report",
+        "native_intents": [
+            {
+                "path": str(state.path(base + ".intent.private.json")),
+                "sha256": digest(state.path(base + ".intent.private.json").read_bytes()),
+            }
+        ],
         "helper_sources": [
             {
                 "path": "wrapper.private.json",
@@ -825,7 +831,7 @@ def test_native_helper_provenance_counts_native_once_and_retains_pre_intent_stop
     state = Store(tmp_path / "native")
     base = native(state, "101", 200, {"data": {"bookmarked": False}})
     evidence = Store(tmp_path / "helper")
-    descriptor, _ = native_provenance(evidence, base)
+    descriptor, _ = native_provenance(evidence, base, state)
     attempts = scan_native(state.root)
     proof = audit_native_helpers(descriptor, attempts)
     assert len(attempts) == proof["native_attempts"] == 1
@@ -839,6 +845,8 @@ def test_native_helper_provenance_counts_native_once_and_retains_pre_intent_stop
     [
         "code_hash",
         "report_hash",
+        "intent_hash",
+        "intent_duplicate",
         "omitted_intent",
         "missing_intent",
         "wrong_id",
@@ -855,12 +863,16 @@ def test_native_helper_provenance_fails_closed(tmp_path, fault):
     state = Store(tmp_path / "native")
     base = native(state, "101", 200, {"data": {"bookmarked": False}})
     evidence = Store(tmp_path / "helper")
-    descriptor, spec = native_provenance(evidence, base)
+    descriptor, spec = native_provenance(evidence, base, state)
     rows = evidence.read("run.private.json")["rows"]
     if fault == "code_hash":
         spec["helper_sources"][0]["sha256"] = "0" * 64
     elif fault == "report_hash":
         spec["files"][0]["sha256"] = "0" * 64
+    elif fault == "intent_hash":
+        spec["native_intents"][0]["sha256"] = "0" * 64
+    elif fault == "intent_duplicate":
+        spec["native_intents"].append(spec["native_intents"][0])
     elif fault == "omitted_intent":
         native(state, "103")
     elif fault == "missing_intent":
@@ -895,7 +907,7 @@ def test_native_helper_audit_cli_accepts_reader_publication_without_synthetic_at
     state = Store(tmp_path / "native")
     base = native(state, "101", 200, {"data": {"bookmarked": False}})
     evidence = Store(tmp_path / "helper")
-    descriptor, _ = native_provenance(evidence, base)
+    descriptor, _ = native_provenance(evidence, base, state)
     monkeypatch.setattr(
         sys,
         "argv",
