@@ -1,6 +1,12 @@
 The November 16 source-link repair and mandatory Raindrop policy are documented in
 [REPAIR.md](REPAIR.md). The historical optional-Raindrop notes below are superseded
 for future deletion and retrospective repair; the catalog commands stay offline.
+For the staged complete catalog, use [DESKTOP_REPAIR.md](DESKTOP_REPAIR.md).
+`catalog-verify --catalog-dir DIR --batch RESTORE RECEIPT ... --expected-records N`
+checks all three persisted projections against freshly checked archives and current
+annotations without republishing. It does not test a different reader UID/mount,
+current remote availability or preservation of files outside its input set.
+Publication replaces files individually; readers must not see a partial generation.
 
 # Offline archive discovery (FOS-166 Phase 1)
 

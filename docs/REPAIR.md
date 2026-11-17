@@ -1,5 +1,11 @@
 # Historical source-link repair (FOS-216)
 
+The current post-backup desktop sequence is [DESKTOP_REPAIR.md](DESKTOP_REPAIR.md):
+publish all 103 staged records (including three pilots), verify actual readers,
+inventory read-only, then separately authorize a one-item create/GET/immediate-
+inventory/rerun pilot before bounded repair. It includes native-only helper audit
+provenance without duplicate attempts and stop/rollback behavior.
+
 This implements the November 16 contract, superseding the older optional-Raindrop
 migration policy. Every saved primary post needs its original X link. Non-media
 and ambiguous posts need an independently readable Raindrop pointer. This work
@@ -119,7 +125,7 @@ unknown, with all attempts retained. Never retry historical DELETE.
 
 ### Private batch-helper evidence
 
-The out-of-tree helper's real format is **not known remotely**. A local reviewer
+For a helper with independent intent evidence, its real format is **not known remotely**. A local reviewer
 must inventory all its intents (including failures/unknowns), document what its
 fields mean, and map that existing evidence explicitly. The descriptor below is
 an audit input, not another Raindrop ledger or a reconstructed deletion receipt.
@@ -155,6 +161,14 @@ index, plus the private format description. Invalid/missing IDs, inaccessible or
 corrupt evidence fail rather than disappear from totals. Missing helper mapping,
 no all-sources attestation or a population different from `--expected-records`
 keeps coverage incomplete. The reported 25/32/43 checkpoint is not hardcoded truth.
+
+For the locally observed wrappers that delegate exclusively to native transactions,
+use `--native-helper-audit` instead of inventing a helper-format ledger. Its
+hash-bound source/report/marker references and exact native-intent coverage are
+specified in [DESKTOP_REPAIR.md](DESKTOP_REPAIR.md). It adds no attempts and does
+not attest retirement. Both forms may be supplied if the private audit discovers
+independent helper attempts too. Repair now accepts the approved 2750 catalog
+publication layout through `PublicationStore`; reports and annotations stay private.
 
 ### Classification and report
 

@@ -1,5 +1,9 @@
 # Mandatory discovery before removal (FOS-166)
 
+The coordinated post-backup inventory/pilot/historical-repair procedure is
+[DESKTOP_REPAIR.md](DESKTOP_REPAIR.md). It reuses this adapter and ledger, preserves
+unsupported-link diagnostics, and requires immediate list visibility before rerun.
+
 The 2026-11-16 contract supersedes optional-Raindrop statements in older runbooks.
 Every non-media saved primary post needs a unique active Raindrop pointer and a
 fresh authenticated GET immediately before removal. This change is code only:

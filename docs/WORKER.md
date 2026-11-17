@@ -10,6 +10,12 @@ prospective Raindrop pilot, effective desktop skill synchronization, retirement 
 private legacy helpers, budget observations, exact host paths/account/mounts, and
 owner authorization remain rollout gates. Never activate using example values.
 
+The post-backup FOS-216 handoff is [DESKTOP_REPAIR.md](DESKTOP_REPAIR.md).
+Native-only wrapper provenance is audited with `--native-helper-audit`; it adds
+no worker `helper_descriptors` entries because native scanning already reads the
+same intents. Preserve that reviewed evidence separately; it does not itself set
+the worker's source-completeness, helper-retirement or live-authorization gates.
+
 ## Modes and configuration
 
 All modes use the existing state directory and its shared exclusive `lock`.

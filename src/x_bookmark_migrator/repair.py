@@ -181,6 +181,74 @@ def scan_helper(descriptor_path, *, seen_files=None):
     return attempts
 
 
+def scan_native_helper_audit(descriptor_path, attempts, *, seen_files=None):
+    """Bind reviewed native-only wrapper provenance without inventing more attempts.
+
+    Source-code meaning and report-row mapping remain explicit local review
+    assertions. Hashes bind that review to bytes; only scan_native proves outcomes.
+    """
+    spec, spec_ref = read_json(descriptor_path)
+    if (
+        not isinstance(spec, dict)
+        or spec.get("schema_version") != 1
+        or spec.get("mode") != "native_delegation"
+        or spec.get("all_intents_included") is not True
+        or spec.get("all_helpers_delegate_to_native") is not True
+        or not isinstance(spec.get("review_note"), str)
+        or not spec["review_note"].strip()
+        or not isinstance(spec.get("artifacts"), list)
+        or not spec["artifacts"]
+        or not isinstance(spec.get("native_intents"), list)
+        or not spec["native_intents"]
+    ):
+        raise PilotError("Native-only helpers require a reviewed provenance audit.")
+    seen = seen_files if seen_files is not None else set()
+
+    def bound_file(item):
+        if (
+            not isinstance(item, dict)
+            or not isinstance(item.get("path"), str)
+            or not item["path"]
+            or not isinstance(item.get("sha256"), str)
+            or not re.fullmatch(r"[a-f0-9]{64}", item["sha256"])
+        ):
+            raise PilotError("Invalid native-helper evidence descriptor.")
+        path = Path(descriptor_path).parent / item["path"]
+        raw = private_bytes(path)
+        ref = {"path": str(path.resolve()), "sha256": digest(raw)}
+        if ref["sha256"] != item["sha256"] or ref["path"] in seen:
+            raise PilotError("Native-helper evidence hash mismatch or duplicate file.")
+        seen.add(ref["path"])
+        return ref
+
+    artifacts, roles = [], set()
+    for item in spec["artifacts"]:
+        if not isinstance(item, dict) or item.get("role") not in (
+            "helper_source",
+            "run_report",
+            "summary_marker",
+        ):
+            raise PilotError("Native-helper artifact requires an explicit evidence role.")
+        roles.add(item["role"])
+        artifacts.append({**bound_file(item), "role": item["role"]})
+    if not {"helper_source", "run_report"} <= roles:
+        raise PilotError("Native-helper audit requires source and run-report evidence.")
+    references = [bound_file(item) for item in spec["native_intents"]]
+    native = [a["evidence"][0] for a in attempts if a["format"] == "native_unbookmark_v1"]
+    key = lambda ref: (ref["path"], ref["sha256"])  # noqa: E731
+    if len(native) != len(references) or {key(r) for r in native} != {key(r) for r in references}:
+        raise PilotError("Native-helper audit must cover every scanned native intent exactly once.")
+    return {
+        "descriptor": spec_ref,
+        "mode": "native_delegation",
+        "review_note": spec["review_note"],
+        "artifacts": artifacts,
+        "native_intents": references,
+        "additional_attempts": 0,
+        "helper_retirement_verified": False,
+    }
+
+
 def content_binding(record):
     return digest(encode(sorted({v["payload_receipt"]["sha256"] for v in record["versions"]})))
 

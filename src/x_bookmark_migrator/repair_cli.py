@@ -6,7 +6,15 @@ from pathlib import Path
 
 from .catalog import build, private_bytes
 from .core import PilotError, Store
-from .repair import backfill, reconcile, saved_raindrop_inspector, scan_helper, scan_native
+from .publication import PublicationStore
+from .repair import (
+    backfill,
+    reconcile,
+    saved_raindrop_inspector,
+    scan_helper,
+    scan_native,
+    scan_native_helper_audit,
+)
 
 COMMANDS = ("repair-audit", "repair-backfill")
 
@@ -19,6 +27,7 @@ def add_commands(sub):
         p.add_argument("--batch", nargs=2, action="append", required=True)
         p.add_argument("--removal-dir", type=Path, action="append", required=True)
         p.add_argument("--helper-format", type=Path, action="append", default=[])
+        p.add_argument("--native-helper-audit", type=Path)
         p.add_argument("--classifications", type=Path)
         p.add_argument("--expected-records", type=int, default=100)
         p.add_argument("--all-removal-sources-confirmed", action="store_true")
@@ -83,7 +92,12 @@ def run(args):
     sources.extend(directories + descriptors)
     sources.extend(
         p.resolve()
-        for p in (args.classifications, args.raindrop_inventory, args.raindrop_receipt_dir)
+        for p in (
+            args.classifications,
+            args.raindrop_inventory,
+            args.raindrop_receipt_dir,
+            args.native_helper_audit,
+        )
         if p is not None
     )
     if any(overlap(output_root, path) for path in sources):
@@ -93,16 +107,21 @@ def run(args):
         attempts.extend(scan_native(directory))
     for descriptor in descriptors:
         attempts.extend(scan_helper(descriptor, seen_files=seen_files))
+    native_helper_audit = None
+    if args.native_helper_audit:
+        native_helper_audit = scan_native_helper_audit(
+            args.native_helper_audit, attempts, seen_files=seen_files
+        )
     if any(overlap(output_root, Path(path)) for path in seen_files):
         raise PilotError("Audit output must not overlap helper source evidence.")
-    catalog, output = Store(catalog_root), Store(output_root)
+    catalog, output = PublicationStore(catalog_root), Store(output_root)
     run_id = secrets.token_hex(16)
     with catalog.locked(), output.locked():
         records = build(args.batch, catalog)
         blockers = []
         if not args.all_removal_sources_confirmed:
             blockers.append("all_removal_sources_not_attested")
-        if not args.helper_format:
+        if not args.helper_format and native_helper_audit is None:
             blockers.append("private_batch_helper_not_audited")
         if len(records) != args.expected_records:
             blockers.append("archive_population_mismatch")
@@ -111,7 +130,11 @@ def run(args):
             records,
             attempts,
             decisions=decisions,
-            coverage={"complete": not blockers, "blockers": blockers},
+            coverage={
+                "complete": not blockers,
+                "blockers": blockers,
+                "native_helper_audit": native_helper_audit,
+            },
             inspect_raindrop=offline_inspector(args, records),
         )
         output.write(f"repair-audit-{run_id}.private.json", report)
