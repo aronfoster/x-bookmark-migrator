@@ -6,12 +6,12 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urlsplit
 
 from .archive import media_format
 from .core import PilotError, exact_id
 from .drive import digest, drive_id, encode
-from .publication import PublicationStore, publication_bytes
+from .publication import PublicationReader, PublicationStore, publication_bytes
 from .source import post_id as post_id
 from .source import raindrop_post_id, source_url
 
@@ -358,21 +358,118 @@ def atomic_bytes(output, name, data):
             os.unlink(temporary)
 
 
-def publish(output, records):
+def projection_bytes(records):
     records = add_source_links(records)
-    page = render(records).encode()
-    atomic_bytes(output, "catalog.jsonl", b"".join(encode(r) for r in records))
-    atomic_bytes(output, "index.html", page)
-    atomic_bytes(output, "source-links.jsonl", b"".join(encode(r) for r in source_sidecar(records)))
+    return {
+        "catalog.jsonl": b"".join(encode(r) for r in records),
+        "index.html": render(records).encode(),
+        "source-links.jsonl": b"".join(encode(r) for r in source_sidecar(records)),
+    }
+
+
+def publish(output, records):
+    for name, data in projection_bytes(records).items():
+        atomic_bytes(output, name, data)
+
+
+def verify_publication(output, records, expected_records=None):
+    """Check persisted bytes against a fresh archive/annotation build, without repair."""
+    if expected_records is not None and (
+        type(expected_records) is not int
+        or expected_records < 1
+        or len(records) != expected_records
+    ):
+        raise PilotError("Published archive population does not match the expected count.")
+    for name, expected in projection_bytes(records).items():
+        if publication_bytes(output.path(name)) != expected:
+            raise PilotError("Published catalog projections differ from archives/annotations.")
+    return {
+        "verified": True,
+        "records": len(records),
+        "network_calls": 0,
+        "reader_access": "not_tested",
+        "deletion_eligible": False,
+    }
 
 
 def read_catalog(output):
-    records = [
-        json.loads(line) for line in publication_bytes(output.path("catalog.jsonl")).splitlines()
-    ]
+    raw = (
+        output.bytes("catalog.jsonl")
+        if isinstance(output, PublicationReader)
+        else publication_bytes(output.path("catalog.jsonl"))
+    )
+    records = [json.loads(line) for line in raw.splitlines()]
     if any(r.get("schema_version") != 1 for r in records):
         raise PilotError("Unsupported catalog version.")
     return add_source_links(records)
+
+
+def check_publication(output, *, expected_records, expected_media=None, annotations=None):
+    """Check persisted bytes and local links without upgrading or writing evidence."""
+    if expected_records < 1 or (expected_media is not None and expected_media < 0):
+        raise PilotError("Expected publication counts must be positive records/nonnegative media.")
+    names = ("catalog.jsonl", "index.html", "source-links.jsonl")
+    before = {name: output.bytes(name) for name in names}
+    records = [json.loads(line) for line in before["catalog.jsonl"].splitlines()]
+    if (
+        len(records) != expected_records
+        or len({r["post_id"] for r in records}) != len(records)
+        or any(r.get("schema_version") != 1 for r in records)
+        or add_source_links(records) != records
+        or any(r.get("canonical_url") != source_url(r["post_id"]) for r in records)
+    ):
+        raise PilotError("Catalog population or persisted source identity mismatch.")
+    if annotations is not None:
+        projected = copy.deepcopy(records)
+        for record in projected:
+            record.pop("category_override", None)
+        if apply_annotations(projected, annotations) != records:
+            raise PilotError("Published curation differs from canonical annotations.")
+    if before["index.html"] != render(records).encode() or before["source-links.jsonl"] != b"".join(
+        encode(r) for r in source_sidecar(records)
+    ):
+        raise PilotError("Published gallery or source sidecar is inconsistent.")
+    media_paths = set()
+    for record in records:
+        for version in record["versions"]:
+            if version["payload_url"] != drive_link(version["payload_receipt"]):
+                raise PilotError("Published payload link mismatch.")
+            for asset in version["media"]:
+                if "storage" not in asset:
+                    continue
+                if asset.get("archive_url") != drive_link(asset["storage"]):
+                    raise PilotError("Published attachment archive link mismatch.")
+                link = asset.get("local_url", "")
+                parsed = urlsplit(link)
+                if (
+                    asset.get("availability") != "local_hash_verified"
+                    or not link
+                    or parsed.scheme
+                    or parsed.netloc
+                    or parsed.query
+                    or parsed.fragment
+                    or Path(unquote(link)).is_absolute()
+                ):
+                    raise PilotError("Published attachment lacks a relative local link.")
+                path = output.root / unquote(link)
+                media_reader = PublicationReader(path.parent)
+                data = media_reader.bytes(path.name)
+                receipt = asset["storage"]
+                if digest(data) != receipt["sha256"] or len(data) != receipt["size_bytes"]:
+                    raise PilotError("Published attachment hash mismatch.")
+                media_paths.add(path.resolve())
+    if expected_media is not None and len(media_paths) != expected_media:
+        raise PilotError("Published media population mismatch.")
+    if any(output.bytes(name) != before[name] for name in names):
+        raise PilotError("Publication changed during reader verification; quiesce writers.")
+    return {
+        "records": len(records),
+        "media_files": len(media_paths),
+        "verified": True,
+        "annotations_checked": annotations is not None,
+        "network_calls": 0,
+        "deletion_eligible": False,
+    }
 
 
 def annotate(output, records, key, *, visibility=None, role=None, description=None):
@@ -399,7 +496,14 @@ def annotate(output, records, key, *, visibility=None, role=None, description=No
     publish(output, apply_annotations(records, notes))
 
 
-COMMANDS = ("catalog-build", "catalog-lookup", "catalog-annotate", "catalog-raindrop-match")
+COMMANDS = (
+    "catalog-build",
+    "catalog-verify",
+    "catalog-lookup",
+    "catalog-check",
+    "catalog-annotate",
+    "catalog-raindrop-match",
+)
 
 
 def add_commands(sub):
@@ -410,7 +514,7 @@ def add_commands(sub):
             p.add_argument("--page-file", action="append", required=True)
             continue
         p.add_argument("--catalog-dir", type=Path, required=True)
-        if command == "catalog-build":
+        if command in ("catalog-build", "catalog-verify"):
             p.add_argument(
                 "--batch",
                 nargs=2,
@@ -418,6 +522,12 @@ def add_commands(sub):
                 required=True,
                 metavar=("RESTORED_DIR", "BATCH_RECEIPT"),
             )
+            if command == "catalog-verify":
+                p.add_argument("--expected-records", type=int, required=True)
+        elif command == "catalog-check":
+            p.add_argument("--expected-records", type=int, required=True)
+            p.add_argument("--expected-media", type=int)
+            p.add_argument("--annotations-file", type=Path)
         elif command == "catalog-lookup":
             p.add_argument("--post", required=True)
             p.add_argument("--asset-id")
@@ -434,15 +544,35 @@ def run(args):
             args.post, [json.loads(private_bytes(p)) for p in args.page_file]
         )
         return {"matches": matches, "coverage": "not_established", "create_authorized": False}
+    if args.command in ("catalog-lookup", "catalog-check"):
+        output = PublicationReader(args.catalog_dir)
+        if args.command == "catalog-lookup":
+            return {
+                "matches": lookup(read_catalog(output), args.post, args.asset_id),
+                "network_calls": 0,
+            }
+        annotations = (
+            json.loads(private_bytes(args.annotations_file)) if args.annotations_file else None
+        )
+        if args.annotations_file and not isinstance(annotations, dict):
+            raise PilotError("Canonical annotations must be an object.")
+        return check_publication(
+            output,
+            expected_records=args.expected_records,
+            expected_media=args.expected_media,
+            annotations=annotations,
+        )
+    if args.command == "catalog-verify" and not args.catalog_dir.is_dir():
+        raise PilotError("Publication must exist before verification.")
     output = PublicationStore(args.catalog_dir)
     with output.locked():
-        if args.command == "catalog-build":
+        if args.command in ("catalog-build", "catalog-verify"):
             records = build(args.batch, output)
+            if args.command == "catalog-verify":
+                return verify_publication(output, records, args.expected_records)
             publish(output, records)
             return {"records": len(records), "network_calls": 0, "deletion_eligible": False}
         records = read_catalog(output)
-        if args.command == "catalog-lookup":
-            return {"matches": lookup(records, args.post, args.asset_id), "network_calls": 0}
         if all(v is None for v in (args.visibility, args.role, args.description)):
             raise PilotError("Supply a visibility, role, or description edit.")
         annotate(

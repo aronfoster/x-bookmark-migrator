@@ -252,3 +252,51 @@ Check text/photo/video/quote/repost source links and preserve existing curation.
 Keep unknown outcomes unknown. Report sanitized counts in Linear. Keep FOS-168
 blocked and live X DELETE paused until both recovery and prospective gate are
 accepted. Do not infer private-helper retirement from repository changes.
+
+## Native-delegating wrappers
+
+When reviewed private helpers delegate all attempts to native `apply_plan`, use
+`--native-helper-provenance FILE` instead of manufacturing duplicate helper rows.
+The local November 16 audit reports this situation. Original native run reports
+use `/outcomes`, `/post_id`, `/attempt`, `/state`; verify their actual bytes first.
+Example (all names, IDs and hashes below are synthetic):
+
+```json
+{
+  "schema_version": 1,
+  "native_delegation_reviewed": true,
+  "all_reports_included": true,
+  "reviewed_by": "local independent reviewer",
+  "format_description": "Reviewed wrappers delegate exclusively to native apply_plan",
+  "helper_sources": [{"path": "wrapper.py", "sha256": "<64 lowercase hex characters>"}],
+  "native_intents": [{"path": "original.intent.private.json", "sha256": "<64 lowercase hex characters>"}],
+  "files": [{"path": "run.private.json", "sha256": "<64 lowercase hex characters>", "record_count": 2}],
+  "records_pointer": "/outcomes",
+  "post_id_pointer": "/post_id",
+  "attempt_pointer": "/attempt",
+  "outcome_pointer": "/state",
+  "outcome_map": {
+    "unbookmarked": "confirmed_removed",
+    "unbookmark_outcome_unknown": "outcome_unknown",
+    "unbookmark_rejected": "rejected",
+    "blocked": "not_attempted"
+  }
+}
+```
+
+List every source/summary marker whose code/provenance was reviewed in
+`helper_sources`, every reviewed native intent in `native_intents`, and every original run report
+in `files`. The checker binds
+original hashes, counts every row, compares IDs/outcomes to native intent evidence,
+and requires one-to-one coverage of the supplied native intents. A reviewed
+`not_attempted` row must have no attempt (missing/null); it is retained as a
+pre-intent stop, never a synthetic removal. Unknown/missing/repeated/mismatched
+references fail closed. Independent non-native attempts still require the original
+`--helper-format` contract. All-source attestation remains separately required.
+Code hashes prove which bytes were reviewed, not that every invocation site was
+found or disabled. Retirement is **not** certified by this descriptor.
+
+For the full post-backup publication, actual-reader check, inventory, one-item
+pilot and bounded repair sequence, follow [READINESS.md](READINESS.md). Use
+`--expected-records 103` with the complete eight-batch corpus, not the older
+100-record-only example above.

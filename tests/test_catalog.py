@@ -446,3 +446,113 @@ def test_unsupported_x_link_cannot_be_skipped_in_saved_raindrop_matching():
             "101",
             [{"result": True, "items": [{"_id": 8, "link": "https://mobile.x.com/unsupported"}]}],
         )
+
+
+def test_reader_check_curation_sources_media_and_no_writes(corpus, monkeypatch):
+    from x_bookmark_migrator.catalog import check_publication
+    from x_bookmark_migrator.publication import PublicationReader, PublicationStore
+
+    batch, output, restored, _ = corpus
+    notes = {
+        "category_overrides": {"101": "Kept category"},
+        "101:1:photo-1": {"browse_visibility": "hidden", "description": "Kept caption"},
+    }
+    output.write("annotations.private.json", notes)
+    output.root.chmod(0o2750)
+    writer = PublicationStore(output.root)
+    publish(writer, build([batch], writer))
+    before = {p: p.read_bytes() for root in (output.root, restored.root) for p in root.iterdir()}
+    # The reader path must not consult caller ownership or acquire the writer lock.
+    monkeypatch.setattr(os, "getuid", lambda: 45678)
+    monkeypatch.setattr(Store, "locked", lambda *_: pytest.fail("reader opened writer lock"))
+    reader = PublicationReader(output.root)
+    result = check_publication(reader, expected_records=3, expected_media=3, annotations=notes)
+    assert result["verified"] and result["annotations_checked"]
+    assert read_catalog(reader)[0]["category_override"] == "Kept category"
+    assert before == {p: p.read_bytes() for p in before}
+    assert not output.path("lock").exists()
+
+
+@pytest.mark.parametrize(
+    "fault", ["source", "sidecar", "html", "media", "category", "link", "count", "symlink"]
+)
+def test_reader_check_rejects_corrupt_or_mismatched_publication(corpus, fault):
+    from x_bookmark_migrator.catalog import check_publication
+    from x_bookmark_migrator.publication import PublicationReader
+
+    batch, output, restored, _ = corpus
+    records = build([batch], output)
+    if fault == "category":
+        records[0]["category_override"] = "Stale override"
+    if fault == "link":
+        records[0]["versions"][0]["media"][0]["archive_url"] = "https://example.invalid/"
+    publish(output, records)
+    if fault == "source":
+        records[0]["source_post_url"] = "https://x.com/i/status/104"
+        output.path("catalog.jsonl").write_bytes(b"".join(encode(r) for r in records))
+    elif fault in ("sidecar", "html"):
+        output.path("source-links.jsonl" if fault == "sidecar" else "index.html").write_bytes(
+            b"stale"
+        )
+    elif fault == "media":
+        restored.path("101_101_01.png").write_bytes(b"corrupt")
+    elif fault == "symlink":
+        path = output.path("source-links.jsonl")
+        path.rename(output.path("old"))
+        path.symlink_to(output.path("old"))
+    with pytest.raises(PilotError):
+        check_publication(
+            PublicationReader(output.root),
+            expected_records=2 if fault == "count" else 3,
+            annotations={},
+        )
+
+
+def test_reader_cli_uses_no_lock_and_checks_actual_read_errors(corpus, monkeypatch, capsys):
+    from x_bookmark_migrator.publication import PublicationReader
+
+    batch, output, _, _ = corpus
+    publish(output, build([batch], output))
+    for extra in (
+        ["catalog-check", "--expected-records", "3", "--expected-media", "3"],
+        ["catalog-lookup", "--post", "101"],
+    ):
+        monkeypatch.setattr(sys, "argv", ["x-migrator", *extra, "--catalog-dir", str(output.root)])
+        assert cli.main() == 0
+        capsys.readouterr()
+    assert not output.path("lock").exists()
+    monkeypatch.setattr(
+        PublicationReader, "bytes", lambda *_: (_ for _ in ()).throw(PermissionError())
+    )
+    assert cli.main() == 1
+
+
+def test_reader_check_detects_generation_change(corpus, monkeypatch):
+    from x_bookmark_migrator.catalog import check_publication
+    from x_bookmark_migrator.publication import PublicationReader
+
+    batch, output, _, _ = corpus
+    publish(output, build([batch], output))
+    reader = PublicationReader(output.root)
+    read = reader.bytes
+    calls = 0
+
+    def changing(name):
+        nonlocal calls
+        calls += 1
+        return b"changed" if calls == 4 else read(name)
+
+    monkeypatch.setattr(reader, "bytes", changing)
+    with pytest.raises(PilotError, match="changed during"):
+        check_publication(reader, expected_records=3)
+
+
+@pytest.mark.parametrize("mode", [0o660, 0o644, 0o666])
+def test_reader_rejects_exposed_or_writable_projection(corpus, mode):
+    from x_bookmark_migrator.publication import PublicationReader
+
+    batch, output, _, _ = corpus
+    publish(output, build([batch], output))
+    output.path("catalog.jsonl").chmod(mode)
+    with pytest.raises(PilotError):
+        PublicationReader(output.root).bytes("catalog.jsonl")

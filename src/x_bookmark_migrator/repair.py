@@ -181,6 +181,118 @@ def scan_helper(descriptor_path, *, seen_files=None):
     return attempts
 
 
+def audit_native_helpers(descriptor_path, native_attempts, *, seen_files=None):
+    """Bind native-delegating wrappers/reports without inventing extra attempts.
+
+    A reviewed mapping accounts for every report row, including a pre-intent stop.
+    Code hashes bind the local review; they do not statically prove delegation or
+    retirement. Those remain explicit local attestations.
+    """
+    spec, spec_ref = read_json(descriptor_path)
+    if (
+        not isinstance(spec, dict)
+        or spec.get("schema_version") != 1
+        or spec.get("native_delegation_reviewed") is not True
+        or spec.get("all_reports_included") is not True
+        or not isinstance(spec.get("reviewed_by"), str)
+        or not spec["reviewed_by"].strip()
+        or not isinstance(spec.get("format_description"), str)
+        or not spec["format_description"].strip()
+        or not isinstance(spec.get("helper_sources"), list)
+        or not spec["helper_sources"]
+        or not isinstance(spec.get("files"), list)
+        or not spec["files"]
+        or not isinstance(spec.get("native_intents"), list)
+        or not spec["native_intents"]
+        or not isinstance(spec.get("outcome_map"), dict)
+        or any(v not in (*OUTCOMES[:3], "not_attempted") for v in spec["outcome_map"].values())
+    ):
+        raise PilotError("Native helper provenance requires a reviewed complete descriptor.")
+    for field in ("records_pointer", "post_id_pointer", "attempt_pointer", "outcome_pointer"):
+        if not isinstance(spec.get(field), str) or (
+            spec[field] and not spec[field].startswith("/")
+        ):
+            raise PilotError("Native helper descriptor requires field pointers.")
+    seen = seen_files if seen_files is not None else set()
+
+    def bound_file(item):
+        if (
+            not isinstance(item, dict)
+            or not isinstance(item.get("path"), str)
+            or not isinstance(item.get("sha256"), str)
+            or not re.fullmatch(r"[a-f0-9]{64}", item["sha256"])
+        ):
+            raise PilotError("Invalid native helper evidence descriptor.")
+        path = Path(descriptor_path).parent / item["path"]
+        raw = private_bytes(path)
+        ref = {"path": str(path.resolve()), "sha256": digest(raw)}
+        if ref["sha256"] != item["sha256"] or ref["path"] in seen:
+            raise PilotError("Native helper evidence hash mismatch or duplicate file.")
+        seen.add(ref["path"])
+        return raw, ref
+
+    code = [bound_file(item)[1] for item in spec["helper_sources"]]
+    intent_refs = [bound_file(item)[1] for item in spec["native_intents"]]
+    scanned_refs = [attempt["evidence"][0] for attempt in native_attempts]
+    ref_key = lambda ref: (ref["path"], ref["sha256"])  # noqa: E731
+    if len(intent_refs) != len(scanned_refs) or {ref_key(r) for r in intent_refs} != {
+        ref_key(r) for r in scanned_refs
+    }:
+        raise PilotError("Native helper review must hash-bind every supplied native intent.")
+    native_by_name = {}
+    for attempt in native_attempts:
+        name = Path(attempt["evidence"][0]["path"]).name.removesuffix(".intent.private.json")
+        if name in native_by_name:
+            raise PilotError("Native attempt names collide across ledgers.")
+        native_by_name[name] = attempt
+    referenced, reports, stops = set(), [], []
+    for item in spec["files"]:
+        raw, ref = bound_file(item)
+        try:
+            rows = pointer(json.loads(raw), spec["records_pointer"])
+        except (ValueError, UnicodeError):
+            raise PilotError("Malformed native helper report.") from None
+        if (
+            not isinstance(rows, list)
+            or type(item.get("record_count")) is not int
+            or len(rows) != item["record_count"]
+        ):
+            raise PilotError("Native helper report row count mismatch.")
+        reports.append(ref)
+        for index, row in enumerate(rows):
+            pid = exact_id(pointer(row, spec["post_id_pointer"]))
+            outcome = pointer(row, spec["outcome_pointer"])
+            mapped = spec["outcome_map"].get(outcome) if isinstance(outcome, str) else None
+            try:
+                name = pointer(row, spec["attempt_pointer"])
+            except PilotError:
+                if mapped != "not_attempted":
+                    raise
+                name = None
+            if mapped == "not_attempted" and name is None:
+                stops.append({"post_id": pid, "report": ref, "record_index": index})
+                continue
+            if not isinstance(name, str) or name not in native_by_name or name in referenced:
+                raise PilotError(
+                    "Native helper attempt missing, repeated or not bound to a native intent."
+                )
+            attempt = native_by_name[name]
+            if pid != attempt["post_id"] or mapped != attempt["outcome"]:
+                raise PilotError("Native helper report disagrees with native evidence.")
+            referenced.add(name)
+    if referenced != set(native_by_name):
+        raise PilotError("Native helper reports do not cover every supplied native intent.")
+    return {
+        "descriptor": spec_ref,
+        "helper_sources": code,
+        "reports": reports,
+        "native_intents": intent_refs,
+        "native_attempts": len(referenced),
+        "pre_intent_stops": stops,
+        "retirement_verified": False,
+    }
+
+
 def content_binding(record):
     return digest(encode(sorted({v["payload_receipt"]["sha256"] for v in record["versions"]})))
 

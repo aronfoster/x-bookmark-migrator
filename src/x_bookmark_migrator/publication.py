@@ -57,3 +57,39 @@ def publication_bytes(path):
     ):
         raise PilotError("Publication bytes must be owner-only or explicitly reader-group-only.")
     return path.read_bytes()
+
+
+class PublicationReader:
+    """Read existing projections as their owner or an OS-authorized reader.
+
+    Never creates a directory, opens a writer lock, or grants access to state.
+    The kernel still enforces traversal and read permissions for the actual user.
+    """
+
+    def __init__(self, root):
+        self.root = Path(os.path.abspath(Path(root).expanduser()))
+        if self.root.resolve() != self.root:
+            raise PilotError("Reader publication path must not contain symlinks.")
+        st = self.root.lstat()
+        if not self.root.is_dir() or st.st_mode & 0o7777 not in (0o700, 0o2750):
+            raise PilotError("Reader publication must be private or setgid reader-only.")
+        if any(x.startswith("system.posix_acl") for x in os.listxattr(self.root)):
+            raise PilotError("Publication ACLs require separate review.")
+        self.owner, self.group = st.st_uid, st.st_gid
+
+    def path(self, name):
+        return Store.path(self, name)
+
+    def bytes(self, name):
+        path = self.path(name)
+        st = path.lstat()
+        if (
+            path.is_symlink()
+            or not path.is_file()
+            or st.st_uid != self.owner
+            or st.st_mode & 0o7777 not in (0o600, 0o640)
+            or (st.st_mode & 0o040 and st.st_gid != self.group)
+            or any(x.startswith("system.posix_acl") for x in os.listxattr(path))
+        ):
+            raise PilotError("Invalid reader publication file permissions.")
+        return path.read_bytes()

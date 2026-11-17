@@ -208,3 +208,39 @@ the numeric blocking IDs privately, and resolve the shared-parser contract in
 FOS-216 before proceeding. Do not delete, rewrite or omit bookmarks to bypass it.
 Category overrides must name existing exact primary IDs; invalid or unknown keys
 stop rebuild so importing a mistyped private category sidecar cannot silently fail.
+
+## Verify a published catalog as the actual reader
+
+`catalog-lookup` now reads an existing publication without requiring writer
+ownership or a writable lock. It creates no files/directories. OS read/traverse
+permissions still apply; legacy derived source fields may be added only in memory
+for lookup compatibility.
+
+For strict persisted-file acceptance, quiesce publication/curation and run:
+
+```sh
+x-migrator catalog-check --catalog-dir /private/discovery \
+  --expected-records 103 --expected-media 117
+```
+
+This reads every projection and stored local attachment, checks source identity,
+HTML/sidecar consistency, Drive link identity, and local media hashes/counts. It
+never upgrades stored fields to make them pass. A stored attachment marked
+`missing_local` fails this acceptance check by design, even though catalog builds
+can represent missing media; the 117-media handoff requires verified local bytes. As the writer, add
+`--annotations-file /private/discovery/annotations.private.json` to verify exact
+curation projection, including category overrides. Repeat without that option as
+the actual runtime reader; do not expose private annotations or credentials.
+Permissions may be private 0700/0600 or explicit setgid reader 2750/0640. Writer
+commands and archive validators retain their ownership checks. This is not live
+Drive proof, a removal gate, or a multi-file transaction; publication must be
+quiescent, and changed projection bytes during the check fail. See
+[READINESS.md](READINESS.md) for preservation and rollback/stop behavior.
+
+For archive-bound writer verification before reader checks, use `catalog-verify
+--catalog-dir DIR --batch RESTORED RECEIPT ... --expected-records 103`. Supply all
+eight batch pairs. It builds expected projections in memory from receipt-verified
+archives plus canonical annotations and compares persisted bytes exactly. It
+acquires the writer lock but never republishes. This detects an internally
+consistent edited/stale catalog; `catalog-check` separately tests actual reader
+access and all expected local media. Neither is current remote Drive proof.
