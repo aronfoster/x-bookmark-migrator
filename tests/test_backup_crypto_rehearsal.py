@@ -20,6 +20,20 @@ def run(argv, *, data=None, check=True):
     return subprocess.run(argv, input=data, capture_output=True, check=check, timeout=30)
 
 
+def decryption_succeeded(result):
+    """Exit zero alone can also mean no encrypted data was processed."""
+    statuses = {
+        line.split()[1]
+        for line in result.stdout.splitlines()
+        if line.startswith(b"[GNUPG:] ") and len(line.split()) >= 2
+    }
+    return (
+        result.returncode == 0
+        and {b"DECRYPTION_OKAY", b"END_DECRYPTION"} <= statuses
+        and not {b"DECRYPTION_FAILED", b"BADMDC", b"ERRMDC", b"ERROR", b"FAILURE"} & statuses
+    )
+
+
 @pytest.fixture(scope="module")
 def crypto(tmp_path_factory):
     for executable in ("gpg", "gpgconf", "ssh-keygen"):
@@ -142,8 +156,10 @@ def test_exported_key_fresh_unlock_decrypts_exact_synthetic_inventory(crypto):
     root, gpg, clear, ciphertext, _, payloads, original = crypto
     clear("recovery")
     output = root / "recovered.tar"
-    gpg(
+    result = gpg(
         "recovery",
+        "--status-fd",
+        "1",
         "--output",
         str(output),
         "--decrypt",
@@ -151,6 +167,7 @@ def test_exported_key_fresh_unlock_decrypts_exact_synthetic_inventory(crypto):
         unlock=True,
         data=PASSPHRASE,
     )
+    assert decryption_succeeded(result)
     recovered = output.read_bytes()
     assert hashlib.sha256(recovered).digest() == hashlib.sha256(original).digest()
     with tarfile.open(fileobj=io.BytesIO(recovered)) as archive:
@@ -173,6 +190,8 @@ def test_decrypt_failures_never_establish_recovery(crypto, failure):
     # Plaintext from a failed decrypt is never inspected or accepted.
     result = gpg(
         "public-only" if failure == "public-only" else "recovery",
+        "--status-fd",
+        "1",
         "--output",
         os.devnull,
         "--yes",
@@ -182,7 +201,7 @@ def test_decrypt_failures_never_establish_recovery(crypto, failure):
         data=b"wrong-synthetic-password\n" if failure == "wrong-passphrase" else PASSPHRASE,
         check=False,
     )
-    assert result.returncode != 0
+    assert not decryption_succeeded(result)
 
 
 @pytest.mark.parametrize("failure", [None, "wrong-signer", "wrong-namespace", "altered"])

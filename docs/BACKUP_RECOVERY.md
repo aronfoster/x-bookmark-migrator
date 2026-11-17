@@ -106,7 +106,13 @@ An unsigned receipt's claims are not authenticated merely by signing ciphertext;
 cross-check them with authenticated decrypted contents and the independent record.
 
 Decrypt with the new isolated GPG home, owner pinentry and explicit protected
-output, with bounded output/disk usage and exit/status checks. Never stream
+output, with bounded output/disk usage and exit/status checks. Require exit zero
+**and** machine-readable `DECRYPTION_OKAY`/`END_DECRYPTION`, reject failure/integrity
+error statuses, and still require the complete plaintext checks below. Exit zero
+alone is insufficient: the synthetic hosted rehearsal observed it for a severely
+truncated input that processed no encrypted payload. Keep status on a separate
+descriptor from plaintext and validate the installed version's status contract.
+Never stream
 plaintext to an agent tool or into an extracting tar process before GPG succeeds.
 Remove/quarantine failed partial plaintext privately; never mark it verified.
 
@@ -253,6 +259,8 @@ Reference contracts checked 17 November 2026:
   secret-key export/import and decrypt; export must name the intended fingerprint.
 * [GnuPG input/output](https://www.gnupg.org/documentation/manuals/gnupg/GPG-Input-and-Output.html):
   explicit output and output bounds. Check local-version support before using an option.
+* [GnuPG machine status contract](https://github.com/gpg/gnupg/blob/master/doc/DETAILS):
+  explicit successful-decryption status is required in addition to exit status.
 * [OpenSSH ssh-keygen](https://man.openbsd.org/ssh-keygen):
   `-Y verify` uses allowed signers, identity and namespace to authenticate signed input.
 * [GNOME restore](https://help.gnome.org/deja-dup/restore-full.html) and
