@@ -55,11 +55,14 @@ This remote runbook cannot authenticate those private paths or approve an unseen
 privileged script. Stop if the staged hashes or current curation have changed;
 reconcile new edits rather than overwriting them.
 
-Final relative media URLs were prepared for the final catalog location, not the
-staging directory. Do not change directory layout or copy the HTML alone. If the
-accepted final paths differ, rebuild once with all eight batches and the complete
-annotations using the existing `catalog-build`, under the same locks. Do not
-rewrite manifests, payloads or receipts. Retain prior catalogs as rollback evidence.
+Verify the staged relative media URLs against the actual final catalog location
+and private handoff; a staged-preparation receipt alone does not establish that
+promotion preserves the layout. Do not copy the HTML alone. If the final paths do
+not match the staged projection, rebuild once at the final location with all eight
+batches and the complete annotations using `catalog-build`, under the same locks.
+After either byte-identical promotion or rebuild, archive-bound `catalog-verify`
+below must pass. Do not rewrite manifests, payloads or receipts. Retain prior
+catalogs as rollback evidence.
 
 Publication directories/restored batch directories: dedicated runtime owner,
 reader group, 2750. Derived files/restored readable bytes: 0640. Annotations,
@@ -321,8 +324,13 @@ Final acceptance records all 25 (plus any newly discovered attempted IDs): exact
 archive/source identity, all native/helper evidence, fresh GET receipts from this
 repair session for required pointers, or positive content-bound media-only evidence
 plus actual reader retrieval. Run final complete inventory and audit over all 103.
-`offline_reconciliation_complete` and saved `fresh:false` evidence are not live
-acceptance; verify receipt timestamps and actual pilot/reader observations.
+`offline_reconciliation_complete` checks coverage plus the confirmed/unknown
+repair targets; it does not certify complete archival of every one of the 103.
+The report may retain a nonzero `exception_records` count for the 43 blocked
+archives even after all 25 historical removals pass. Do not require zero global
+exceptions, erase blocked rows, or upgrade the 32/43/pilots to historical removals
+just to complete this repair. Saved `fresh:false` evidence is not live acceptance;
+verify receipt timestamps and actual pilot/reader observations.
 Record counts by outcome/classification, exceptions and helper retirement privately;
 only sanitized counts/revisions/check results go to Linear. Confirm immutable
 archives, old catalogs and canonical curation are preserved. Capture changed
