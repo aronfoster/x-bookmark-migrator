@@ -4,10 +4,12 @@ No SSH connection, production keyring, privileged action or provider operation.
 Loopback passphrases below are invented test data, NOT the owner pinentry workflow.
 """
 
+import errno
 import hashlib
 import io
 import os
 import shutil
+import socket
 import subprocess
 import tarfile
 
@@ -34,11 +36,62 @@ def decryption_succeeded(result):
     )
 
 
+def crypto_preflight(root):
+    """Skip unavailable local capabilities; CI must fail instead of losing coverage."""
+
+    def unavailable(reason):
+        if os.environ.get("REQUIRE_CRYPTO_REHEARSAL") == "1":
+            pytest.fail(reason)
+        pytest.skip(reason + "; REQUIRE_CRYPTO_REHEARSAL=1 makes this mandatory")
+
+    for executable in ("gpg", "gpgconf", "ssh-keygen"):
+        if not shutil.which(executable):
+            unavailable(f"Crypto rehearsal requires {executable}")
+    probe = root / "socket-probe"
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+            connection.bind(str(probe))
+    except OSError as exc:
+        if exc.errno not in {errno.EPERM, errno.EACCES, errno.EAFNOSUPPORT, errno.EPROTONOSUPPORT}:
+            raise
+        unavailable("Crypto rehearsal requires permitted Unix sockets for GPG-agent")
+    finally:
+        probe.unlink(missing_ok=True)
+
+
+@pytest.mark.parametrize("required", [False, True])
+@pytest.mark.parametrize("capability", ["executable", "socket"])
+def test_unavailable_crypto_is_optional_locally_but_mandatory_in_ci(
+    tmp_path, monkeypatch, required, capability
+):
+    monkeypatch.setenv("REQUIRE_CRYPTO_REHEARSAL", "1" if required else "0")
+    monkeypatch.setattr(
+        shutil, "which", lambda _: None if capability == "executable" else "/fixture"
+    )
+
+    def denied_socket(*args):
+        raise PermissionError(errno.EPERM, "synthetic socket denial")
+
+    monkeypatch.setattr(socket, "socket", denied_socket)
+    expected = pytest.fail.Exception if required else pytest.skip.Exception
+    with pytest.raises(expected, match="Crypto rehearsal requires"):
+        crypto_preflight(tmp_path)
+
+
+def test_failure_status_overrides_success_even_with_zero_exit():
+    result = subprocess.CompletedProcess(
+        [],
+        0,
+        stdout=b"[GNUPG:] DECRYPTION_OKAY\n[GNUPG:] GOODMDC\n"
+        b"[GNUPG:] END_DECRYPTION\n[GNUPG:] FAILURE decrypt 1\n",
+    )
+    assert not decryption_succeeded(result)
+
+
 @pytest.fixture(scope="module")
 def crypto(tmp_path_factory):
-    for executable in ("gpg", "gpgconf", "ssh-keygen"):
-        assert shutil.which(executable), f"Crypto rehearsal requires {executable}"
     root = tmp_path_factory.mktemp("synthetic-recovery")
+    crypto_preflight(root)
     homes = {name: root / name for name in ("source", "recovery", "public-only")}
     for home in homes.values():
         home.mkdir(mode=0o700)
@@ -179,7 +232,7 @@ def test_exported_key_fresh_unlock_decrypts_exact_synthetic_inventory(crypto):
             assert archive.extractfile(name).read() == expected
 
 
-@pytest.mark.parametrize("failure", ["public-only", "wrong-passphrase", "truncated"])
+@pytest.mark.parametrize("failure", ["public-only", "wrong-passphrase", "truncated", "tampered"])
 def test_decrypt_failures_never_establish_recovery(crypto, failure):
     root, gpg, clear, ciphertext, _, _, _ = crypto
     clear("recovery")
@@ -187,6 +240,11 @@ def test_decrypt_failures_never_establish_recovery(crypto, failure):
     if failure == "truncated":
         selected = root / "truncated.gpg"
         selected.write_bytes(ciphertext.read_bytes()[:30])
+    elif failure == "tampered":
+        selected = root / "tampered.gpg"
+        data = bytearray(ciphertext.read_bytes())
+        data[len(data) // 2] ^= 1
+        selected.write_bytes(data)
     # Plaintext from a failed decrypt is never inspected or accepted.
     result = gpg(
         "public-only" if failure == "public-only" else "recovery",

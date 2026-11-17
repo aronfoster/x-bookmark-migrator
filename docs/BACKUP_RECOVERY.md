@@ -1,7 +1,7 @@
 # Protected bookmark backup: recovery handoff
 
 FOS-169, 17 November 2026. This is the remaining recovery procedure, not a new
-capture/installation procedure. Preserve the successful 548-file/24-directory
+capture/installation procedure. Preserve the successfully captured
 generation, original archives and state. Do not rerun setup/capture, move state,
 activate services, change grants, or resume X/Raindrop operations here. The later
 owner-run existing Déjà Dup backup/restore in C is the only cloud activity in this
@@ -13,10 +13,10 @@ The November 17 local receipts establish successful protected capture and
 unprivileged ciphertext/hash/SSH-signature verification. They do **not** establish
 an independently trusted signer, owner decryption or off-host recovery.
 
-The reviewed private setup/capture helpers, configuration, eight-source mapping,
+The reviewed private setup/capture helpers, configuration, source-root mapping,
 manifest/receipt schema and desktop retention helper are not in the remotely
 available migrator tree. The private openclaw-config tree was also checked;
-its financial scripts are separate jobs, not the new bookmark capture helper.
+its other backup scripts are separate jobs, not the new bookmark capture helper.
 Do not substitute them, their paths, their manifest format or their retention.
 The migrator's `archive-restore`/`restore_batch` downloads individual Drive batches;
 it does not restore this complete protected bundle and must not be used as proof.
@@ -41,10 +41,10 @@ keys by reading their contents or to recreate completed setup.
 | --- | --- |
 | Reviewed capture and setup source, installed identity | Match the exact November 17 approved hashes recorded in FOS-169, or stop for disposition of a changed revision. Owner supplies a protected hash result if agent cannot read installed code. |
 | One immutable captured generation | Resolve the current pointer once; pin generation, ciphertext/signature/receipt names, hashes, sizes and capture inventory. Use that generation throughout; never compare a later `current` pointer. |
-| Complete manifest contract | Read producer and existing tests: schema/version, path mapping for all eight roots, directory accounting, manifest/control-file accounting, size/hash encoding, code identity and limits. |
+| Complete manifest contract | Read producer and existing tests: schema/version, path mapping for all accepted roots, directory accounting, manifest/control-file accounting, size/hash encoding, code identity and limits. |
 | Trust anchors | Owner independently authenticates root signing public-key fingerprint from protected installation/record, plus GPG primary and encryption-subkey fingerprints from the approved recipient. A key delivered beside the ciphertext is not its own trust anchor. |
 | Recovery locations and identity | Owner-selected root-only desktop keyring and temporary recovery area; protected ancestors, numeric owner/group, modes and ACLs; no agent, worker or container access. Neither is under the ciphertext output or any backup include. |
-| Athena transfer binding | Existing trusted SSH alias/key, actual source identity/keyring and supported GPG versions. Last observed failure was TCP/22 refused; do not infer power/address/key loss. |
+| Source-host transfer binding | Existing trusted SSH alias/key, actual source identity/keyring and supported GPG versions. Check the latest private connectivity receipt; do not infer power/address/key loss. |
 | Desktop backup baseline | Actual user/session, installed version, existing set format, all include/exclude entries, destination identity, schedule/retention, current backup/retention activity and available remote quota. Keep raw settings/logs private. |
 | Independent recovery materials | Existing Déjà Dup password/account access, signer anchor and owner-controlled key/passphrase recovery access that survives loss of this desktop. Do not put the sole key copy inside the backup encrypted to that same key. |
 
@@ -57,14 +57,14 @@ credential-bearing command arguments or passphrases in environment variables.
 
 ## A. Preserve the existing owner key
 
-1. Resolve Athena's SSH availability only if still necessary. If refused, use the
-   owner's console to inspect listener/socket/service/address/log evidence. Keep
+1. Resolve the source host's SSH availability only if still necessary. If unavailable,
+   use the owner's console to inspect listener/socket/service/address/log evidence. Keep
    existing trusted host-key validation; no blind `ssh-keyscan`, trust-on-first-use
    replacement, disabled checking or agent forwarding. This is diagnosis, not
    authorization to enable/reconfigure services.
 2. Owner exports **only the pinned existing key**, including its usable encryption
    subkey, using GnuPG's secret-key export into owner-only storage. Do not create a
-   replacement key, export every key or alter the financial key/job. A public-key
+   replacement key, export every key or alter the existing key/job. A public-key
    export, secret-key stub or passphrase entry alone cannot decrypt the backup.
 3. Transfer the passphrase-protected export over the authenticated channel directly
    into the selected protected desktop staging area. No temporary file or pipe
@@ -77,21 +77,22 @@ credential-bearing command arguments or passphrases in environment variables.
    primary and subkey fingerprints and usable secret material; reject extra keys.
    Never use this keyring for the capture/encryption job.
 5. After clearing **only this isolated keyring's** cached agent, owner enters the
-   KeePass-held passphrase through private pinentry and decrypts the pinned bundle
-   as specified in B. Do not kill the default/financial GPG agent. Failed unlock,
+   passphrase from the owner's password manager through private pinentry and
+   decrypts the pinned bundle as specified in B. Do not kill the default or other
+   backup GPG agent. Failed unlock,
    missing subkey or ambiguous fingerprint stops acceptance.
 6. Preserve a recoverable owner-controlled copy independently of this desktop
-   (retain Athena's working copy unchanged; use the owner's existing offline/vault
-   storage for the export). Prove a fresh isolated import from the independently
+   (retain the source host's working copy unchanged; use the owner's existing
+   offline/vault storage for the export). Prove a fresh isolated import from the independently
    stored copy can decrypt this generation. If that location is not available,
    record **key disaster recovery pending**; local key import alone is insufficient.
-   Do not retire Athena's source key. Powering it down is distinct from erasing it.
+   Do not retire the source host's key. Powering it down is distinct from erasing it.
 
 The owner selects actual vault/media locations privately. The agent prepares and
 reviews commands but never receives the private export, passphrase or plaintext.
 Retain independently accessible public fingerprints and a sanitized generation
-receipt for disaster recovery. A desktop-only KeePass database is not an off-host
-passphrase recovery path.
+receipt for disaster recovery. A desktop-only password-manager database is not
+an off-host passphrase recovery path.
 
 ## B. Verify the pinned generation completely
 
@@ -108,7 +109,9 @@ cross-check them with authenticated decrypted contents and the independent recor
 Decrypt with the new isolated GPG home, owner pinentry and explicit protected
 output, with bounded output/disk usage and exit/status checks. Require exit zero
 **and** machine-readable `DECRYPTION_OKAY`/`END_DECRYPTION`, reject failure/integrity
-error statuses, and still require the complete plaintext checks below. Exit zero
+error statuses, and still require the complete plaintext checks below. Even
+`DECRYPTION_OKAY`/`GOODMDC` followed by `FAILURE` is failure; evaluate the entire
+status stream and process exit, not just a success line. Exit zero
 alone is insufficient: the synthetic hosted rehearsal observed it for a severely
 truncated input that processed no encrypted payload. Keep status on a separate
 descriptor from plaintext and validate the installed version's status contract.
@@ -126,7 +129,7 @@ The verifier must meet all of these requirements against the **existing format**
   empty directories and root mappings: no missing **or extra** members, duplicate
   tar names, file/directory collisions or silently skipped entries. Match all
   regular-file sizes and SHA-256, all directory types and any metadata the format
-  promises. Confirm coverage of all eight accepted source roots, not just counts.
+  promises. Confirm coverage of all accepted source roots, not just counts.
 * Reject absolute/traversal paths, symlinks, hardlinks, devices, FIFOs, sockets,
   sparse/unsupported members and dangerous metadata. Bound member counts, name
   lengths, manifest size, individual/total uncompressed sizes and parsing time
@@ -143,9 +146,9 @@ The verifier must meet all of these requirements against the **existing format**
   an optional future ledger must be explicit in the captured contract, not filled
   in with invented data. No provider calls or automatic use of restored tokens.
 
-For the recorded generation, reconcile 548 files, 24 directories and 774224025
-plaintext bytes using the producer's exact accounting (control members may be
-counted separately). A disagreement stops; do not alter the expected counts to
+For the recorded generation, reconcile file/directory counts and plaintext byte
+totals against the private capture receipt using the producer's exact accounting
+(control members may be counted separately). A disagreement stops; do not alter the expected counts to
 make a new implementation pass. Matching counts alone is not acceptance.
 
 Local synthetic regression requirements for the bound verifier: correct full
@@ -187,7 +190,7 @@ sanitized receipt if needed, without modifying the immutable capture generation.
 3. If already effectively covered, change nothing. Otherwise, in the **existing
    desktop user's** Backups app, add only that exact publication directory under
    Folders to Back Up. No root GSettings session, replacement array, `dconf load`,
-   backend migration, new cloud grant, rclone/financial change or timer install.
+   backend migration, new cloud grant, rclone/other-backup change or timer install.
    Re-read the baseline just before applying; a changed preimage requires a fresh
    review. Verify afterward that the only configuration delta is that one include
    (normal backup status/timestamps may change after running).
@@ -231,8 +234,8 @@ reviewed code revision. Every row must pass for **backup recovery accepted**:
 | --- | --- |
 | Private binding/review | Actual producer/schema and exact owner commands reviewed at recorded hashes; no placeholder invoked. |
 | Owner key preservation | Pinned primary/subkey; protected desktop import; fresh import from independent copy; owner passphrase works without relying on cached unlock; source retained. |
-| Local recovery | Independently anchored signer; pinned ciphertext; successful decrypt; all expected files/directories and hashes verified; all eight roots covered. |
-| Backup scope | Actual reader can read only intended publication; effective inclusion; previous includes/excludes, destination, schedule/retention, financial and ordinary rclone preserved; quota sufficient. |
+| Local recovery | Independently anchored signer; pinned ciphertext; successful decrypt; all expected files/directories and hashes verified; all accepted roots covered. |
+| Backup scope | Actual reader can read only intended publication; effective inclusion; previous includes/excludes, destination, schedule/retention, other backups and ordinary rclone preserved; quota sufficient. |
 | Off-host recovery | Fresh completed remote snapshot; exact pinned generation restored to distinct destination; byte/hash match and repeat complete owner decryption/manifest verification. |
 | Cleanup/preservation | Protected test workspace/cache disposition checked; source archives/state intact; no service activation, relocation, X/Raindrop operation, new grant or unrelated provider activity. |
 
@@ -253,14 +256,29 @@ and failures for public-only keyrings, wrong passphrase, altered ciphertext and
 wrong SSH signer/namespace. It is not the unavailable desktop capture/verifier,
 root/ACL boundary, SSH transfer, pinentry or Déjà Dup integration test.
 
+The crypto cases require `gpg`, `gpgconf`, `ssh-keygen` and permitted Unix sockets
+for the disposable GPG agent. Missing binaries or denied socket capability skip
+only those cases locally with an explicit reason. Set `REQUIRE_CRYPTO_REHEARSAL=1`
+to make them mandatory; the checked-in CI workflow does so, and must report zero
+crypto skips. Install the test dependencies through the normal environment setup
+(`gnupg` and `openssh-client` on Ubuntu); the tests do not install packages or ask
+for privilege. Once preflight succeeds, crypto execution errors are failures,
+never converted into skips. Separate tests verify the mandatory-CI behavior.
+
+For public handoffs, keep host names, password-manager choice, observed connection
+failures and exact generation counts/sizes in the private receipt. This runbook
+uses roles and required checks; it does not supply those private values.
+
 Reference contracts checked 17 November 2026:
 
 * [GnuPG operations](https://gnupg.org/documentation/manuals/gnupg/Operational-GPG-Commands.html):
   secret-key export/import and decrypt; export must name the intended fingerprint.
 * [GnuPG input/output](https://www.gnupg.org/documentation/manuals/gnupg/GPG-Input-and-Output.html):
   explicit output and output bounds. Check local-version support before using an option.
-* [GnuPG machine status contract](https://github.com/gpg/gnupg/blob/master/doc/DETAILS):
+* [GnuPG 2.4.8 machine status contract](https://github.com/gpg/gnupg/blob/gnupg-2.4.8/doc/DETAILS):
   explicit successful-decryption status is required in addition to exit status.
+  This is a versioned reference, not proof of the installed version; bind the
+  local check to its actual version.
 * [OpenSSH ssh-keygen](https://man.openbsd.org/ssh-keygen):
   `-Y verify` uses allowed signers, identity and namespace to authenticate signed input.
 * [GNOME restore](https://help.gnome.org/deja-dup/restore-full.html) and
