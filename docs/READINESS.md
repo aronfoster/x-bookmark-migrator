@@ -27,11 +27,12 @@ skill and ledger; FOS-216 owns publication and historical reconciliation.
    The staged complete catalog already imported curation. Do not import it again
    from a guessed format or replace it with a one-batch catalog.
 
-Use private observed paths only. `uv run python` in the offline diagnostic example
-denotes the same already installed protected Python environment as XM; do not
-install/fetch dependencies during acceptance. In the following templates, `XM` is the absolute
-reviewed installed x-migrator executable; `CATALOG`, `ANNOTATIONS`, `LEDGER`,
-`SKILL`, `AUDIT`, `PROVENANCE`, `SNAPSHOT` and `PID` are owner-shell variables
+Use private observed paths only. `XM_PYTHON` is the absolute Python interpreter
+from the same reviewed installed protected environment as `XM`, resolved and
+verified from the private release manifest. Invoke it directly; do not use `uv run`
+or install/fetch dependencies during acceptance. In the following templates, `XM`
+is the absolute reviewed installed x-migrator executable; `CATALOG`, `ANNOTATIONS`,
+`LEDGER`, `SKILL`, `AUDIT`, `PROVENANCE`, `SNAPSHOT` and `PID` are owner-shell variables
 resolved from the existing private manifest. They are not shell configuration to
 source. `BATCH_ARGS` is a Bash array containing all eight `--batch RESTORED RECEIPT`
 pairs; `REMOVAL_ARGS` contains each intact native `--removal-dir`. Never paste
@@ -59,7 +60,9 @@ Verify the staged relative media URLs against the actual final catalog location
 and private handoff; a staged-preparation receipt alone does not establish that
 promotion preserves the layout. Do not copy the HTML alone. If the final paths do
 not match the staged projection, rebuild once at the final location with all eight
-batches and the complete annotations using `catalog-build`, under the same locks.
+batches using `catalog-build`, under the same locks. Install the complete preserved
+annotations at `$CATALOG/annotations.private.json` **before** `catalog-build`,
+because the build reads them from that directory.
 After either byte-identical promotion or rebuild, archive-bound `catalog-verify`
 below must pass. Do not rewrite manifests, payloads or receipts. Retain prior
 catalogs as rollback evidence.
@@ -71,7 +74,9 @@ make the state/receipt stores reader-accessible. The repair CLI supports the
 2750 publication root while retaining private annotation/receipt checks.
 
 As the owner-supervised runtime identity, after releasing publication locks,
-first bind all persisted projections to the original archives and annotations:
+set `ANNOTATIONS="$CATALOG/annotations.private.json"` so both writer checks use
+the installed canonical annotation file. First bind all persisted projections
+to the original archives and those annotations:
 
 ```sh
 "$XM" catalog-verify --catalog-dir "$CATALOG" "${BATCH_ARGS[@]}" --expected-records 103
@@ -137,9 +142,10 @@ reports, not rewritten outcomes. Map native `/outcomes`, `/post_id`, `/attempt`,
 field must be missing/null. Never map a failed or ambiguous request to this state.
 
 The checker requires every supplied native intent to be referenced exactly once,
-with matching primary ID/outcome. It retains pre-intent stops separately and
-creates no duplicate removal attempts. Native unknowns remain unknown. Additional
-independent helper attempts still use existing `--helper-format` descriptors.
+with matching primary ID/outcome. It retains pre-intent stops separately, requires
+their primary IDs to belong to the complete catalog population, and creates no
+duplicate removal attempts. Native unknowns remain unknown. Additional independent
+helper attempts still use existing `--helper-format` descriptors.
 Do not fabricate an empty descriptor to satisfy coverage. Mark
 `--all-removal-sources-confirmed` only after the independent local source inventory.
 For later FOS-168 configuration, native-only wrappers add no `helper_descriptors`
@@ -203,12 +209,12 @@ matching algorithm. Run this in the protected runtime with `RUN` set in the
 command environment; it performs no provider calls and prints only counts:
 
 ```sh
-RUN="$RUN" uv run python - <<'PY'
+RUN="$RUN" "$XM_PYTHON" - <<'PY'
 import json, os
 from pathlib import Path
 from x_bookmark_migrator.catalog import private_bytes
 from x_bookmark_migrator.core import PilotError
-from x_bookmark_migrator.raindrop import validate_inventory, inspect_inventory
+from x_bookmark_migrator.raindrop import validate_inventory, inspect_inventory, item_identity
 from x_bookmark_migrator.source import raindrop_post_id
 root = Path(os.environ['RUN'])
 snapshot = json.loads(private_bytes(root / 'inventory-before.private.json'))
@@ -217,35 +223,53 @@ try:
     validate_inventory(snapshot)
 except PilotError as exc:
     valid, reason = False, (exc.summary or {}).get('reason', exc.code)
-ids, unsupported = set(), []
+groups, unsupported, malformed = {}, [], []
 for scope in ('active', 'trash'):
-    for item in snapshot.get(scope, {}).get('items', []):
+    part = snapshot.get(scope) if isinstance(snapshot, dict) else None
+    items = part.get('items') if isinstance(part, dict) else None
+    if not isinstance(items, list):
+        malformed.append({'scope': scope})
+        continue
+    for index, item in enumerate(items):
         try:
-            pid = raindrop_post_id(item.get('link'))
+            rid, _ = item_identity(item)
         except PilotError:
-            unsupported.append({'scope': scope, 'raindrop_id': item.get('_id')})
+            malformed.append({'scope': scope, 'index': index})
+            continue
+        try:
+            pid = raindrop_post_id(item['link'])
+        except PilotError:
+            unsupported.append({'scope': scope, 'raindrop_id': rid})
         else:
             if pid is not None:
-                ids.add(pid)
-# The shared inspector owns duplicate/Trash decisions; invalid global coverage
-# yields no active/absent conclusion for any ID.
-checks = {pid: inspect_inventory(snapshot, pid) for pid in sorted(ids)}
+                groups.setdefault(pid, {'active': [], 'trash': []})[scope].append(rid)
+# These groups retain parseable observations even when global coverage fails.
+# They are non-authoritative: never filter/revalidate the snapshot or infer absence.
+# Only the shared inspector owns authoritative duplicate/Trash states.
+checks = {pid: inspect_inventory(snapshot, pid) for pid in sorted(groups)}
 report = {'coverage_valid': valid, 'reason': reason, 'unsupported': unsupported,
+          'malformed': malformed, 'observed_primary_groups': groups,
+          'observed_groups_authoritative': False,
           'exact_primary_checks': checks, 'create_authorized': False}
 with open(root / 'inventory-diagnostics.private.json', 'x',
           opener=lambda path, flags: os.open(path, flags, 0o600)) as out:
     json.dump(report, out)
 print(json.dumps({'coverage_valid': valid, 'unsupported': len(unsupported),
                   'conflicts': sum(r['state'] == 'conflict' for r in checks.values()) if valid else None}))
-raise SystemExit(0 if valid and not any(r['state'] == 'conflict' for r in checks.values()) else 1)
+raise SystemExit(0 if valid and all(r['state'] == 'active' for r in checks.values()) else 1)
 PY
 ```
 
 On successful adapter enumeration, alternatively copy its canonical snapshot to
 `$RUN/inventory-before.private.json` with exclusive creation for those diagnostics.
 Do not rescan a known blocker repeatedly. These diagnostics enumerate unsupported
-IDs in the saved snapshot and use the shared inspector for duplicate/Trash states;
-they do not filter the snapshot or grant permission to create.
+IDs in the saved snapshot and retain non-authoritative per-primary active/Trash
+ID groups, so duplicate and Trash observations remain visible even when global
+coverage is invalid. Malformed scopes/items are identified without echoing content.
+Authoritative states still come only from the shared inspector; they remain
+`incomplete` for every ID when coverage is invalid. The snippet exits nonzero for
+invalid coverage, duplicates or Trash targets. It never filters/revalidates a
+partial snapshot, infers absence from these groups, or grants permission to create.
 
 On success, preserve `raindrop-inventory.private.json` as an immutable per-phase
 copy outside the mutable ledger path; set SNAPSHOT to that private copy. Repeat

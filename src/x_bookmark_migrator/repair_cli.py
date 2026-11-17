@@ -125,6 +125,10 @@ def run(args):
             blockers.append("private_batch_helper_not_audited")
         if len(records) != args.expected_records:
             blockers.append("archive_population_mismatch")
+        if provenance is not None:
+            population = {record["post_id"] for record in records}
+            if any(stop["post_id"] not in population for stop in provenance["pre_intent_stops"]):
+                blockers.append("pre_intent_stop_outside_catalog")
         decisions = json.loads(private_bytes(args.classifications)) if args.classifications else {}
         report = reconcile(
             records,

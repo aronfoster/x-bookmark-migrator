@@ -96,7 +96,10 @@ def test_catalog_verify_detects_stale_or_mixed_publication(corpus, changed):
         )
 
 
-@pytest.mark.parametrize("case", ["valid", "duplicate", "unsupported", "trash"])
+@pytest.mark.parametrize(
+    "case",
+    ["valid", "duplicate", "unsupported", "trash", "mixed", "root", "scope", "items", "item"],
+)
 def test_runbook_inventory_diagnostics_use_shared_offline_contract(
     tmp_path, monkeypatch, capsys, case
 ):
@@ -109,7 +112,7 @@ def test_runbook_inventory_diagnostics_use_shared_offline_contract(
     active, trash = [item], []
     if case == "duplicate":
         active.append({**item, "_id": 2, "link": "https://x.com/new/status/101"})
-    elif case == "unsupported":
+    elif case in ("unsupported", "mixed"):
         active.extend(
             [
                 {**item, "_id": 2, "link": "https://x.com/example"},
@@ -118,33 +121,54 @@ def test_runbook_inventory_diagnostics_use_shared_offline_contract(
         )
     elif case == "trash":
         active, trash = [], [{**item, "collection": {"$id": -99}}]
-    output.write(
-        "inventory-before.private.json",
-        {
-            "schema_version": 1,
-            "result": True,
-            "observed_at": "2026-11-17T00:00:00Z",
-            "coverage": {"complete": True, "stable_passes": 2, "perpage": 50},
-            "active": {"items": active, "count": len(active), "pages": 1},
-            "trash": {"items": trash, "count": len(trash), "pages": 1},
-        },
-    )
+    if case == "mixed":
+        active.append({**item, "_id": 4, "link": "https://x.com/new/status/101"})
+        trash.append({**item, "_id": 5, "collection": {"$id": -99}})
+    snapshot = {
+        "schema_version": 1,
+        "result": True,
+        "observed_at": "2026-11-17T00:00:00Z",
+        "coverage": {"complete": True, "stable_passes": 2, "perpage": 50},
+        "active": {"items": active, "count": len(active), "pages": 1},
+        "trash": {"items": trash, "count": len(trash), "pages": 1},
+    }
+    if case == "root":
+        snapshot = []
+    elif case == "scope":
+        snapshot["active"] = []
+    elif case == "items":
+        snapshot["active"]["items"] = None
+    elif case == "item":
+        snapshot["active"]["items"] = [None]
+    output.write("inventory-before.private.json", snapshot)
+    before = files(output.root)
     monkeypatch.setenv("RUN", str(output.root))
     doc = (Path(__file__).parents[1] / "docs/READINESS.md").read_text()
-    snippet = doc.split("RUN=\"$RUN\" uv run python - <<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+    snippet = doc.split('RUN="$RUN" "$XM_PYTHON" - <<\'PY\'\n', 1)[1].split("\nPY\n", 1)[0]
     with pytest.raises(SystemExit) as end:
         exec(compile(snippet, "inventory-runbook", "exec"), {})
     summary = json.loads(capsys.readouterr().out)
     result = output.read("inventory-diagnostics.private.json")
     assert result["create_authorized"] is False
-    if case == "unsupported":
+    assert result["observed_groups_authoritative"] is False
+    assert output.path("inventory-diagnostics.private.json").stat().st_mode & 0o777 == 0o600
+    assert all(output.path(name).read_bytes() == raw for name, raw in before.items())
+    assert "https://" not in json.dumps(result)
+    if case in ("unsupported", "mixed"):
         assert end.value.code == 1 and summary["conflicts"] is None
         assert len(result["unsupported"]) == 2
         assert result["exact_primary_checks"]["101"]["state"] == "incomplete"
+        assert result["observed_primary_groups"]["101"] == (
+            {"active": [1, 4], "trash": [5]} if case == "mixed" else {"active": [1], "trash": []}
+        )
+    elif case in ("root", "scope", "items", "item"):
+        assert end.value.code == 1 and not result["coverage_valid"]
+        assert result["malformed"]
+        assert not result["observed_primary_groups"]
     elif case == "duplicate":
         assert end.value.code == 1 and summary["conflicts"] == 1
     else:
-        assert end.value.code == 0
+        assert end.value.code == (1 if case == "trash" else 0)
         assert result["exact_primary_checks"]["101"]["state"] == (
             "trash" if case == "trash" else "active"
         )

@@ -225,7 +225,9 @@ x-migrator catalog-check --catalog-dir /private/discovery \
 
 This reads every projection and stored local attachment, checks source identity,
 HTML/sidecar consistency, Drive link identity, and local media hashes/counts. It
-never upgrades stored fields to make them pass. As the writer, add
+never upgrades stored fields to make them pass. A stored attachment marked
+`missing_local` fails this acceptance check by design, even though catalog builds
+can represent missing media; the 117-media handoff requires verified local bytes. As the writer, add
 `--annotations-file /private/discovery/annotations.private.json` to verify exact
 curation projection, including category overrides. Repeat without that option as
 the actual runtime reader; do not expose private annotations or credentials.

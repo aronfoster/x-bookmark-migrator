@@ -899,15 +899,21 @@ def test_native_helper_provenance_fails_closed(tmp_path, fault):
         audit_native_helpers(descriptor, scan_native(state.root))
 
 
+@pytest.mark.parametrize("stop_id", ["102", "999"])
 def test_native_helper_audit_cli_accepts_reader_publication_without_synthetic_attempts(
-    corpus, tmp_path, monkeypatch, capsys
+    corpus, tmp_path, monkeypatch, capsys, stop_id
 ):
     batch, output, _, _ = corpus
     output.root.chmod(0o2750)
     state = Store(tmp_path / "native")
     base = native(state, "101", 200, {"data": {"bookmarked": False}})
     evidence = Store(tmp_path / "helper")
-    descriptor, _ = native_provenance(evidence, base, state)
+    descriptor, spec = native_provenance(evidence, base, state)
+    rows = evidence.read("run.private.json")
+    rows["rows"][1]["id"] = stop_id
+    evidence.write("run.private.json", rows)
+    spec["files"][0]["sha256"] = digest(evidence.path("run.private.json").read_bytes())
+    evidence.write(descriptor.name, spec)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -930,8 +936,22 @@ def test_native_helper_audit_cli_accepts_reader_publication_without_synthetic_at
             "--all-removal-sources-confirmed",
         ],
     )
-    cli.main()  # Raindrop acceptance is still absent; coverage alone succeeds.
+    cli.main()  # Raindrop acceptance is absent; unknown stop IDs also block coverage.
     result = json.loads(capsys.readouterr().out)
-    assert result["removal_coverage_complete"]
+    assert result["removal_coverage_complete"] is (stop_id == "102")
+    report_path = next((tmp_path / "audit").glob("repair-audit-*.private.json"))
+    report = json.loads(report_path.read_bytes())
+    assert ("pre_intent_stop_outside_catalog" in report["coverage"]["blockers"]) is (
+        stop_id == "999"
+    )
+    assert report["native_helper_provenance"]["pre_intent_stops"][0]["post_id"] == stop_id
+    if stop_id == "999":
+
+        class NoProviderCalls:
+            def ensure_raindrop(self, *args, **kwargs):
+                pytest.fail("Invalid source coverage must stop before provider calls")
+
+        with pytest.raises(PilotError, match="Reconcile all removal evidence"):
+            backfill(report, NoProviderCalls(), ["101"], confirmed=True)
     assert result["deletion_outcomes"] == {"confirmed_removed": 1, "never_attempted": 2}
     assert output.root.stat().st_mode & 0o7777 == 0o2750
