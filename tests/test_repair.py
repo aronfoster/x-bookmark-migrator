@@ -781,3 +781,145 @@ def test_real_adapter_numeric_stderr_reaches_backfill_report(corpus, tmp_path, m
     }
     assert result["summary"]["processed"] == 1 and result["summary"]["blocked"]
     assert "PRIVATE" not in json.dumps(result)
+
+
+def native_provenance(store, base):
+    store.write("wrapper.private.json", {"synthetic_code": "delegates exclusively to apply_plan"})
+    rows = [
+        {"id": "101", "attempt": base, "state": "removed"},
+        {"id": "102", "state": "blocked_before_intent"},
+    ]
+    store.write("run.private.json", {"rows": rows})
+    spec = {
+        "schema_version": 1,
+        "native_delegation_reviewed": True,
+        "all_reports_included": True,
+        "reviewed_by": "synthetic reviewer",
+        "format_description": "Synthetic native-delegating wrapper report",
+        "helper_sources": [
+            {
+                "path": "wrapper.private.json",
+                "sha256": digest(store.path("wrapper.private.json").read_bytes()),
+            }
+        ],
+        "files": [
+            {
+                "path": "run.private.json",
+                "sha256": digest(store.path("run.private.json").read_bytes()),
+                "record_count": 2,
+            }
+        ],
+        "records_pointer": "/rows",
+        "post_id_pointer": "/id",
+        "attempt_pointer": "/attempt",
+        "outcome_pointer": "/state",
+        "outcome_map": {"removed": "confirmed_removed", "blocked_before_intent": "not_attempted"},
+    }
+    store.write("provenance.private.json", spec)
+    return store.path("provenance.private.json"), spec
+
+
+def test_native_helper_provenance_counts_native_once_and_retains_pre_intent_stop(tmp_path):
+    from x_bookmark_migrator.repair import audit_native_helpers
+
+    state = Store(tmp_path / "native")
+    base = native(state, "101", 200, {"data": {"bookmarked": False}})
+    evidence = Store(tmp_path / "helper")
+    descriptor, _ = native_provenance(evidence, base)
+    attempts = scan_native(state.root)
+    proof = audit_native_helpers(descriptor, attempts)
+    assert len(attempts) == proof["native_attempts"] == 1
+    assert len(proof["pre_intent_stops"]) == 1
+    assert not proof["retirement_verified"]
+    assert attempts[0]["outcome"] == "confirmed_removed"
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "code_hash",
+        "report_hash",
+        "omitted_intent",
+        "missing_intent",
+        "wrong_id",
+        "wrong_outcome",
+        "false_stop",
+        "duplicate",
+        "attestation",
+        "count",
+    ],
+)
+def test_native_helper_provenance_fails_closed(tmp_path, fault):
+    from x_bookmark_migrator.repair import audit_native_helpers
+
+    state = Store(tmp_path / "native")
+    base = native(state, "101", 200, {"data": {"bookmarked": False}})
+    evidence = Store(tmp_path / "helper")
+    descriptor, spec = native_provenance(evidence, base)
+    rows = evidence.read("run.private.json")["rows"]
+    if fault == "code_hash":
+        spec["helper_sources"][0]["sha256"] = "0" * 64
+    elif fault == "report_hash":
+        spec["files"][0]["sha256"] = "0" * 64
+    elif fault == "omitted_intent":
+        native(state, "103")
+    elif fault == "missing_intent":
+        rows[0]["attempt"] = "unbookmark-missing-000000"
+    elif fault == "wrong_id":
+        rows[0]["id"] = "103"
+    elif fault == "wrong_outcome":
+        rows[0]["state"] = "unexpected"
+    elif fault == "false_stop":
+        rows[1]["attempt"] = base
+    elif fault == "duplicate":
+        rows.append(rows[0])
+    elif fault == "attestation":
+        spec["native_delegation_reviewed"] = False
+    elif fault == "count":
+        spec["files"][0]["record_count"] = 99
+    if fault in ("missing_intent", "wrong_id", "wrong_outcome", "false_stop", "duplicate"):
+        evidence.write("run.private.json", {"rows": rows})
+        spec["files"][0].update(
+            sha256=digest(evidence.path("run.private.json").read_bytes()), record_count=len(rows)
+        )
+    evidence.write(descriptor.name, spec)
+    with pytest.raises(PilotError):
+        audit_native_helpers(descriptor, scan_native(state.root))
+
+
+def test_native_helper_audit_cli_accepts_reader_publication_without_synthetic_attempts(
+    corpus, tmp_path, monkeypatch, capsys
+):
+    batch, output, _, _ = corpus
+    output.root.chmod(0o2750)
+    state = Store(tmp_path / "native")
+    base = native(state, "101", 200, {"data": {"bookmarked": False}})
+    evidence = Store(tmp_path / "helper")
+    descriptor, _ = native_provenance(evidence, base)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "x-migrator",
+            "repair-audit",
+            "--catalog-dir",
+            str(output.root),
+            "--output-dir",
+            str(tmp_path / "audit"),
+            "--batch",
+            str(batch[0]),
+            str(batch[1]),
+            "--removal-dir",
+            str(state.root),
+            "--native-helper-provenance",
+            str(descriptor),
+            "--expected-records",
+            "3",
+            "--all-removal-sources-confirmed",
+        ],
+    )
+    cli.main()  # Raindrop acceptance is still absent; coverage alone succeeds.
+    result = json.loads(capsys.readouterr().out)
+    assert result["removal_coverage_complete"]
+    assert result["deletion_outcomes"] == {"confirmed_removed": 1, "never_attempted": 2}
+    assert output.root.stat().st_mode & 0o7777 == 0o2750
