@@ -24,7 +24,7 @@ permissions from them. A sprint is not complete until its exit evidence exists.
 
 ## S1 — recover existing state
 
-**18–24 November; current. M1. Tracker: FOS-169.**
+**M1. Tracker: FOS-169.**
 
 - Bind the existing captured generation to its producer receipt, actual manifest
   schema and independent signer anchor. Reuse the preserved desktop keys and
@@ -47,7 +47,7 @@ private recovery keys or wait for M1. No private content goes to public fixtures
 
 ## S2 — publish, reconcile and operate
 
-**25 November–1 December target. M2. Trackers: FOS-216, FOS-166, FOS-169.**
+**M2. Trackers: FOS-216, FOS-166, FOS-169.**
 
 1. After M1, use the existing protected rollout to install the accepted readiness
    release. Publish the complete catalog/HTML/source sidecar/annotations; preserve
@@ -77,7 +77,7 @@ All already-required live permissions and spending limits remain in force.
 
 ## S3 — search and categorization readiness
 
-**2–8 December target. M3. Trackers: FOS-220 and FOS-223.**
+**M3. Trackers: FOS-220 and FOS-223.**
 
 - Use the existing catalog and exact identity mapping to provide searchable full
   preserved text, category/annotation fields and useful per-asset descriptions.
@@ -104,7 +104,7 @@ Live reads/writes or model processing stay within explicitly authorized scope.
 
 ## S4 — complete X migration and accept v1
 
-**9–15 December first target window; repeat weekly as needed. M4. FOS-169/FOS-113.**
+**M4. FOS-169/FOS-113.**
 
 The M2 worker may already drain during S3; S4 owns measured historical closeout.
 
