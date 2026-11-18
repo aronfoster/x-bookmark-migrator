@@ -20,11 +20,18 @@ needed, but do not assert cultural meaning, provenance or owner intent as fact.
 Choose implementation by a measured query set; embeddings are an option, not a
 new mandatory platform. Private content/model access and spending constraints
 remain unchanged; no automatic upload to a new hosted model.
+S1 selects an already-authorized local/OpenClaw producer or owner-written text
+from measured query needs, documenting provenance and incremental cost. If no
+authorized option suffices, present the privacy/cost tradeoff for owner decision;
+do not create a new approval gate for tooling already authorized for that content.
 
 Drive must offer meaningful search and opening in its ordinary desktop and Android
 interfaces without OpenClaw. Determine the smallest supported representation:
 searchable text sidecars and/or appropriate derived search metadata linked to
-original files. Do not rename or rewrite immutable payloads/receipts to make search
+original files. S1 defines the per-record unit and stable mapping back to assets,
+with idempotent updates/rebuilds after category or description edits. A search hit
+must open the matching record/context, not only an aggregate catalog or JSONL dump.
+Do not rename or rewrite immutable payloads/receipts to make search
 work. Full text remains preserved; native provider indexing limits must be measured
 and disclosed, not hidden behind a passing API-only test. Validate long-text terms
 and wait/record real indexing latency before declaring a file unsearchable.
@@ -57,6 +64,9 @@ category, hidden asset and no-match. Use paraphrases that are not merely copied
 filenames. Record successes, misses and candidate ranks; fix material failures
 before acceptance rather than choosing only examples that already work. Never put
 real queries, bookmark text, images or IDs in public fixtures or PRs.
+Keep private examples and expected matches in the existing protected handoff.
+Caption/OCR work uses only tooling already authorized for that content and budget;
+new provider/content grants or additional spending require separate authorization.
 
 Reference contracts checked 18 November 2026:
 [Drive search terms](https://developers.google.com/workspace/drive/api/guides/ref-search-terms),
@@ -81,6 +91,10 @@ ticket or authorize automatic edits.
    oldest captured first by default, with an owner-selected topic/source override.
    Unknown save dates remain unknown. Do not repeatedly surface deferred items
    until their agreed revisit condition; no unsolicited scheduled review messages.
+   After the existing pilot measures pace, a batch may group explicit items by
+   folder/topic. Show the exact members and proposed edit so one owner approval
+   can apply a shared tag; retain per-item decisions, readback and partial-failure
+   reconciliation. No blanket approval of unseen or future items is inferred.
 3. **Show enough context.** Supply original text/source/category and media preview
    or normal Drive link. Propose categories/tags using existing vocabulary first,
    distinguish suggestions from owner choices, flag ambiguity, and preserve the
@@ -106,6 +120,8 @@ ticket or authorize automatic edits.
 ### Concrete rehearsal and acceptance
 
 Use three synthetic records to review the plan before live implementation:
+An unknown save date uses the capture timestamp or owner ordering override; it
+does not acquire an invented save date or earlier place in the queue.
 
 | Record | Owner decision | Expected saved state and rerun |
 | --- | --- | --- |

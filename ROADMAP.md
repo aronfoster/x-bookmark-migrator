@@ -12,8 +12,10 @@ Updated 18 November 2026 (America/Denver). Owner-directed v1/v2 scope.
   next actions. **[V1_ACCEPTANCE.md](docs/V1_ACCEPTANCE.md):** search acceptance
   and the manual categorization plan. Existing runbooks retain exact procedures.
 - **GitHub PRs:** proposed changes, review and sanitized implementation evidence.
-  Accepted main is the baseline; while PR #14 is open, it is the one pending
-  roadmap revision. Explicit owner decisions take precedence even before merge.
+  Accepted main is the baseline; proposed revisions live in their linked PRs.
+  Explicit owner decisions take precedence even before merge. Use commit-pinned
+  links for pending plans; after merge, update active Linear plan links to main
+  and retain reviewed commit links in the journal.
 - **Linear:** a short outcome/acceptance summary, status, next actor, dependencies
   and links to the exact GitHub plan/evidence. Do not duplicate sprint plans or
   append competing instructions there. Private receipts/commands remain in their
@@ -34,7 +36,7 @@ through manual categorization. A hosted gallery is not required for v1.
 
 | Required outcome | What acceptance means | Tracking |
 | --- | --- | --- |
-| Complete X migration | Preserve complete obtainable text/media, exact original source and category evidence; safely unbookmark only verified items. Account for all known streams and exceptions. A sample or an empty observed API page is not completion. | [FOS-169](https://linear.app/fosterstech/issue/FOS-169), FOS-164 |
+| Complete X migration | Preserve complete obtainable text/media, exact original source and category evidence; safely unbookmark only verified items. Triage and resolve fixable blockers, measure post-removal window progress and cost before scaling, and account for all known streams and exceptions. A sample or an empty observed API page is not completion. | [FOS-169](https://linear.app/fosterstech/issue/FOS-169), FOS-164 |
 | Recovery and sustained operation | Prove independent off-host restore, one complete live transaction, scheduled non-root operation, later new-save processing and continuing backup coverage. | FOS-169; existing FOS-168 worker contract |
 | Full-corpus OpenClaw search | Find text and vaguely remembered media using ordinary language without knowing IDs or filenames; open the real saved content and original context. | [FOS-220](https://linear.app/fosterstech/issue/FOS-220) |
 | Google Drive search and access | Search meaningful text/category/media-description terms in ordinary Drive on desktop and Android, then open the matching preserved content without OpenClaw. Raw JSONL upload alone is not evidence. | FOS-220 |
@@ -68,8 +70,9 @@ decision. Do not add Reddit/TheMotte parsers to the X migrator by implication.
 The gallery starts with a private desktop/Android proof of direct Drive thumbnail,
 image and video delivery, OAuth/expiry handling and playback/seeking. Generate
 small thumbnails in Drive if necessary; do not depend on expiring thumbnail URLs
-or assume Google sign-in authorizes API access. Inspect the existing genealogy VM
-before choosing hosting. Network evidence must prove media bypasses the GCP VM.
+or assume Google sign-in authorizes API access. Inspect an existing owner GCP VM
+(identified privately in FOS-221) before choosing hosting. Network evidence must
+prove media bypasses the GCP VM.
 Inline video behavior is unproven; a Drive-viewer fallback must be evaluated openly,
 not silently counted as seamless in-page playback. See S5 for reference contracts.
 
@@ -89,7 +92,7 @@ shift subsequent windows. S4 repeats as needed rather than inventing a drain ETA
 | Sprint | Target window | Milestone / demo | Status |
 | --- | --- | --- | --- |
 | S1 | 18–24 Nov 2026 | **M1 Recoverable:** existing bundle restored off-host and completely verified; S3 search/curation designs ready for focused review. | Current; local recovery queued, remote design available |
-| S2 | 25 Nov–1 Dec 2026 | **M2 Operational:** complete catalog visible, historical repair accepted, prospective gate and one live worker pass proven, scheduled run accepted. | Planned; requires M1 for live rollout |
+| S2 | 25 Nov–1 Dec 2026 | **M2 Operational:** complete catalog visible, historical repair and prospective gate accepted, one live worker pass and scheduled run proven; blocker triage, exposure evidence and budget checkpoint recorded before scaling. | Planned; requires M1 for live rollout |
 | S3 | 2–8 Dec 2026 | **M3 Findable and organizable:** OpenClaw/Drive/Raindrop search acceptance and categorization plan/rehearsal pass. | Planned; design can proceed during S1 |
 | S4 | 9–15 Dec 2026, then repeat if needed | **M4 V1 accepted:** all-history reconciliation, continuing intake/recovery and v1 acceptance matrix pass; owner dispositions for any irrecoverable remainder. | Planned; no fixed release date |
 | S5 | After v1 acceptance | **M5 Gallery:** private direct-Drive media browsing on desktop and Android. | V2 backlog |
@@ -99,6 +102,14 @@ Sprints group deliverables; their milestones require evidence, not calendar expi
 M2's worker can drain eligible history while S3 search work proceeds. M3 is a v1
 release requirement, not a new per-item X DELETE gate. Categorization completion,
 v2 hosting and Wiki construction never hold the safe migration path hostage.
+S2 identifies fixable content/category blocks and records policy-limited cases
+early, including Articles; it does not defer all blocked work to a final waiver.
+No-progress streams pause paid historical probes until diagnosis and a bounded
+next step are recorded; authorized new-save checks keep their separate cadence.
+Existing receipts are the starting evidence, not proof of today's
+full coverage. Budget projections separate reservations from observed charges and
+leave unknown population/cost explicit; no automatic ceiling increase or reduced
+release scope follows from a failed checkpoint. See S2/S4 for the stopping rule.
 
 ## Current checkpoint and next actions
 

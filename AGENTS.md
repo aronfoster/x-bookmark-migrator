@@ -8,7 +8,6 @@ dependencies and private evidence links. Read the current working agreement and
 latest linked-ticket checkpoint, but do not recreate a second detailed plan in
 Linear. Preserve explicit owner decisions and existing live-operation boundaries.
 
-
 Before changing an API integration, read the current official X API documentation
 for every affected endpoint and shared behavior. Cite direct documentation links
 in the issue and PR. Start with docs/API_AUDIT.md; recheck its links rather than
