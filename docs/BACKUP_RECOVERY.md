@@ -1,5 +1,13 @@
 # Protected bookmark backup: recovery handoff
 
+**Checkpoint update — 18 November 2026:** FOS-169 records successful owner-run
+desktop key preservation and decryption of the existing bundle. The source machine
+is permanently retired. Do not repeat source-host diagnosis, export or transfer
+from section A. Continue with independently accessible recovery material, full
+local verification and off-host restore. The older preparation sequence below is
+a contract, not a claim that every step remains undone; use [the roadmap](../ROADMAP.md)
+and current FOS-169 evidence to select only outstanding steps.
+
 FOS-169, 17 November 2026. This is the remaining recovery procedure, not a new
 capture/installation procedure. Preserve the successfully captured
 generation, original archives and state. Do not rerun setup/capture, move state,
