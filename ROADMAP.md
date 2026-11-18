@@ -1,193 +1,136 @@
-# Roadmap
+# Bookmark project roadmap
 
-Updated 18 November 2026 (America/Denver).
+Updated 18 November 2026 (America/Denver). Owner-directed v1/v2 scope.
 
-## The outcome
+## Planning home and working rules
 
-Move saved content out of X into a durable, usable personal collection, safely
-remove verified source bookmarks, drain the reachable historical backlog, and
-keep processing new saves indefinitely. Copying a sample, merging code, or
-clearing one batch is not completion.
+**GitHub is the primary planning home for this project.** This is the owner's
+18 November project-specific change to the earlier Linear-first arrangement.
 
-The working pipeline is: official X discovery → preserve complete obtainable
-text, media and original categories → independently restore and verify → publish
-usable external discovery and required exact-source Raindrop pointers → verify
-all removal gates → official X unbookmark with durable receipts.
+- **This file:** product scope, milestones, priorities and current checkpoint.
+- **[SPRINTS.md](docs/SPRINTS.md):** ordered work, dependencies, exit evidence and
+  next actions. **[V1_ACCEPTANCE.md](docs/V1_ACCEPTANCE.md):** search acceptance
+  and the manual categorization plan. Existing runbooks retain exact procedures.
+- **GitHub PRs:** proposed changes, review and sanitized implementation evidence.
+  Accepted main is the baseline; while PR #14 is open, it is the one pending
+  roadmap revision. Explicit owner decisions take precedence even before merge.
+- **Linear:** a short outcome/acceptance summary, status, next actor, dependencies
+  and links to the exact GitHub plan/evidence. Do not duplicate sprint plans or
+  append competing instructions there. Private receipts/commands remain in their
+  existing protected handoff; this public repository never receives private data.
 
-This file is the project's navigation and execution order. [FOS-113][charter]
-holds the charter; [FOS-169][drain] holds the current execution checkpoint and
-historical-drain acceptance. Linked tickets retain requirements, decisions and
-private evidence; linked runbooks retain commands. Update this roadmap when a
-milestone changes, rather than appending another competing plan. A later explicit
-owner decision controls a conflict; reconcile the documents before executing it.
+Start a session by reading AGENTS.md, this roadmap, the relevant sprint/runbook
+and the linked ticket's latest checkpoint. Name one deliverable and its exit test.
+Update the existing plan in place when scope changes; leave history in commits
+and concise journals. Finish by recording what passed, what remains, the next
+actor and an evidence link. A merge is not installation or user acceptance.
 
-## Where we are
+## V1 — X migration and usable retrieval
 
-Snapshot from GitHub main `9b3ce5e` and the latest FOS-169 owner checkpoint;
-desktop results below are recorded evidence, not a new live audit.
+**Get all the owner's bookmarks out of X, preserved and fully searchable from
+OpenClaw/Mnemosyne and Google Drive, with Raindrop included.** Continue processing
+new X saves indefinitely. V1 also includes a concrete, resumable plan for working
+through manual categorization. A hosted gallery is not required for v1.
 
-| Work | Established | Still missing |
+| Required outcome | What acceptance means | Tracking |
 | --- | --- | --- |
-| Core migration | Official inventory, portable Drive archive/restore, catalog and receipt-backed removal code exist. Earlier bounded removals have receipts. | Acceptance under the current source-link/Raindrop policy. |
-| Daily worker | [PR #10](https://github.com/aronfoster/x-bookmark-migrator/pull/10) merged; dedicated worker environment and protected build established locally. | Current release acceptance and an actual scheduled run. |
-| Discovery repair | [PR #11](https://github.com/aronfoster/x-bookmark-migrator/pull/11) merged; complete catalog/source links/curation staged; effective Raindrop skill corrected. | Publication, actual-reader access, complete helper audit and live historical repair. |
-| Recovery | [PR #13](https://github.com/aronfoster/x-bookmark-migrator/pull/13) merged; encrypted capture succeeded; owner reported successful desktop decryption with copied keys. | Independent recovery copy, full signature/member/hash verification and genuine off-host restore. |
+| Complete X migration | Preserve complete obtainable text/media, exact original source and category evidence; safely unbookmark only verified items. Account for all known streams and exceptions. A sample or an empty observed API page is not completion. | [FOS-169](https://linear.app/fosterstech/issue/FOS-169), FOS-164 |
+| Recovery and sustained operation | Prove independent off-host restore, one complete live transaction, scheduled non-root operation, later new-save processing and continuing backup coverage. | FOS-169; existing FOS-168 worker contract |
+| Full-corpus OpenClaw search | Find text and vaguely remembered media using ordinary language without knowing IDs or filenames; open the real saved content and original context. | [FOS-220](https://linear.app/fosterstech/issue/FOS-220) |
+| Google Drive search and access | Search meaningful text/category/media-description terms in ordinary Drive on desktop and Android, then open the matching preserved content without OpenClaw. Raw JSONL upload alone is not evidence. | FOS-220 |
+| Raindrop discovery | Find required original-source pointers with useful concise metadata, category/tag search and archive access; preserve existing entries and annotations. The existing affirmative media-only exception remains. | [FOS-166](https://linear.app/fosterstech/issue/FOS-166), [FOS-216](https://linear.app/fosterstech/issue/FOS-216), FOS-220 |
+| Manual categorization plan | A finite review queue, small conversational batches, approval/defer/revisit rules, durable progress, reversible edits and a worked rehearsal. Finishing every manual review is not a v1 release condition. | [FOS-223](https://linear.app/fosterstech/issue/FOS-223) plan; FOS-170 execution |
 
-Code merged is distinct from installed, live-verified and accepted. A ticket's
-Done status does not supply missing runtime evidence. Further X DELETE and timer
-activation remain paused. Do not repeat successful setup, initial capture, key
-transfer or skill synchronization. The retired source machine is not a dependency.
+“Fully searchable” means complete preserved-corpus coverage and demonstrated
+useful retrieval, not perfect answers to every conceivable query. The observable
+query/coverage tests live in [V1_ACCEPTANCE.md](docs/V1_ACCEPTANCE.md). Search
+must improve beyond exact-ID lookup; a particular embedding engine is not mandated.
+Raindrop holds concise pointers, not full article bodies or a silently required Pro
+subscription. Original text/media remains in Drive.
 
-## Remaining milestones, in execution order
+**All bookmarks remains the goal.** Reachable-history progress is an intermediate
+milestone. Inaccessible, incomplete or category-unknown items remain explicit and
+saved on X where possible. If official access prevents complete migration, v1
+remains incomplete unless the owner explicitly accepts a documented exception;
+never quietly redefine “all” as “the first accessible window.” New-save operation
+continues after the historical migration is accepted.
 
-### 1. Recover the existing protected bundle independently — current next step
+## V2 — hosted gallery and additional sources
 
-**Owner:** FOS-169; supervised local agent prepares, owner runs reviewed privileged
-and secret-bearing operations. **Procedure:** [BACKUP_RECOVERY.md](docs/BACKUP_RECOVERY.md).
-
-- Start from the actual producer receipt and private capture source. Resolve the
-  existing generation and manifest contract; use the already preserved desktop
-  keys. Reuse the verifier and add only demonstrated missing checks.
-- Preserve independently accessible owner recovery material. Verify the trusted
-  signer, successful decryption, complete file/directory membership and every
-  required size/hash against the existing format.
-- Inspect actual Déjà Dup coverage, reader access, exclusions, destination,
-  retention behavior and quota. Add only the ciphertext publication directory if
-  needed; preserve ordinary rclone, other backups and existing settings.
-- Restore that exact generation from a completed remote backup into a distinct
-  location, using independent recovery material, and repeat full verification.
-
-**Exit evidence:** all recovery acceptance rows pass. Local decrypt or an old
-marker restore alone does not pass. Preserve the original state and archives.
-
-### 2. Make the preserved collection usable at its final location
-
-**Owner:** [FOS-216][repair], coordinated with FOS-169's protected rollout.
-**Procedure:** [READINESS.md, publication and access](docs/READINESS.md).
-**Depends on:** milestone 1's accepted recovery before the protected handoff.
-
-- Install the accepted readiness release through the existing rollout; inspect
-  installed revisions rather than assuming the older protected build includes it.
-- Publish the complete staged catalog, HTML, original-source sidecar and current
-  annotations together. Preserve older catalogs, original bytes and owner curation.
-- Run archive-bound `catalog-verify`, writer curation checks and `catalog-check`
-  through the actual reader/container. Open representative archived text, images,
-  video and exact original source links in the normal browser and Mnemosyne.
-
-**Exit evidence:** the complete expected population is accessible at its real
-paths, curation survives, and immutable evidence is unchanged. Staging, a healthy
-container or simulated reader tests are insufficient.
-
-### 3. Reconcile historical removals and prove Raindrop discovery
-
-**Owner:** FOS-216; [FOS-166][discovery] owns the shared adapter, ledger and
-prospective gate. **Procedure:** remaining [READINESS.md](docs/READINESS.md) steps.
-**Depends on:** milestones 1–2; retain the existing separate provider authorizations.
-
-- Finish the actual native/private-helper source audit and retire old entry paths
-  or prove exclusive use of the hardened transaction. Preserve original intents,
-  reports and unknown outcomes; do not invent duplicate attempts.
-- Take complete active/Trash inventory through the existing adapter. Preserve
-  existing bookmarks and metadata; stop on incomplete coverage or conflicts.
-- Prove one-record create/adopt → authenticated GET → immediate inventory →
-  idempotent rerun. If no target is absent, adopt without fabricating a create test.
-- Backfill the historical removal population in the accepted small batches,
-  initially at most three IDs. Account for every confirmed/unknown attempt;
-  queued and blocked source bookmarks are not historical removals.
-
-**Exit evidence:** each historical repair target has fresh exact-primary Raindrop
-proof or affirmative media-only evidence plus actual external retrieval. Accept
-the prospective FOS-166 gate separately; historical repair alone does not prove it.
-Back up changed catalogs and ledgers through the accepted recovery process.
-
-### 4. Prove one complete live migration through the existing worker
-
-**Owner:** [FOS-168][worker] runtime contract, coordinated in FOS-169.
-**Procedure:** [WORKER.md](docs/WORKER.md) and the private owner rollout manifest.
-**Depends on:** milestones 1–3 and explicit owner authorization for live spending
-and removal. Do not build a second historical-drain executable.
-
-- Reconcile actual Console spending with all retained reservations; preserve the
-  existing cumulative budget, hard cap and auto-recharge policy. Recheck current
-  official API contracts before changing integration or resuming paid execution.
-- Verify the actual release/configuration, identities, mounts and shared state;
-  run the existing offline dry-run, then the authorized non-destructive live mode.
-- Begin removal acceptance with one freshly verified eligible item. Prove remote
-  archive/readback, usable catalog, exact-source discovery, official transaction
-  and post-removal retrieval. Previously queued items need fresh gate checks.
-- Verify restart, overlap exclusion, rate-limit deferral and uncertain-outcome
-  holds on the intended host without replaying historical removals.
-
-**Exit evidence:** a real end-to-end pass with preserved receipts, retrieval and
-cost evidence. Missing content, category proof or discovery leaves the item on X.
-
-### 5. Establish sustained daily operation and continuing recovery
-
-**Owner:** FOS-168 runtime acceptance and FOS-169 recovery follow-through.
-**Depends on:** milestone 4; timer activation requires its separate owner approval.
-
-- Install/validate the existing non-root scheduling units and enable only after
-  acceptance. Account for an immediate catch-up invocation when enabling.
-- Observe an actual scheduled pass and persistent state, then verify later new
-  saves enter the same pipeline. An installed timer is not an accepted service.
-- Complete the separately reviewed recurring capture/retention configuration so
-  changing catalogs, annotations and ledgers remain recoverable. The initial
-  encrypted generation is not continuing backup coverage. Use the existing backup
-  system; record freshness, quota/retention behavior and restore evidence.
-
-**Exit evidence:** unattended bounded migration works, failures remain visible,
-incomplete items remain saved, and ongoing recovery coverage is demonstrated.
-
-### 6. Drain reachable history and account for what remains
-
-**Owner:** FOS-169. **Depends on:** accepted scheduled operation; use that same
-worker for both historical and new saves.
-
-- Continue bounded batches; increase only from measured safe operation and spend.
-- After removals, scan fresh windows to measure whether older IDs become visible.
-  Never reuse invalidated positional cursors or assume full-history API access.
-- Track each observed stream and deduplicate global totals. Distinguish permanent
-  blockers, retryable failures, stalled windows and unknown category membership.
-  Avoid repeatedly paying to hydrate known permanent blockers.
-- Reconcile every removal to preserved content, receipts and required discovery.
-
-**Exit evidence:** sustained runs decrease the backlog; reachable eligible history
-is processed; blocked/inaccessible/unknown remainder is honestly documented.
-Never invent a numerical total for invisible history. Daily new-save processing
-continues after this finite historical milestone.
-
-## Later tracks, independent of migration acceptance
-
-| Track | Intended result | Boundary |
+| Feature | Required result | Tracking |
 | --- | --- | --- |
-| [FOS-172](https://linear.app/fosterstech/issue/FOS-172) | Reversible incidental-media hiding with source/attachment context retained. | Browse hygiene; not a new migration gate. |
-| [FOS-170](https://linear.app/fosterstech/issue/FOS-170) | Optional conversational curation of small owner-approved batches across X and Raindrop. | Preserve original metadata and owner commentary separately from AI suggestions. |
-| [FOS-171](https://linear.app/fosterstech/issue/FOS-171) | Incremental Mnemosyne knowledge pages and owner synthesis. | Authored work needs its own versioning/backups; raw archives cannot recreate it. |
-| Later sources under FOS-113 | Extend preservation to Reddit/TheMotte. | Separate scoped work; do not expand the present X execution path. |
+| Private hosted visual gallery | Desktop/Android grid, search/filter, image enlargement, video playback, download and stable item links; independent of OpenClaw. GCP serves application/catalog only; thumbnail and original media bytes travel directly from Drive to the browser. No duplicate originals collection or GCP media proxy. | [FOS-221](https://linear.app/fosterstech/issue/FOS-221), sprint S5 |
+| Sources beyond X | Add supported bookmark imports from other services to the same preservation, search, Raindrop and categorization workflow. Reddit/TheMotte are existing candidates; choose one concrete source for the first pilot. | [FOS-222](https://linear.app/fosterstech/issue/FOS-222), sprint S6 |
 
-## Execution rules that keep this plan small
+Additional-source planning lives here; code placement is a separate source-specific
+decision. Do not add Reddit/TheMotte parsers to the X migrator by implication.
 
-- Use existing code, receipts and runbooks. Inspect the real producer, installed
-  configuration and consumer before choosing commands; fix the demonstrated
-  mismatch. No general preflight framework, new platform or speculative rewrite.
-- For each session, name the current milestone, its concrete missing evidence and
-  the next action. If blocked, record the precise missing input/failing check and
-  smallest correction. Do not restart completed work or generic review rounds.
-- Use only official authorized APIs. Keep actual content, IDs, folder names,
-  credentials, private paths and diagnostic filenames out of this public repo.
-- Every non-media or ambiguous post requires independently GET-verified Raindrop
-  primary-link identity before DELETE. Positive media-only exemption still needs
-  the original source URL and external retrieval. Full bodies stay in the archive.
-- Preserve the existing privilege boundary: owner executes reviewed sudo commands;
-  agents receive no unrestricted sudo or Docker-equivalent authority. This roadmap
-  does not authorize provider writes, spending, deletion or timer activation.
-- Close sessions with a short checkpoint in Linear: milestone, verified revision,
-  result/receipt location, remaining blocker and next actor. Reflect milestone
-  transitions here; retain detailed private commands and evidence in their existing
-  handoff. Do not call the project finished because a PR or backup step is done.
+The gallery starts with a private desktop/Android proof of direct Drive thumbnail,
+image and video delivery, OAuth/expiry handling and playback/seeking. Generate
+small thumbnails in Drive if necessary; do not depend on expiring thumbnail URLs
+or assume Google sign-in authorizes API access. Inspect the existing genealogy VM
+before choosing hosting. Network evidence must prove media bypasses the GCP VM.
+Inline video behavior is unproven; a Drive-viewer fallback must be evaluated openly,
+not silently counted as seamless in-page playback. See S5 for reference contracts.
 
-[charter]: https://linear.app/fosterstech/issue/FOS-113
-[drain]: https://linear.app/fosterstech/issue/FOS-169
-[repair]: https://linear.app/fosterstech/issue/FOS-216
-[discovery]: https://linear.app/fosterstech/issue/FOS-166
-[worker]: https://linear.app/fosterstech/issue/FOS-168
+Existing non-X bookmarks already in Raindrop can be reviewed under the v1
+categorization plan; that does not implement v2 ingestion from other services.
+[FOS-171](https://linear.app/fosterstech/issue/FOS-171)'s authored Wiki remains a
+separate later backlog track, with its own versioned backups. FOS-172's reversible
+incidental-media hiding supports browsing/curation without blocking migration.
+
+## Milestones and sprint schedule
+
+One-week planning timeboxes, starting 18 November; these are planning targets,
+not promises of owner availability or automatic deployment dates. Only S1 is
+current. Later dates are provisional; failed exits carry named work forward and
+shift subsequent windows. S4 repeats as needed rather than inventing a drain ETA.
+
+| Sprint | Target window | Milestone / demo | Status |
+| --- | --- | --- | --- |
+| S1 | 18–24 Nov 2026 | **M1 Recoverable:** existing bundle restored off-host and completely verified; S3 search/curation designs ready for focused review. | Current; local recovery queued, remote design available |
+| S2 | 25 Nov–1 Dec 2026 | **M2 Operational:** complete catalog visible, historical repair accepted, prospective gate and one live worker pass proven, scheduled run accepted. | Planned; requires M1 for live rollout |
+| S3 | 2–8 Dec 2026 | **M3 Findable and organizable:** OpenClaw/Drive/Raindrop search acceptance and categorization plan/rehearsal pass. | Planned; design can proceed during S1 |
+| S4 | 9–15 Dec 2026, then repeat if needed | **M4 V1 accepted:** all-history reconciliation, continuing intake/recovery and v1 acceptance matrix pass; owner dispositions for any irrecoverable remainder. | Planned; no fixed release date |
+| S5 | After v1 acceptance | **M5 Gallery:** private direct-Drive media browsing on desktop and Android. | V2 backlog |
+| S6 | After v1 acceptance; sequence after S5 by default | **M6 Multi-source:** one additional source works through preservation/search/curation without breaking X. | V2 backlog |
+
+Sprints group deliverables; their milestones require evidence, not calendar expiry.
+M2's worker can drain eligible history while S3 search work proceeds. M3 is a v1
+release requirement, not a new per-item X DELETE gate. Categorization completion,
+v2 hosting and Wiki construction never hold the safe migration path hostage.
+
+## Current checkpoint and next actions
+
+Baseline: main `9b3ce5e`, merged worker #10, readiness #11 and recovery preparation
+#13. Local evidence is owner-reported, not a new remote audit. Effective Raindrop
+skill, dedicated runtime/protected build, staged complete catalog and initial
+encrypted capture exist. Desktop decryption succeeded. Independent recovery copy,
+full signature/member/hash proof and genuine remote restore remain outstanding.
+Publication, live Raindrop acceptance/repair and the current-policy scheduled run
+are not established. Complete search acceptance is also not established.
+
+**Next local action (S1 / FOS-169):** use existing desktop keys, producer receipt
+and captured generation to finish recovery verification and existing Déjà Dup
+integration. No repeated setup, capture, key transfer or retired-host dependency.
+**Next remote action (S1 preparation for S3 / FOS-220 and FOS-223):** review the
+query/coverage contract and categorization plan, then resolve only demonstrated
+implementation gaps. Keep the existing local recovery path moving independently.
+
+## Boundaries preserved across releases
+
+- Official authorized source APIs only; no private GraphQL or account scraping.
+- Preserve immutable originals, original categories, receipts and owner curation.
+  Exact primary source identity is distinct from quoted/reposted/attachment IDs.
+- Before X DELETE: complete archive/content/category/readback proof, actual external
+  retrieval, fresh authenticated exact-primary Raindrop proof unless affirmatively
+  exempt, historical repair and helper retirement, and explicit owner authorization.
+- Preserve the existing cumulative spending ceiling and all reservations; verify
+  actual billing separately. New budgets/providers/content uploads need their own
+  authorized scope. No broad grants or new infrastructure merely to finish planning.
+- Owner personally runs reviewed privileged commands; no agent unrestricted sudo
+  or Docker-equivalent access. Preserve ordinary rclone and existing backups.
+- Reuse the existing worker, catalog, adapter and ledgers. No second migration
+  engine, general preflight framework, speculative platform or repeated broad review.
+
+[Project tracker: FOS-113](https://linear.app/fosterstech/issue/FOS-113).

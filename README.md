@@ -4,7 +4,9 @@ Official API inventory, portable Drive archives, external discovery, verified
 unbookmarking and a bounded daily worker.
 
 Start with [ROADMAP.md](ROADMAP.md) for the full project goal, current checkpoint,
-remaining milestones and acceptance evidence. Worker, discovery-repair and recovery
+v1/v2 scope, sprint milestones and acceptance evidence. Detailed execution lives
+in [SPRINTS.md](docs/SPRINTS.md); search and manual-review requirements live in
+[V1_ACCEPTANCE.md](docs/V1_ACCEPTANCE.md). Worker, discovery-repair and recovery
 preparation code is merged; current-policy runtime acceptance is still incomplete.
 The sections below document individual commands, including earlier pilot setup;
 they are not instructions to repeat completed setup or resume live operations.
