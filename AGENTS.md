@@ -1,5 +1,13 @@
 # Repository instructions
 
+For project planning, first read ROADMAP.md and the relevant section of
+docs/SPRINTS.md; v1 search and categorization acceptance lives in
+docs/V1_ACCEPTANCE.md. Per owner direction on 18 November 2026, GitHub owns the
+project plan and sprint/milestone changes. Linear tracks concise outcomes, status,
+dependencies and private evidence links. Read the current working agreement and
+latest linked-ticket checkpoint, but do not recreate a second detailed plan in
+Linear. Preserve explicit owner decisions and existing live-operation boundaries.
+
 Before changing an API integration, read the current official X API documentation
 for every affected endpoint and shared behavior. Cite direct documentation links
 in the issue and PR. Start with docs/API_AUDIT.md; recheck its links rather than

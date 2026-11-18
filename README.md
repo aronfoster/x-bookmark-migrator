@@ -1,10 +1,16 @@
 # X bookmark migrator
 
-Official API pilot, resumable bookmark/folder inventory, Drive archival and verified unbookmarking.
-FOS-165 adds media-byte preservation and independent reconstruction; production
-OpenClaw storage acceptance is still outstanding. See [archive setup](docs/ARCHIVE.md).
-FOS-167 adds an explicit 1–3-item [verified unbookmark pilot](docs/UNBOOKMARK.md).
-Live acceptance remains outstanding. No scraping, private GraphQL or scheduler.
+Official API inventory, portable Drive archives, external discovery, verified
+unbookmarking and a bounded daily worker.
+
+Start with [ROADMAP.md](ROADMAP.md) for the full project goal, current checkpoint,
+v1/v2 scope, sprint milestones and acceptance evidence. Detailed execution lives
+in [SPRINTS.md](docs/SPRINTS.md); search and manual-review requirements live in
+[V1_ACCEPTANCE.md](docs/V1_ACCEPTANCE.md). Worker, discovery-repair and recovery
+preparation code is merged; current-policy runtime acceptance is still incomplete.
+The sections below document individual commands, including earlier pilot setup;
+they are not instructions to repeat completed setup or resume live operations.
+No scraping or private GraphQL.
 
 ## Install and verify (Linux, Python 3.12+)
 
