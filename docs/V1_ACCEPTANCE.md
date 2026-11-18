@@ -93,8 +93,11 @@ ticket or authorize automatic edits.
    until their agreed revisit condition; no unsolicited scheduled review messages.
    After the existing pilot measures pace, a batch may group explicit items by
    folder/topic. Show the exact members and proposed edit so one owner approval
-   can apply a shared tag; retain per-item decisions, readback and partial-failure
-   reconciliation. No blanket approval of unseen or future items is inferred.
+   can apply a shared tag; the owner may exclude listed members before approving.
+   Record a per-item decision derived from that group approval, with provenance
+   linking to it; do not request a second approval for each included item. Retain
+   per-item readback and partial-failure reconciliation. No blanket approval of
+   unseen or future items is inferred.
 3. **Show enough context.** Supply original text/source/category and media preview
    or normal Drive link. Propose categories/tags using existing vocabulary first,
    distinguish suggestions from owner choices, flag ambiguity, and preserve the

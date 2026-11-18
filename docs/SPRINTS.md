@@ -76,8 +76,11 @@ content goes to public fixtures.
    including `not_previously_inventoried_ids`, with the owner's quiet-window
    observations. New IDs alone do not prove age or complete history; preserve
    `older_bookmarks_exposed: unverified`. Reuse valid earlier receipts; obtain only
-   missing current-policy evidence. A zero/unknown result triggers the S4 pause,
-   not more removals merely to test a theory about hidden history.
+   missing current-policy evidence. Record both partitions; an empty
+   `not_previously_inventoried_ids` partition alone does not pause the S2 pilot.
+   The S4 window-stall condition applies here; failed or missing readback still
+   follows existing reconciliation/stop rules. Do not infer hidden-history failure
+   while known unprocessed records remain below the visible window.
 5. Validate/install the existing non-root units, then separately authorize timer
    activation and observe a real scheduled invocation. Account for immediate
    catch-up. Review recurring capture/retention binding so changing catalogs and
@@ -161,9 +164,15 @@ The M2 worker may already drain during S3; S4 owns measured historical closeout.
   observed safe results and spend. Reconcile billing without resetting reservations.
 - Rescan fresh windows after removals; compare newly exposed IDs. Never reuse
   invalidated cursors or infer unfiled membership from truncated folder windows.
-- **No-progress stop:** after the first successful bounded post-removal comparison
-  with no IDs outside the frozen inventory baseline, or a blocked-window stall,
-  pause further paid historical probes for that stream. Failed/missing comparisons remain
+- **No-progress stop — window stall:** at any stage, pause further paid historical
+  probes for the stream when a successful post-removal comparison shows no ID
+  absent from the before-window, or every visible ID is blocked. A newly visible
+  ID counts as window progress even if it was already in the frozen inventory.
+  **Hidden-history test:** only after that stream's unprocessed baseline records
+  have all completed migration or have explicit blockers, a successful comparison
+  with no IDs outside the frozen baseline pauses hidden-history probes and triggers
+  a coverage escalation. An empty outside-baseline partition before that point
+  does not trigger this second condition. Failed/missing comparisons remain
   unverified and follow existing read-only reconciliation bounds. Diagnose saved
   evidence first; restart needs a recorded changed condition or an explicitly
   authorized bounded probe with request/spend limits. Use this default until a
