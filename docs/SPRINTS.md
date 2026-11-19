@@ -42,6 +42,41 @@ until its exit evidence exists.
 Local decrypt and old marker restores do not count as full recovery. The retired
 source machine is not needed. No repeat setup/capture/key transfer.
 
+### 18 November supervised checkpoint — paused, M1 not accepted
+
+| Work | Evidence and status |
+| --- | --- |
+| Existing producer/receipt binding | Recovered the original private review copies and owner receipts from earlier OpenCode sessions; helper hashes matched recorded approvals. |
+| Full local archive verification | Owner reported PASS for independently anchored signature, decryption, exact member/directory/size/hash checks. The agent separately checked published ciphertext hashes and the signature. |
+| GPG recovery material | Owner reported PASS for a separate symmetric encrypted key-package backup and exact readback. Fresh temporary keyring construction validated the existing passphrase without changing the preserved key home. |
+| Backup scope and capacity | Owner-run quota query passed. Publication reader permissions and absence of ignore markers passed. Owner added only the ciphertext directory; the agent verified Home, exclusions, destination, schedule and retention were unchanged. |
+| Remote backup/restore | Pending. Last recorded success still predates this session. Starting or completing a new backup was not established before the owner requested this pause. |
+| Independent recovery and cleanup | Pending remote retrieval of both ciphertexts, fresh key recovery, complete restored-bundle verification and owner disposition of retained root-only staging. |
+| Search/curation preparation | Existing FOS-220/FOS-223 design tasks remain available; this recovery session did not establish their acceptance. |
+
+**Next actor:** owner with a supervised local agent, when available. First read
+current backup activity and success evidence. If a job is already running, let it
+finish; if a suitable new snapshot completed, use it. Otherwise the owner starts
+the existing Backups job. Restore from that completed remote snapshot into a new
+empty destination with independent remote provenance, then repeat verification
+using the restored recovery-key ciphertext, not the desktop keyring as fallback.
+Only after all acceptance rows pass may M1 close.
+
+**Owner correction:** the password database already works across devices and is
+out of scope. Do not access, copy, modify or attach files to it. The unused
+vault-staging helper was removed. The accepted route uses the existing GPG
+passphrase to symmetrically protect the GPG recovery package separately from the
+asymmetrically encrypted bookmark bundle. This avoids needing the private key to
+decrypt its own backup. Off-host key recovery is still unproven.
+
+Private helper review and execution evidence remain in the local handoff and
+FOS-169 journal. Claude approved the final bounded helpers; split review caught
+and corrected a tar-padding compatibility defect. Local synthetic checks passed:
+12 archive-verifier tests, 10 original capture tests, producer/crypto/verifier
+roundtrip, two recovery-key test methods with positive/negative crypto cases, and
+three isolated quota fixtures. These are distinct from the owner-reported live
+PASS results above and do not establish remote recovery.
+
 **Remote work available now:** FOS-220 designs the fixed query/coverage set and a
 per-record Drive searchable unit linked to immutable originals, with source/asset
 IDs, text, categories, descriptions and links. Specify its format, stable file
