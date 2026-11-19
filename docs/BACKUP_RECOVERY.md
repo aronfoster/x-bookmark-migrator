@@ -1,12 +1,29 @@
 # Protected bookmark backup: recovery handoff
 
-**Checkpoint update — 18 November 2026:** FOS-169 records successful owner-run
-desktop key preservation and decryption of the existing bundle. The source machine
-is permanently retired. Do not repeat source-host diagnosis, export or transfer
-from section A. Continue with independently accessible recovery material, full
-local verification and off-host restore. The older preparation sequence below is
-a contract, not a claim that every step remains undone; use [the roadmap](../ROADMAP.md)
-and current FOS-169 evidence to select only outstanding steps.
+**Checkpoint update — 18 November 2026, supervised pause:** owner-run complete
+local signature/decryption/member/directory/size/hash verification passed.
+A separate symmetric GPG recovery-key backup passed local readback, using the
+existing GPG passphrase. The owner confirmed that passphrase is independently
+accessible. Quota/headroom and publication-reader checks passed; the owner added
+only the ciphertext publication directory to Déjà Dup, and the settings delta was
+verified. A new remote backup's start/completion, remote restore, independent
+restored-key proof and protected staging cleanup remain unestablished.
+
+The source machine is permanently retired. Do not repeat source-host diagnosis,
+export/transfer, initial capture, completed local verification or folder inclusion.
+Check current backup activity and successful snapshots before starting any job.
+The owner explicitly rejected password-database access, copies, edits or
+attachments; the unused vault helper was removed without execution.
+
+The accepted recovery-key artifact is separately symmetrically encrypted with the
+existing GPG passphrase, not encrypted to the private key it must recover. It sits
+alongside the archive ciphertext for transport by the existing encrypted backup.
+No plaintext key package, live keyring or plaintext verification area is included.
+Recover both ciphertexts from the completed remote snapshot; reconstruct a fresh
+keyring from the recovered key package and repeat complete archive verification.
+The older preparation sequence below is a contract, not a claim that every step
+remains undone. See the [S1 checkpoint](SPRINTS.md#s1--recover-existing-state) and
+current FOS-169 evidence for the remaining work.
 
 FOS-169, 17 November 2026. This is the remaining recovery procedure, not a new
 capture/installation procedure. Preserve the successfully captured
@@ -247,10 +264,13 @@ reviewed code revision. Every row must pass for **backup recovery accepted**:
 | Off-host recovery | Fresh completed remote snapshot; exact pinned generation restored to distinct destination; byte/hash match and repeat complete owner decryption/manifest verification. |
 | Cleanup/preservation | Protected test workspace/cache disposition checked; source archives/state intact; no service activation, relocation, X/Raindrop operation, new grant or unrelated provider activity. |
 
-**Exact next local action:** read this handoff and the private approved capture
-source; fill the input table, identify/reuse its manifest verifier, and obtain one
-focused independent review of the bound key-transfer/recovery commands and additive
-inclusion diff. Then owner executes A → B → C, stopping at the first failed gate.
+**Exact next local action:** resume at the current checkpoint above. Inspect
+existing backup activity and completion; do not launch another job if one is
+already running or repeat completed preparation. Complete C's remote backup and
+fresh-destination restore, then verify using only restored ciphertexts and
+independently accessible recovery access. Bind and review any new restore
+invocations to the actual backend; local helper approval is not approval of an
+unseen restore command. Keep protected staging until its owner-approved cleanup.
 Report a missing private artifact/check precisely instead of redesigning the backup.
 After all rows pass, update FOS-169; Gate D and relocation retain their own review
 and authorization requirements. Do not mark the whole historical-drain issue Done.

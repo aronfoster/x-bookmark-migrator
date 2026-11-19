@@ -91,7 +91,7 @@ shift subsequent windows. S4 repeats as needed rather than inventing a drain ETA
 
 | Sprint | Target window | Milestone / demo | Status |
 | --- | --- | --- | --- |
-| S1 | 18–24 Nov 2026 | **M1 Recoverable:** existing bundle restored off-host and completely verified; S3 search/curation designs ready for focused review. | Current; local recovery queued, remote design available |
+| S1 | 18–24 Nov 2026 | **M1 Recoverable:** existing bundle restored off-host and completely verified; S3 search/curation designs ready for focused review. | Incomplete; local archive verification and recovery-key encryption/readback passed; remote backup/restore pending |
 | S2 | 25 Nov–1 Dec 2026 | **M2 Operational:** complete catalog visible, historical repair and prospective gate accepted, one live worker pass and scheduled run proven; blocker triage, exposure evidence and budget checkpoint recorded before scaling. | Planned; requires M1 for live rollout |
 | S3 | 2–8 Dec 2026 | **M3 Findable and organizable:** OpenClaw/Drive/Raindrop search acceptance and categorization plan/rehearsal pass. | Planned; design can proceed during S1 |
 | S4 | 9–15 Dec 2026, then repeat if needed | **M4 V1 accepted:** all-history reconciliation, continuing intake/recovery and v1 acceptance matrix pass; owner dispositions for any irrecoverable remainder. | Planned; no fixed release date |
@@ -116,14 +116,31 @@ release scope follows from a failed checkpoint. See S2/S4 for the stopping rule.
 Baseline: main `9b3ce5e`, merged worker #10, readiness #11 and recovery preparation
 #13. Local evidence is owner-reported, not a new remote audit. Effective Raindrop
 skill, dedicated runtime/protected build, staged complete catalog and initial
-encrypted capture exist. Desktop decryption succeeded. Independent recovery copy,
-full signature/member/hash proof and genuine remote restore remain outstanding.
+encrypted capture exist. On 18 November, owner-run full local signature,
+decryption, exact member/directory/size/hash verification passed. A separate
+symmetric recovery-key backup also passed local encryption/readback verification,
+using the existing independently accessible GPG passphrase. The owner added only
+the ciphertext publication directory to existing Déjà Dup coverage; the agent
+verified the settings delta. Quota and local disk headroom passed the bounded
+check. Completed remote backup, independent off-host key recovery, full restored
+bundle verification and protected staging cleanup remain outstanding.
 Publication, live Raindrop acceptance/repair and the current-policy scheduled run
 are not established. Complete search acceptance is also not established.
 
-**Next local action (S1 / FOS-169):** use existing desktop keys, producer receipt
-and captured generation to finish recovery verification and existing Déjà Dup
-integration. No repeated setup, capture, key transfer or retired-host dependency.
+**Paused at owner request; S1 is not complete.** The final settings check still
+showed the earlier successful backup. A new backup was requested but its start or
+completion was not established. On resumption, inspect existing backup activity
+and completion first; do not start a duplicate job. Then complete the existing
+backup and restore the pinned generation and separate encrypted recovery-key
+file from a completed remote snapshot into a distinct destination. Reverify with
+fresh recovery material and resolve protected staging cleanup. See the
+[S1 checkpoint](docs/SPRINTS.md#s1--recover-existing-state).
+
+**Owner decision:** the existing independently accessible password database is
+accepted and must not be accessed, modified, copied or used for attachment work.
+The withdrawn vault helper was never executed and was removed. Back up the GPG
+recovery material separately; no new password, repeated capture, key transfer or
+retired-host dependency.
 **Next remote action (S1 preparation for S3 / FOS-220 and FOS-223):** review the
 query/coverage contract and categorization plan, then resolve only demonstrated
 implementation gaps. Keep the existing local recovery path moving independently.
