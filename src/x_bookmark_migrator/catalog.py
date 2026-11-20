@@ -168,6 +168,17 @@ def build(batches, output):
 def apply_annotations(records, annotations):
     if not isinstance(annotations, dict):
         raise PilotError("Invalid media annotations object.")
+    links = annotations.get("raindrop_links", {})
+    if not isinstance(links, dict):
+        raise PilotError("Raindrop links must be an object.")
+    from .raindrop import validate_receipt
+
+    for pid, receipt in links.items():
+        if pid not in {r["post_id"] for r in records}:
+            raise PilotError("Raindrop link refers to an absent saved primary record.")
+        validate_receipt(receipt, pid)
+    if len({r["raindrop_id"] for r in links.values()}) != len(links):
+        raise PilotError("Raindrop bookmark is associated with multiple saved primaries.")
     overrides = annotations.get("category_overrides", {})
     if not isinstance(overrides, dict):
         raise PilotError("Category overrides must be an object.")
@@ -177,6 +188,11 @@ def apply_annotations(records, annotations):
         if not isinstance(override, str) or not 1 <= len(override.strip()) <= 1000:
             raise PilotError("Invalid category override.")
     for record in records:
+        record.pop("raindrop_id", None)
+        record.pop("raindrop_url", None)
+        if record["post_id"] in links:
+            rid = links[record["post_id"]]["raindrop_id"]
+            record.update(raindrop_id=rid, raindrop_url=raindrop_link(rid))
         override = overrides.get(record["post_id"])
         if override is not None:
             if not isinstance(override, str) or not 1 <= len(override) <= 1000:
@@ -199,6 +215,28 @@ def apply_annotations(records, annotations):
                     preservation_state="archived_raw" if "storage" in asset else "not_archived",
                 )
     return records
+
+
+def raindrop_link(rid):
+    if type(rid) is not int or rid <= 0:
+        raise PilotError("Invalid Raindrop bookmark identity.")
+    return f"https://app.raindrop.io/my/0/item/{rid}"
+
+
+def link_raindrop(output, records, receipt):
+    """Persist historical GET evidence for navigation, never live-access proof."""
+    from .raindrop import validate_receipt
+
+    pid = receipt.get("source_post_id")
+    validate_receipt(receipt, pid)
+    notes = copy.deepcopy(output.read("annotations.private.json") or {})
+    links = notes.setdefault("raindrop_links", {})
+    if pid in links and links[pid]["raindrop_id"] != receipt["raindrop_id"]:
+        raise PilotError("Conflicting Raindrop bookmark association.")
+    links[pid] = receipt
+    projected = apply_annotations(copy.deepcopy(records), notes)
+    output.write("annotations.private.json", notes)
+    publish(output, projected)
 
 
 def add_source_links(records):
@@ -298,6 +336,13 @@ def render(records):
             f'<p><a href="{esc(source_url(record["post_id"]))}" rel="noreferrer">'
             "Open original saved X post</a></p>"
         )
+        if "raindrop_id" in record:
+            url = raindrop_link(record["raindrop_id"])
+            if record.get("raindrop_url") != url:
+                raise PilotError("Published Raindrop link mismatch.")
+            parts.append(
+                f'<p><a href="{esc(url)}" rel="noreferrer">Open bookmark in Raindrop</a></p>'
+            )
         if record.get("category_override"):
             parts.append(f"<p>Category override: {esc(record['category_override'])}</p>")
         for v in record["versions"]:
@@ -423,6 +468,8 @@ def check_publication(output, *, expected_records, expected_media=None, annotati
         projected = copy.deepcopy(records)
         for record in projected:
             record.pop("category_override", None)
+            record.pop("raindrop_id", None)
+            record.pop("raindrop_url", None)
         if apply_annotations(projected, annotations) != records:
             raise PilotError("Published curation differs from canonical annotations.")
     if before["index.html"] != render(records).encode() or before["source-links.jsonl"] != b"".join(
@@ -503,6 +550,7 @@ COMMANDS = (
     "catalog-check",
     "catalog-annotate",
     "catalog-raindrop-match",
+    "catalog-raindrop-link",
 )
 
 
@@ -531,6 +579,8 @@ def add_commands(sub):
         elif command == "catalog-lookup":
             p.add_argument("--post", required=True)
             p.add_argument("--asset-id")
+        elif command == "catalog-raindrop-link":
+            p.add_argument("--receipt-file", type=Path, required=True)
         else:
             p.add_argument("--asset-id", required=True)
             p.add_argument("--visibility", choices=VISIBILITIES)
@@ -573,6 +623,12 @@ def run(args):
             publish(output, records)
             return {"records": len(records), "network_calls": 0, "deletion_eligible": False}
         records = read_catalog(output)
+        if args.command == "catalog-raindrop-link":
+            receipt = json.loads(private_bytes(args.receipt_file))
+            if not isinstance(receipt, dict):
+                raise PilotError("Raindrop receipt must be an object.")
+            link_raindrop(output, records, receipt)
+            return {"raindrop_link_updated": True, "network_calls": 0}
         if all(v is None for v in (args.visibility, args.role, args.description)):
             raise PilotError("Supply a visibility, role, or description edit.")
         annotate(

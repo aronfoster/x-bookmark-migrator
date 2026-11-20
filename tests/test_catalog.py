@@ -14,6 +14,7 @@ from x_bookmark_migrator.archive import archive_batch, restore_batch
 from x_bookmark_migrator.catalog import (
     annotate,
     build,
+    link_raindrop,
     lookup,
     post_id,
     publish,
@@ -23,6 +24,45 @@ from x_bookmark_migrator.catalog import (
 )
 from x_bookmark_migrator.core import PilotError, Store
 from x_bookmark_migrator.drive import digest, encode
+
+
+def test_raindrop_link_survives_rebuild_and_preserves_annotations(corpus):
+    batch, output, restored, _ = corpus
+    before = {p.name: p.read_bytes() for p in restored.root.iterdir()}
+    records = build([batch], output)
+    key = records[0]["versions"][0]["media"][0]["asset_id"]
+    annotate(output, records, key, description="Keep this annotation")
+    receipt = {
+        "schema_version": 1,
+        "source_post_id": "101",
+        "source_post_url": "https://x.com/i/status/101",
+        "primary_link": "https://x.com/i/status/101",
+        "raindrop_id": 42,
+        "collection_id": -1,
+        "verified_at": "2026-01-01T00:00:00Z",
+        "response_sha256": "a" * 64,
+    }
+    link_raindrop(output, read_catalog(output), receipt)
+    rebuilt = build([batch], output)
+    assert rebuilt == read_catalog(output)
+    assert rebuilt[0]["raindrop_url"] == "https://app.raindrop.io/my/0/item/42"
+    assert "Open bookmark in Raindrop" in render(rebuilt)
+    assert "raindrop_url" not in rebuilt[1]
+    assert output.read("annotations.private.json")[key]["description"] == "Keep this annotation"
+    assert {p.name: p.read_bytes() for p in restored.root.iterdir()} == before
+    for changed in (
+        {
+            "source_post_id": "104",
+            "source_post_url": "https://x.com/i/status/104",
+            "primary_link": "https://x.com/i/status/104",
+        },
+        {"primary_link": "https://x.com/i/status/102"},
+        {"raindrop_id": True},
+        {"raindrop_id": 43},
+    ):
+        with pytest.raises(PilotError):
+            link_raindrop(output, rebuilt, {**receipt, **changed})
+    assert rebuilt == read_catalog(output)
 
 
 @pytest.fixture

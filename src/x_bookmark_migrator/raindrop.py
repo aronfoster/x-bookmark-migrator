@@ -270,6 +270,49 @@ class RaindropAdapter:
             "response_sha256": digest(encode(body)),
         }
 
+    def replace_note(self, pid, raindrop_id, post_text):
+        """Explicit note-only edit, with fresh identity and metadata readback checks."""
+        exact_id(pid)
+        if not isinstance(post_text, str) or not post_text.strip():
+            raise blocked("primary_post_text_required")
+        if type(raindrop_id) is not int or raindrop_id <= 0:
+            raise blocked("invalid_raindrop_id")
+        with self.store.locked():
+            before = self._call("get", raindrop_id)["item"]
+            rid, cid = item_identity(before)
+            if (
+                rid != raindrop_id
+                or (cid != -1 and cid <= 0)
+                or before.get("removed", False) is not False
+                or raindrop_post_id(before["link"]) != pid
+            ):
+                raise blocked("inactive_or_wrong_raindrop")
+            note = post_text[:250]
+            self._call("update-note-json", rid, payload={"note": note})
+            after = self._call("get", rid)["item"]
+            preserved = (
+                "_id",
+                "link",
+                "collection",
+                "title",
+                "tags",
+                "important",
+                "excerpt",
+                "cover",
+                "media",
+                "type",
+                "created",
+                "order",
+                "highlights",
+                "reminder",
+                "removed",
+            )
+            if after.get("note") != note or any(
+                before.get(key) != after.get(key) for key in preserved
+            ):
+                raise blocked("note_update_readback_mismatch")
+            return self.verify_raindrop_now(pid, rid)
+
     def ensure_raindrop(self, pid, source_url, archive_ref, *, category=None):
         """Create at most once plus one reconciled recovery attempt, under one lock."""
         exact_id(pid)

@@ -313,3 +313,40 @@ def test_cli_rejects_symlinked_state_directory_before_adapter(tmp_path):
                 raindrop_script=Path(__file__).resolve(),
             )
         )
+
+
+def test_explicit_note_update_is_primary_bound_and_note_only(tmp_path):
+    from unittest.mock import Mock
+
+    script = tmp_path / "skill.sh"
+    script.write_text("synthetic")
+    adapter = RaindropAdapter(tmp_path / "ledger", script)
+    before = item(pid="101", rid=42)
+    before.update(title="Keep title", note="Replace me", tags=["keep"])
+    text = "🔥\n" * 200
+    after = {**before, "note": text[:250]}
+    adapter._call = Mock(
+        side_effect=[
+            {"result": True, "item": before},
+            {"result": True},
+            {"result": True, "item": after},
+            {"result": True, "item": after},
+        ]
+    )
+    receipt = adapter.replace_note("101", 42, text)
+    assert receipt["raindrop_id"] == 42
+    assert adapter._call.call_args_list[1].args == ("update-note-json", 42)
+    assert adapter._call.call_args_list[1].kwargs == {"payload": {"note": text[:250]}}
+    adapter._call = Mock(return_value={"result": True, "item": item(pid="102", rid=42)})
+    with pytest.raises(PilotError):
+        adapter.replace_note("101", 42, text)
+    assert adapter._call.call_count == 1
+    adapter._call = Mock(
+        side_effect=[
+            {"result": True, "item": before},
+            {"result": True},
+            {"result": True, "item": {**after, "tags": []}},
+        ]
+    )
+    with pytest.raises(PilotError):
+        adapter.replace_note("101", 42, text)
