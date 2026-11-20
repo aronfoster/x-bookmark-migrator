@@ -83,6 +83,26 @@ def adapter_for(tmp_path, server):
     return adapter
 
 
+def test_homepages_preserved_without_blocking_exact_post_inventory(tmp_path):
+    homepages = [
+        item(rid=2, link="http://twitter.com/"),
+        item(rid=3, link="https://x.com/"),
+    ]
+    server = SkillServer(
+        active=[item(), *homepages], trash=[item(rid=4, link="https://x.com/", cid=-99)]
+    )
+    before = copy.deepcopy((server.active, server.trash))
+    adapter = adapter_for(tmp_path, server)
+    inventory = adapter.enumerate_now()
+    assert inspect_inventory(inventory, "101")["state"] == "active"
+    assert inspect_inventory(inventory, "102")["state"] == "absent"
+    assert inventory["active"]["items"] == before[0]
+    assert inventory["trash"]["items"] == before[1]
+    assert adapter.store.read("raindrop-inventory.private.json") == inventory
+    assert (server.active, server.trash) == before
+    assert server.calls == [(("list-all",), None)]
+
+
 @pytest.mark.parametrize(
     "link",
     [

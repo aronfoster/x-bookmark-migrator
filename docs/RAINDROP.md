@@ -33,7 +33,12 @@ IDs are exact decimal **strings**, never numeric JSON IDs. New primary links are
 exactly `https://x.com/i/status/<pid>`. `source.raindrop_post_id` accepts the
 FOS-216 official aliases, renamed handles, photo/video suffixes and i/web/status.
 Unsupported X links block complete matching; search alone never establishes absence.
-This includes profile/list/Space links under the accepted fail-closed contract;
+Bare HTTP(S) site roots on the supported X/Twitter hosts (empty path or `/`, no
+query, fragment, port or credentials) are non-post links. They remain unchanged in
+the complete inventory but do not participate in exact-post matching. This is a
+local matching policy, not a provider guarantee. Profile, list, Space, search and
+ambiguous links still block; do not generalize this exception to other paths.
+The remaining blockers include profile/list/Space links under the fail-closed contract;
 they are not silently discarded. A blocked provider summary identifies the numeric
 `raindrop_id`; offline inspection adds `blocking_raindrop_id`. Neither exposes the
 private URL. Changing which X paths may be ignored requires a shared-parser contract

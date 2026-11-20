@@ -43,6 +43,11 @@ def raindrop_post_id(link):
     try:
         url = urlsplit(link)
         if (url.hostname or "").removesuffix(".") in X_HOSTS:
+            # Bare site roots identify no post. Keep them in inventory, not in dedupe.
+            if url.netloc.lower().removesuffix(".") in X_HOSTS and re.fullmatch(
+                r"https?://[a-z.]+/?", link, flags=re.IGNORECASE
+            ):
+                return None
             return post_id(link)
         if (url.hostname or "").removesuffix(".") == "t.co":
             raise PilotError("Unresolved X short link; dedupe is incomplete.")
