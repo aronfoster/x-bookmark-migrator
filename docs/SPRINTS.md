@@ -92,6 +92,94 @@ content goes to public fixtures.
 
 **M2. Trackers: FOS-216, FOS-166, FOS-169.**
 
+### 21 November — efficient repair and migration checkpoint
+
+Recovery/independent restore/cleanup and publication of the captured 103 records /
+117 media are complete. OpenClaw/Mnemosyne retrieval is owner-attested. The older
+S1 pause and S2 pilot instructions below are historical where these results
+supersede them; do not repeat them.
+
+Of 25 known historical removals, 19 have completed Raindrop/local-link repair,
+one has a created, identity-verified pointer without completed local publication,
+and five are unprocessed. The partial record's saved create response differs from
+its exact intended note only in edge whitespace. The stopped run and all original
+receipts remain preserved. Removal-source coverage is owner-attested; helper
+retirement is separate.
+
+**Current deliverable:** improve the existing shared adapter and repair command
+before live continuation, rather than adding another temporary migration engine.
+
+- One real complete active/Trash inventory at run start, retaining the existing
+  two-pass pagination validation; targeted GET per affected item afterward.
+  Run-local matches must not masquerade as a newly observed full inventory.
+- Compare note readback after stripping edge whitespace only. Preserve the exact
+  `text[:250]` intent/payload and complete immutable source text. Internal content
+  changes still stop. Preserve existing entries on adoption.
+- Resume from durable provider receipts and repair missing local mappings without
+  another POST. An uncertain prior POST with no active match stops for resolution;
+  absence is not permission to retry automatically in this repair mode.
+- Save private GET evidence before validation and checkpoint each verified item
+  before attempting the next. A publication failure stops further creates; resume
+  repairs the local projection. Report phases, counts and the actual request budget.
+- Bound the run and hold the existing shared ledger lock. Other account writers
+  must remain paused. This proves selected-item readback, not a transactional
+  server snapshot, global duplicate-freedom or an unrelated-metadata comparison.
+
+**Code exit tests:** one inventory operation for multiple items; trimmed notes
+accepted but changed internal text rejected; existing metadata not overwritten;
+Trash/duplicate conflicts; uncertain POST with no retry; create-before-publication
+and publication-before-completion crashes resume without duplicate creates; raw
+failure evidence retained; no further writes after a stop; full regression checks.
+Independent review and owner-run protected execution remain distinct evidence.
+
+**Then advance the migration:** finish selected-item reconciliation/local links
+for the historical 25, complete helper retirement and the existing worker's
+current-policy acceptance, then the 32 archived-complete main records and measured
+blocker fixes. Prior blocker counts overlap: missing author 18, missing media 10,
+unsupported media expansion 9, missing reference 7, byte limit 7, partial API
+response 3, Article completeness 2 and media-count bound 2. Start with retained
+evidence and fixable classes; seven byte-limit cases had no other recorded blocker.
+Recheck affected official X contracts before changing source integration or
+incurring new reads. Retain the existing budget and history-window stop rules.
+Full-history coverage, sustained intake/backups and search acceptance stay open.
+
+**Operational follow-through from PR #16 review:** FOS-169 owns resolution of a
+`no_repost` intent with no active match, GET-evidence retention/compaction and
+publication-failure recovery before unattended rollout. No automatic uncertain
+POST retry or evidence deletion is implemented. A worker `PilotError` during
+local link publication remains a blocking hold before X removal, even with a
+durable provider receipt. Repair the local cause and prepare a reviewed per-item
+requeue; ordinary restart must not silently clear that hold. The historical
+repair command can independently restore its missing local mapping by adoption.
+
+### 19 November formatting checkpoint
+
+Owner-approved default for subsequent migration:
+
+- New Raindrop notes contain only the first 250 Unicode characters of the saved
+  primary post text, without an ellipsis. Never substitute a referenced post.
+  The owner rejected archive JSON links and numeric category notes as unhelpful.
+- Preserve existing Raindrop notes and metadata on adoption. Explicit preview
+  edits are separate from the create/adopt path.
+- Persist verified Raindrop receipts as local navigation mappings. Project direct
+  links into catalog records and HTML; preserve mappings through partial archive
+  builds, merged worker publications and full rebuilds.
+- A recovery POST must retain the same intended note. Legacy intents lacking the
+  note require review rather than silently changing the recovery payload.
+- Exit tests: adapter truncation/adoption/recovery, exact-primary text selection,
+  historical backfill and worker link persistence, annotation preservation and
+  full regression checks. Live installation is separate from local tests.
+
+The accepted preview is complete. On 20 November, the owner attested that only
+the two audited helpers performed automated removals of these captured bookmarks,
+resolving the earlier “probably” checkpoint. This is owner confirmation, not
+independent verification. Next: prepare the reviewed installation and bounded
+Raindrop-only backfill (at most three IDs), then obtain explicit owner go-ahead
+for its live run, with fresh matching and readback. Helper retirement remains
+unverified; this confirmation does not authorize X removal or scheduling.
+
+### Existing rollout sequence
+
 1. After M1, use the existing protected rollout to install the accepted readiness
    release. Publish the complete catalog/HTML/source sidecar/annotations; preserve
    old catalogs and curation. Run archive-bound writer checks and actual-reader

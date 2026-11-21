@@ -2,14 +2,17 @@
 
 import json
 import secrets
+import sys
+import time
 from pathlib import Path
 
-from .catalog import build, private_bytes
+from .catalog import build, link_raindrop, private_bytes, read_catalog
 from .core import PilotError, Store
 from .publication import PublicationStore
 from .repair import (
     audit_native_helpers,
     backfill,
+    backfill_selection,
     reconcile,
     saved_raindrop_inspector,
     scan_helper,
@@ -141,10 +144,118 @@ def run(args):
             report["native_helper_provenance"] = provenance
         output.write(f"repair-audit-{run_id}.private.json", report)
         if args.command == "repair-backfill":
+            published = read_catalog(catalog)
+            if set(args.post_id) - {r["post_id"] for r in published}:
+                raise PilotError("Selected primary is absent from the published catalog.")
             module = shared_raindrop()
             adapter = module.RaindropAdapter(args.raindrop_ledger_dir, args.raindrop_script)
-            result = backfill(report, adapter, args.post_id, confirmed=True, limit=args.limit)
-            output.write(f"repair-backfill-{run_id}.private.json", result)
+            backfill_selection(report, args.post_id, confirmed=True, limit=args.limit)
+            local_links = (catalog.read("annotations.private.json") or {}).get("raindrop_links", {})
+            # Old releases wrote identity-only receipts before the outer helper's
+            # metadata check. Recheck our unpublished creates even with a receipt.
+            verify_created = [
+                pid
+                for pid in args.post_id
+                if pid not in local_links
+                and adapter.store.path(f"raindrop-{pid}.create-result.private.json").exists()
+            ]
+            for pid in args.post_id:
+                if pid in local_links:
+                    local = module.validate_receipt(local_links[pid], pid)
+                    canonical = adapter.store.read(f"raindrop-{pid}.receipt.private.json")
+                    if (
+                        canonical is None
+                        or module.validate_receipt(canonical, pid)["raindrop_id"]
+                        != local["raindrop_id"]
+                    ):
+                        raise PilotError("Conflicting local and ledger Raindrop association.")
+            started = time.monotonic()
+            progress = {
+                "selected": len(args.post_id),
+                "results": [],
+                "complete": False,
+                "stage": "inventory",
+            }
+            progress_name = f"repair-progress-{run_id}.private.json"
+
+            def checkpoint(entry):
+                progress["results"].append(entry)
+                output.write(progress_name, progress)
+                if entry["state"] == "verified":
+                    progress["stage"] = "local_publication"
+                    output.write(progress_name, progress)
+                    link_raindrop(catalog, published, entry["receipt"])
+                    entry["local_link_persisted"] = True
+                    output.write(progress_name, progress)
+                completed = sum(e.get("local_link_persisted", False) for e in progress["results"])
+                print(
+                    f"Repair: {completed}/{len(args.post_id)} local links verified; "
+                    f"{len(progress['results'])} processed; "
+                    f"{int(time.monotonic() - started)}s elapsed.",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                if entry["state"] == "blocked":
+                    print(
+                        json.dumps(
+                            {
+                                key: entry[key]
+                                for key in ("reason", "metadata_mismatch", "provider")
+                                if key in entry
+                            }
+                        ),
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                progress["stage"] = "item_verification"
+
+            print(
+                "Repair: validating one active/Trash inventory (two-pass pagination); "
+                "then targeted item checks.",
+                file=sys.stderr,
+                flush=True,
+            )
+            try:
+                output.write(progress_name, progress)
+                with adapter.repair_session(
+                    args.post_id, verify_created_ids=verify_created
+                ) as stats:
+                    progress["provider"] = stats
+                    progress["stage"] = "item_verification"
+                    output.write(progress_name, progress)
+                    result = backfill(
+                        report,
+                        adapter,
+                        args.post_id,
+                        confirmed=True,
+                        limit=args.limit,
+                        on_result=checkpoint,
+                    )
+                result["summary"]["local_links_persisted"] = sum(
+                    e.get("local_link_persisted", False) for e in result["results"]
+                )
+                result["summary"]["elapsed_seconds"] = round(time.monotonic() - started, 3)
+                result["summary"]["provider"] = dict(adapter.repair_stats)
+                output.write(f"repair-backfill-{run_id}.private.json", result)
+                progress["complete"] = not result["summary"]["blocked"]
+                progress["stage"] = "complete" if progress["complete"] else "blocked"
+                output.write(progress_name, progress)
+            except Exception:
+                # The pending result/receipt remains authoritative even if this
+                # final diagnostic checkpoint itself encounters a full disk.
+                try:
+                    progress["stopped"] = True
+                    progress["provider"] = dict(adapter.repair_stats)
+                    output.write(progress_name, progress)
+                except (OSError, PilotError):
+                    pass
+                print(
+                    "Repair stopped; completed links and provider receipts are retained. "
+                    "No further items attempted.",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                raise
             return result["summary"]
         return {
             **report["summary"],

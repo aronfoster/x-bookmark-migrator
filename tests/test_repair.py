@@ -165,6 +165,20 @@ def audit(corpus, tmp_path):
     return records, reconcile(records, scan_native(state.root), coverage={"complete": True})
 
 
+def test_missing_primary_text_blocks_only_affected_audit_row(corpus, tmp_path):
+    records, _ = audit(corpus, tmp_path)
+    for version in records[0]["versions"]:
+        for post in version["posts"]:
+            if post["id"] == records[0]["post_id"]:
+                post.pop("text")
+    result = reconcile(records, scan_native(tmp_path / "removals"), coverage={"complete": True})
+    rows = {row["source_post_id"]: row for row in result["rows"]}
+    assert "primary_post_text_unavailable" in rows[records[0]["post_id"]]["blockers"]
+    assert "primary_post_text_unavailable" not in rows["102"]["blockers"]
+    assert isinstance(rows["102"]["repair_post_text"], str)
+    assert result["summary"]["catalog_records"] == len(records)
+
+
 def test_primary_only_unknown_not_deleted_and_all_categories(corpus, tmp_path):
     records, report = audit(corpus, tmp_path)
     rows = {r["source_post_id"]: r for r in report["rows"]}
@@ -225,11 +239,55 @@ class Adapter:
         self.calls = []
         self.error = error
 
-    def ensure_raindrop(self, pid, url, archive_ref, *, category=None):
-        self.calls.append((pid, url, archive_ref, category))
+    def ensure_raindrop(self, pid, url, archive_ref, *, post_text=None):
+        self.calls.append((pid, url, archive_ref, post_text))
         if self.error:
             raise PilotError("Synthetic provider error", code=self.error)
         return {"source_post_id": pid, "source_post_url": url, "raindrop_id": 7}
+
+
+def test_explicit_ensure_publishes_link_from_verified_payload(corpus, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from test_raindrop import SkillServer, adapter_for
+
+    from x_bookmark_migrator import raindrop_cli
+    from x_bookmark_migrator.catalog import build, publish, read_catalog
+
+    batch, catalog, restored, _ = corpus
+    records = build([batch], catalog)
+    publish(catalog, records)
+    version = records[0]["versions"][0]
+    ref = tmp_path / "reference.private.json"
+    ref.write_text(
+        json.dumps(
+            {
+                "manifest": version["manifest"],
+                "payload": version["payload_receipt"],
+            }
+        )
+    )
+    ref.chmod(0o600)
+    server = SkillServer()
+    adapter = adapter_for(tmp_path, server)
+    monkeypatch.setattr(raindrop_cli, "adapter_from_args", lambda args: adapter)
+    args = SimpleNamespace(
+        command="raindrop-ensure",
+        confirm_raindrop_create=True,
+        post_id="101",
+        archive_ref_file=ref,
+        payload_file=restored.path("101.json"),
+        catalog_dir=catalog.root,
+        category=None,
+    )
+    assert raindrop_cli.run(args)["verified"]
+    assert len(server.posts) == 1 and len(server.posts[0][1]["note"]) == 250
+    assert read_catalog(catalog) == build([batch], catalog)
+    assert read_catalog(catalog)[0]["raindrop_id"] == server.active[0]["_id"]
+    args.post_id = "102"
+    with pytest.raises(PilotError, match="does not match"):
+        raindrop_cli.run(args)
+    assert len(server.posts) == 1
 
 
 def test_backfill_only_calls_shared_ensure_for_removed_and_unknown(corpus, tmp_path):
@@ -241,6 +299,59 @@ def test_backfill_only_calls_shared_ensure_for_removed_and_unknown(corpus, tmp_p
     assert result["summary"]["x_api_calls"] == 0
     assert adapter.calls[0][1] == "https://x.com/i/status/101"
     assert "payload" in adapter.calls[0][2]
+
+
+def test_backfill_checkpoints_each_item_before_next_provider_write(corpus, tmp_path):
+    _, report = audit(corpus, tmp_path)
+    adapter = Adapter()
+    checkpoints = []
+
+    def checkpoint(entry):
+        checkpoints.append((entry["source_post_id"], len(adapter.calls)))
+
+    backfill(report, adapter, ["101", "102"], confirmed=True, on_result=checkpoint)
+    assert checkpoints == [("101", 1), ("102", 2)]
+
+
+def test_backfill_publication_failure_stops_before_next_create(corpus, tmp_path):
+    _, report = audit(corpus, tmp_path)
+    adapter = Adapter()
+
+    def failed_publication(entry):
+        raise OSError("synthetic disk failure")
+
+    with pytest.raises(OSError, match="synthetic disk failure"):
+        backfill(report, adapter, ["101", "102"], confirmed=True, on_result=failed_publication)
+    assert [call[0] for call in adapter.calls] == ["101"]
+
+
+def test_backfill_metadata_mismatch_reports_only_safe_fields(corpus, tmp_path):
+    _, report = audit(corpus, tmp_path)
+
+    class Failed:
+        def ensure_raindrop(self, *args, **kwargs):
+            raise PilotError(
+                "Synthetic mismatch",
+                summary={
+                    "reason": "create_metadata_readback_mismatch",
+                    "metadata_mismatch": {
+                        "note": True,
+                        "title": False,
+                        "tags": False,
+                        "note_actual_length": 249,
+                        "note_expected_length": 250,
+                        "note_equal_after_strip": False,
+                        "raw_note": "PRIVATE CONTENT",
+                    },
+                },
+            )
+
+    result = backfill(report, Failed(), ["101", "102"], confirmed=True)
+    assert result["summary"]["blocked"]
+    assert result["summary"]["processed"] == 1
+    detail = result["results"][0]["metadata_mismatch"]
+    assert detail["note"] and detail["note_actual_length"] == 249
+    assert "PRIVATE" not in json.dumps(result) and "raw_note" not in detail
 
 
 @pytest.mark.parametrize("error", ["http_401", "http_429", "partial_inventory", "create_unknown"])
@@ -377,8 +488,8 @@ def test_real_adapter_backfill_create_crash_recover_and_rerun(corpus, tmp_path):
     receipt = adapter.store.read("raindrop-101.receipt.private.json")
     assert recovered["results"][0]["receipt"]["raindrop_id"] == receipt["raindrop_id"]
     assert receipt["archive_ref"] == report["rows"][0]["repair_archive_ref"]
-    assert server.posts[0][1]["note"].startswith("Archive: https://drive.google.com/file/d/")
-    assert len(server.posts[0][1]["note"]) < 200
+    assert server.posts[0][1]["note"] == report["rows"][0]["repair_post_text"][:250]
+    assert len(server.posts[0][1]["note"]) == 250
 
 
 def test_real_adapter_adopts_three_pilot_aliases_preserving_metadata(corpus, tmp_path):
@@ -516,7 +627,7 @@ def test_non_media_cross_tab_distinguishes_unverified_from_exception(corpus, tmp
 
 
 @pytest.mark.parametrize("override", [None, "Curated category", "x" * 1000])
-def test_category_comes_from_selected_archive_or_override(corpus, tmp_path, override):
+def test_note_uses_primary_text_not_category(corpus, tmp_path, override):
     from test_raindrop import SkillServer, adapter_for
 
     records, _ = audit(corpus, tmp_path)
@@ -532,11 +643,11 @@ def test_category_comes_from_selected_archive_or_override(corpus, tmp_path, over
         if v["manifest"] == row["repair_archive_ref"]["manifest"]
         and v["payload_receipt"] == row["repair_archive_ref"]["payload"]
     )
-    expected = (override or chosen["category"])[:200]
+    expected = next(p["text"] for p in chosen["posts"] if p["id"] == "101")[:250]
     server = SkillServer()
     result = backfill(report, adapter_for(tmp_path, server), ["101"], confirmed=True)
     assert result["summary"]["verified"] == 1
-    assert server.posts[0][1]["note"].endswith("Original category: " + expected)
+    assert server.posts[0][1]["note"] == expected
     assert row["category_override"] == override
 
 
@@ -698,12 +809,26 @@ def test_overlapping_output_rejected_before_writes_or_provider(
         repair_cli.run(args)
 
 
-def test_backfill_reruns_keep_paired_reports_and_create_once(corpus, tmp_path, monkeypatch):
+@pytest.mark.parametrize("crash", [None, "before_link", "after_link"])
+def test_backfill_reruns_keep_paired_reports_and_create_once(corpus, tmp_path, monkeypatch, crash):
     from test_raindrop import SkillServer, adapter_for
 
     from x_bookmark_migrator import repair_cli
+    from x_bookmark_migrator.catalog import build, publish, read_catalog
 
     args = cli_args(corpus, tmp_path)
+    batch, catalog, _, _ = corpus
+    records = build([batch], catalog)
+    # A newer worker publication may contain records outside this repair batch.
+    extra = {
+        **records[0],
+        "post_id": "999",
+        "source_post_id": "999",
+        "versions": [],
+        "canonical_url": "https://x.com/i/status/999",
+        "source_post_url": "https://x.com/i/status/999",
+    }
+    publish(catalog, [*records, extra])
     helper_store = Store(tmp_path / "helper")
     args.helper_format = [helper(helper_store, [])]
     args.command = "repair-backfill"
@@ -717,15 +842,57 @@ def test_backfill_reruns_keep_paired_reports_and_create_once(corpus, tmp_path, m
     adapter = adapter_for(tmp_path, server)
     module = repair_cli.shared_raindrop()
     monkeypatch.setattr(module, "RaindropAdapter", lambda *a: adapter)
+    if crash:
+        original_link = repair_cli.link_raindrop
+
+        def interrupted_link(*args):
+            if crash == "after_link":
+                original_link(*args)
+            raise OSError("synthetic publication interruption")
+
+        monkeypatch.setattr(repair_cli, "link_raindrop", interrupted_link)
+        with pytest.raises(OSError, match="synthetic publication"):
+            repair_cli.run(args)
+        assert len(server.posts) == 1
+        assert adapter.store.read("raindrop-101.receipt.private.json")
+        checkpoint = next(args.output_dir.glob("repair-progress-*.private.json"))
+        saved = json.loads(checkpoint.read_text())
+        assert saved["results"][0]["state"] == "verified"
+        assert not saved["complete"]
+        assert not saved["results"][0].get("local_link_persisted")
+        monkeypatch.setattr(repair_cli, "link_raindrop", original_link)
+        if crash == "before_link":
+            # Legacy helpers leave exactly this state: canonical identity receipt,
+            # saved create result, but no completed local publication.
+            intended = server.active[0]["note"]
+            server.active[0]["note"] = "Unexpected content"
+            failed = repair_cli.run(args)
+            assert failed["blocked"] and failed["verified"] == 0
+            assert not (catalog.read("annotations.private.json") or {}).get("raindrop_links")
+            assert len(server.posts) == 1
+            server.active[0]["note"] = intended.rstrip()
     assert repair_cli.run(args)["verified"] == 1
+    assert read_catalog(catalog)[-1] == extra
     original = {p.name: p.read_bytes() for p in args.output_dir.glob("*.private.json")}
     assert repair_cli.run(args)["verified"] == 1
+    assert len(read_catalog(catalog)) == 4
+    assert read_catalog(catalog)[0]["raindrop_id"] == server.active[0]["_id"]
     assert len(server.posts) == 1
+    assert sum(c[0] == ("list-all",) for c in server.calls) == (
+        (3 if crash else 2) + (crash == "before_link")
+    )
     reports = list(args.output_dir.glob("repair-backfill-*.private.json"))
-    assert len(reports) == 2
+    assert len(reports) == 2 + (crash == "before_link")
     for report in reports:
         assert report.with_name(report.name.replace("backfill", "audit")).exists()
     assert all((args.output_dir / name).read_bytes() == raw for name, raw in original.items())
+    notes = catalog.read("annotations.private.json")
+    notes["raindrop_links"]["101"]["raindrop_id"] += 1000
+    catalog.write("annotations.private.json", notes)
+    calls_before = list(server.calls)
+    with pytest.raises(PilotError, match="Conflicting local and ledger"):
+        repair_cli.run(args)
+    assert server.calls == calls_before
 
 
 @pytest.mark.parametrize("value", [True, -1, "-1", "1.5", "1e2", "９９", "9" * 21, "PRIVATE"])

@@ -6,7 +6,7 @@ import re
 from collections import Counter
 from pathlib import Path
 
-from .catalog import private_bytes, source_sidecar
+from .catalog import primary_post_text, private_bytes, source_sidecar
 from .core import PilotError, exact_id
 from .drive import digest, encode
 from .source import source_url
@@ -406,8 +406,8 @@ def reconcile(records, attempts, *, decisions=None, coverage=None, inspect_raind
                 chosen = min(
                     usable, key=lambda v: (v["manifest"]["sha256"], v["payload_receipt"]["sha256"])
                 )
-                # Retain full original labels and overrides above; the shared
-                # adapter's concise note contract allows at most 200 characters.
+                # Retain the historical concise category projection for audit
+                # consumers; new Raindrop notes use primary post text instead.
                 row["repair_category"] = (record.get("category_override") or chosen["category"])[
                     :200
                 ]
@@ -415,6 +415,10 @@ def reconcile(records, attempts, *, decisions=None, coverage=None, inspect_raind
                     "manifest": chosen["manifest"],
                     "payload": chosen["payload_receipt"],
                 }
+                try:
+                    row["repair_post_text"] = primary_post_text(chosen["posts"], pid)
+                except PilotError:
+                    blockers.append("primary_post_text_unavailable")
         else:
             kind = "ambiguous"
             row.update(classification=kind, archives=[], original_categories=[], drive_links=[])
@@ -507,8 +511,8 @@ def saved_raindrop_inspector(snapshot, receipts, inspect_inventory, validate_rec
     return inspect
 
 
-def backfill(report, adapter, selected_ids, *, confirmed=False, limit=3):
-    """Call the single FOS-166 ensure operation; never persist a competing receipt."""
+def backfill_selection(report, selected_ids, *, confirmed=False, limit=3):
+    """Validate the entire selected scope before inventory or provider writes."""
     if not confirmed:
         raise PilotError("Backfill requires explicit --confirm-raindrop-writes.")
     if not report["coverage"]["complete"]:
@@ -528,17 +532,28 @@ def backfill(report, adapter, selected_ids, *, confirmed=False, limit=3):
         if set(row["blockers"]) - {"raindrop_readback_unverified"}:
             raise PilotError("Selected historical record has unresolved repair blockers.")
         selected.append(row)
+    return selected
+
+
+def backfill(report, adapter, selected_ids, *, confirmed=False, limit=3, on_result=None):
+    """Call the single FOS-166 ensure operation; never persist a competing receipt."""
+    selected = backfill_selection(report, selected_ids, confirmed=confirmed, limit=limit)
     results = []
     for row in selected:
         pid = row["source_post_id"]
         if not row["raindrop_required"]:
             results.append({"source_post_id": pid, "state": "media_only_exception"})
+            if on_result is not None:
+                on_result(results[-1])
             continue
         try:
-            # Adapter holds the lock, refreshes full inventory, recovers uncertain
-            # POSTs and returns only after fresh GET. Do not implement retries here.
+            # The shared adapter owns inventory/recovery and fresh GET verification.
+            # A repair session may reuse its baseline; do not implement retries here.
             receipt = adapter.ensure_raindrop(
-                pid, source_url(pid), row["repair_archive_ref"], category=row["repair_category"]
+                pid,
+                source_url(pid),
+                row["repair_archive_ref"],
+                post_text=row.get("repair_post_text"),
             )
         except PilotError as exc:
             # Only the shared adapter's structured diagnostics, never exception
@@ -563,9 +578,29 @@ def backfill(report, adapter, selected_ids, *, confirmed=False, limit=3):
                 }
             if type(summary.get("raindrop_id")) is int and summary["raindrop_id"] > 0:
                 detail["blocking_raindrop_id"] = summary["raindrop_id"]
+            mismatch = summary.get("metadata_mismatch")
+            if isinstance(mismatch, dict):
+                detail["metadata_mismatch"] = {
+                    key: mismatch[key]
+                    for key in ("note", "title", "tags", "note_equal_after_strip")
+                    if type(mismatch.get(key)) is bool
+                }
+                detail["metadata_mismatch"].update(
+                    {
+                        key: mismatch[key]
+                        for key in ("note_actual_length", "note_expected_length")
+                        if type(mismatch.get(key)) is int and 0 <= mismatch[key] <= 10**6
+                    }
+                )
             results.append({"source_post_id": pid, "state": "blocked", **detail})
+            if on_result is not None:
+                on_result(results[-1])
             break
         results.append({"source_post_id": pid, "state": "verified", "receipt": receipt})
+        if on_result is not None:
+            # Publish/checkpoint before moving to the next provider write. Failure
+            # deliberately propagates; the durable adapter receipt supports resume.
+            on_result(results[-1])
     return {
         "schema_version": 1,
         "results": results,

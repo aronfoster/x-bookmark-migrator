@@ -1,6 +1,6 @@
 # Bookmark project roadmap
 
-Updated 18 November 2026 (America/Denver). Owner-directed v1/v2 scope.
+Updated 21 November 2026 (America/Denver). Owner-directed v1/v2 scope.
 
 ## Planning home and working rules
 
@@ -91,7 +91,7 @@ shift subsequent windows. S4 repeats as needed rather than inventing a drain ETA
 
 | Sprint | Target window | Milestone / demo | Status |
 | --- | --- | --- | --- |
-| S1 | 18–24 Nov 2026 | **M1 Recoverable:** existing bundle restored off-host and completely verified; S3 search/curation designs ready for focused review. | Incomplete; local archive verification and recovery-key encryption/readback passed; remote backup/restore pending |
+| S1 | 18–24 Nov 2026 | **M1 Recoverable:** existing bundle restored off-host and completely verified; S3 search/curation designs ready for focused review. | Recovery/restore/cleanup passed; search/curation preparation remains |
 | S2 | 25 Nov–1 Dec 2026 | **M2 Operational:** complete catalog visible, historical repair and prospective gate accepted, one live worker pass and scheduled run proven; blocker triage, exposure evidence and budget checkpoint recorded before scaling. | Planned; requires M1 for live rollout |
 | S3 | 2–8 Dec 2026 | **M3 Findable and organizable:** OpenClaw/Drive/Raindrop search acceptance and categorization plan/rehearsal pass. | Planned; design can proceed during S1 |
 | S4 | 9–15 Dec 2026, then repeat if needed | **M4 V1 accepted:** all-history reconciliation, continuing intake/recovery and v1 acceptance matrix pass; owner dispositions for any irrecoverable remainder. | Planned; no fixed release date |
@@ -112,6 +112,52 @@ leave unknown population/cost explicit; no automatic ceiling increase or reduced
 release scope follows from a failed checkpoint. See S2/S4 for the stopping rule.
 
 ## Current checkpoint and next actions
+
+### 21 November — improve the migration path before resuming
+
+Recovery, independent restore and temporary-material cleanup passed. The complete
+captured catalog is published: 103 records and 117 media files, with owner-attested
+OpenClaw/Mnemosyne retrieval. Do not repeat those completed demonstrations.
+
+Historical Raindrop repair has 19 completed records of the 25 known removals.
+One additional pointer was created and identity-verified, but its local link was
+not published. Five remain unprocessed. Saved create evidence shows only an
+edge-whitespace note difference (250 submitted characters, 249 returned, equal
+after trimming). The failed later GET body was not retained. Original receipts
+and the stopped run remain evidence, not a reason to repeat POSTs.
+
+The owner directed an efficient, resumable shared repair path before more live
+work: one validated inventory per bounded run, targeted item readback, tolerant
+note-edge comparison, per-item local checkpoints and useful progress/failure
+reports. This replaces repeated pilot-style whole-library checks in historical
+repair. Implementation and synthetic checks are not protected installation or
+live completion. [S2](docs/SPRINTS.md#s2--publish-reconcile-and-operate) owns the
+exit tests and remaining work.
+
+**Next outcomes:** finish the historical 25; retire or gate the audited removal
+helpers; accept the existing worker under current policy; process the 32 known
+archived-but-not-removed main records and resolve measured blockers among the
+43 blocked main records (plus two blocked earlier pilots). These populations
+are not all X history. Continue to measure window exposure, spending and explicit
+exceptions, and complete the existing search/categorization acceptance. No new
+X removal, scheduling or spending authority follows from this checkpoint.
+
+### 19 November Raindrop formatting decision
+
+The owner accepted the revised one-bookmark preview and directed subsequent
+migration work to use the same format: the saved primary post's first 250
+characters as the note, with a direct Raindrop link in its local catalog record
+and index. This replaces the rejected JSON-link/numeric-category note; original
+archive and category evidence remain local. See the S2 formatting checkpoint.
+The preview update and link persistence passed owner-run checks across the
+103-record, 117-media catalog. On 20 November, the owner attested that only the
+two audited helpers performed automated removals of these captured bookmarks;
+this is owner confirmation, not independent verification.
+Next is a separately authorized bounded Raindrop-only backfill; helper retirement and X-operation
+acceptance remain separate.
+
+The following 18 November checkpoint is historical; do not repeat completed
+recovery or publication work solely from this earlier snapshot.
 
 Baseline: main `9b3ce5e`, merged worker #10, readiness #11 and recovery preparation
 #13. Local evidence is owner-reported, not a new remote audit. Effective Raindrop

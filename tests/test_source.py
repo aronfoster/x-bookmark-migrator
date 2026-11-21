@@ -4,7 +4,7 @@ import pytest
 
 from x_bookmark_migrator.catalog import post_id as legacy_post_id
 from x_bookmark_migrator.core import PilotError
-from x_bookmark_migrator.source import post_id, raindrop_post_id, source_url
+from x_bookmark_migrator.source import X_HOSTS, post_id, raindrop_post_id, source_url
 
 
 @pytest.mark.parametrize(
@@ -32,6 +32,20 @@ def test_aliases(host, path, suffix):
         "https://x.com/a/status/１０１",
         "ftp://x.com/a/status/101",
         "https://x.com/a/status/101\n",
+        "https://x.com/?post=101",
+        "https://x.com/#101",
+        "https://x.com/?",
+        "https://x.com/#",
+        "https://x.com//",
+        "https://x.com/%2F",
+        "https://x.com:443/",
+        "https://user@x.com/",
+        "https://x.com/\n",
+        "\x00https://x.com/",
+        "ftp://x.com/",
+        "https://x.com/synthetic_profile",
+        "https://x.com/i/lists/101",
+        "https://x.com/i/spaces/synthetic",
     ],
 )
 def test_unsupported_x_link_blocks_dedupe(url):
@@ -54,6 +68,16 @@ def test_foreign_domains_and_exact_ids():
     with pytest.raises(PilotError):
         post_id("00101")
     assert post_id("101") != post_id("1010")
+
+
+@pytest.mark.parametrize("host", sorted(X_HOSTS))
+@pytest.mark.parametrize("scheme", ["http", "https"])
+@pytest.mark.parametrize("suffix", ["", "/", "./"])
+def test_bare_homepages_are_non_post_inventory_entries(host, scheme, suffix):
+    link = f"{scheme}://{host}{suffix}"
+    assert raindrop_post_id(link) is None
+    with pytest.raises(PilotError):
+        post_id(link)
 
 
 @pytest.mark.parametrize(
