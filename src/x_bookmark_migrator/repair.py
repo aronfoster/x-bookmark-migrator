@@ -415,7 +415,10 @@ def reconcile(records, attempts, *, decisions=None, coverage=None, inspect_raind
                     "manifest": chosen["manifest"],
                     "payload": chosen["payload_receipt"],
                 }
-                row["repair_post_text"] = primary_post_text(chosen["posts"], pid)
+                try:
+                    row["repair_post_text"] = primary_post_text(chosen["posts"], pid)
+                except PilotError:
+                    blockers.append("primary_post_text_unavailable")
         else:
             kind = "ambiguous"
             row.update(classification=kind, archives=[], original_categories=[], drive_links=[])

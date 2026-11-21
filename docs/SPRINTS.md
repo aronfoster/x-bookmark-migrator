@@ -143,6 +143,15 @@ Recheck affected official X contracts before changing source integration or
 incurring new reads. Retain the existing budget and history-window stop rules.
 Full-history coverage, sustained intake/backups and search acceptance stay open.
 
+**Operational follow-through from PR #16 review:** FOS-169 owns resolution of a
+`no_repost` intent with no active match, GET-evidence retention/compaction and
+publication-failure recovery before unattended rollout. No automatic uncertain
+POST retry or evidence deletion is implemented. A worker `PilotError` during
+local link publication remains a blocking hold before X removal, even with a
+durable provider receipt. Repair the local cause and prepare a reviewed per-item
+requeue; ordinary restart must not silently clear that hold. The historical
+repair command can independently restore its missing local mapping by adoption.
+
 ### 19 November formatting checkpoint
 
 Owner-approved default for subsequent migration:

@@ -39,7 +39,9 @@ def add_commands(sub):
             p.add_argument("--archive-ref-file", type=Path, required=True)
             p.add_argument("--payload-file", type=Path, required=True)
             p.add_argument("--catalog-dir", type=Path, required=True)
-            p.add_argument("--category")
+            p.add_argument(
+                "--category", help="Legacy compatibility option; not added to Raindrop notes."
+            )
             p.add_argument("--confirm-raindrop-create", action="store_true")
         elif command == "raindrop-verify":
             p.add_argument("--raindrop-id", type=int, required=True)

@@ -165,6 +165,20 @@ def audit(corpus, tmp_path):
     return records, reconcile(records, scan_native(state.root), coverage={"complete": True})
 
 
+def test_missing_primary_text_blocks_only_affected_audit_row(corpus, tmp_path):
+    records, _ = audit(corpus, tmp_path)
+    for version in records[0]["versions"]:
+        for post in version["posts"]:
+            if post["id"] == records[0]["post_id"]:
+                post.pop("text")
+    result = reconcile(records, scan_native(tmp_path / "removals"), coverage={"complete": True})
+    rows = {row["source_post_id"]: row for row in result["rows"]}
+    assert "primary_post_text_unavailable" in rows[records[0]["post_id"]]["blockers"]
+    assert "primary_post_text_unavailable" not in rows["102"]["blockers"]
+    assert isinstance(rows["102"]["repair_post_text"], str)
+    assert result["summary"]["catalog_records"] == len(records)
+
+
 def test_primary_only_unknown_not_deleted_and_all_categories(corpus, tmp_path):
     records, report = audit(corpus, tmp_path)
     rows = {r["source_post_id"]: r for r in report["rows"]}
@@ -847,6 +861,16 @@ def test_backfill_reruns_keep_paired_reports_and_create_once(corpus, tmp_path, m
         assert not saved["complete"]
         assert not saved["results"][0].get("local_link_persisted")
         monkeypatch.setattr(repair_cli, "link_raindrop", original_link)
+        if crash == "before_link":
+            # Legacy helpers leave exactly this state: canonical identity receipt,
+            # saved create result, but no completed local publication.
+            intended = server.active[0]["note"]
+            server.active[0]["note"] = "Unexpected content"
+            failed = repair_cli.run(args)
+            assert failed["blocked"] and failed["verified"] == 0
+            assert not (catalog.read("annotations.private.json") or {}).get("raindrop_links")
+            assert len(server.posts) == 1
+            server.active[0]["note"] = intended.rstrip()
     assert repair_cli.run(args)["verified"] == 1
     assert read_catalog(catalog)[-1] == extra
     original = {p.name: p.read_bytes() for p in args.output_dir.glob("*.private.json")}
@@ -854,9 +878,11 @@ def test_backfill_reruns_keep_paired_reports_and_create_once(corpus, tmp_path, m
     assert len(read_catalog(catalog)) == 4
     assert read_catalog(catalog)[0]["raindrop_id"] == server.active[0]["_id"]
     assert len(server.posts) == 1
-    assert sum(c[0] == ("list-all",) for c in server.calls) == (3 if crash else 2)
+    assert sum(c[0] == ("list-all",) for c in server.calls) == (
+        (3 if crash else 2) + (crash == "before_link")
+    )
     reports = list(args.output_dir.glob("repair-backfill-*.private.json"))
-    assert len(reports) == 2
+    assert len(reports) == 2 + (crash == "before_link")
     for report in reports:
         assert report.with_name(report.name.replace("backfill", "audit")).exists()
     assert all((args.output_dir / name).read_bytes() == raw for name, raw in original.items())

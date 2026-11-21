@@ -151,6 +151,14 @@ def run(args):
             adapter = module.RaindropAdapter(args.raindrop_ledger_dir, args.raindrop_script)
             backfill_selection(report, args.post_id, confirmed=True, limit=args.limit)
             local_links = (catalog.read("annotations.private.json") or {}).get("raindrop_links", {})
+            # Old releases wrote identity-only receipts before the outer helper's
+            # metadata check. Recheck our unpublished creates even with a receipt.
+            verify_created = [
+                pid
+                for pid in args.post_id
+                if pid not in local_links
+                and adapter.store.path(f"raindrop-{pid}.create-result.private.json").exists()
+            ]
             for pid in args.post_id:
                 if pid in local_links:
                     local = module.validate_receipt(local_links[pid], pid)
@@ -209,7 +217,9 @@ def run(args):
             )
             try:
                 output.write(progress_name, progress)
-                with adapter.repair_session(args.post_id) as stats:
+                with adapter.repair_session(
+                    args.post_id, verify_created_ids=verify_created
+                ) as stats:
                     progress["provider"] = stats
                     progress["stage"] = "item_verification"
                     output.write(progress_name, progress)

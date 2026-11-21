@@ -319,6 +319,61 @@ def test_cli_rejects_symlinked_state_directory_before_adapter(tmp_path):
         )
 
 
+@pytest.mark.parametrize("alias", [False, True])
+def test_ensure_cli_rejects_catalog_ledger_collision_before_adapter(tmp_path, monkeypatch, alias):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from x_bookmark_migrator import raindrop_cli
+
+    target = tmp_path / "private"
+    target.mkdir()
+    catalog = target
+    if alias:
+        catalog = tmp_path / "alias"
+        catalog.symlink_to(target, target_is_directory=True)
+    constructor = Mock(side_effect=AssertionError("Adapter must not be constructed"))
+    monkeypatch.setattr(raindrop_cli, "RaindropAdapter", constructor)
+    with pytest.raises(PilotError, match="distinct state directories"):
+        raindrop_cli.run(
+            SimpleNamespace(
+                command="raindrop-ensure",
+                catalog_dir=catalog,
+                raindrop_ledger_dir=target,
+                raindrop_script=Path(__file__).resolve(),
+            )
+        )
+    constructor.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "body", [{"result": False}, {"result": True}, {"result": True, "item": []}, []]
+)
+@pytest.mark.parametrize("phase", ["before", "after"])
+def test_note_update_rejects_invalid_get_envelope_and_retains_evidence(tmp_path, body, phase):
+    from unittest.mock import Mock
+
+    adapter = RaindropAdapter(tmp_path / "ledger", Path(__file__).resolve())
+    responses = (
+        [body]
+        if phase == "before"
+        else [
+            {"result": True, "item": item()},
+            {"result": True},
+            body,
+        ]
+    )
+    adapter._call = Mock(side_effect=responses)
+    with pytest.raises(PilotError, match="response_failed"):
+        adapter.replace_note("101", 1, "Updated text")
+    assert adapter._call.call_count == (1 if phase == "before" else 3)
+    retained = [
+        json.loads(path.read_text())["response"]
+        for path in adapter.store.root.glob("raindrop-101.get-*.private.json")
+    ]
+    assert body in retained
+
+
 def test_explicit_note_update_is_primary_bound_and_note_only(tmp_path):
     from unittest.mock import Mock
 
@@ -341,6 +396,7 @@ def test_explicit_note_update_is_primary_bound_and_note_only(tmp_path):
     assert receipt["raindrop_id"] == 42
     assert adapter._call.call_args_list[1].args == ("update-note-json", 42)
     assert adapter._call.call_args_list[1].kwargs == {"payload": {"note": text[:250]}}
+    assert adapter._call.call_count == 3  # GET, note-only PUT, verified GET; no third GET.
     adapter._call = Mock(return_value={"result": True, "item": item(pid="102", rid=42)})
     with pytest.raises(PilotError):
         adapter.replace_note("101", 42, text)
@@ -825,6 +881,44 @@ def test_existing_created_receipt_preserves_later_owner_edits(tmp_path):
     validate_receipt(receipt, "101")
     assert server.active[0]["note"] == "Different content"
     assert len(server.posts) == 1
+
+
+def test_explicit_partial_recheck_does_not_trust_old_identity_receipt(tmp_path):
+    server = SkillServer()
+    adapter = adapter_for(tmp_path, server)
+    original = ensure_in_run(adapter)
+    assert original["disposition"] == "created"
+    saved_receipt = adapter.store.path("raindrop-101.receipt.private.json").read_bytes()
+    server.active[0]["note"] = "Different content after identity-only receipt"
+    for _ in range(2):
+        with pytest.raises(PilotError, match="create_metadata_readback_mismatch"):
+            with adapter.repair_session(["101"], verify_created_ids=["101"]):
+                ensure_in_run(adapter)
+        assert adapter.store.path("raindrop-101.receipt.private.json").read_bytes() == saved_receipt
+    server.active[0]["note"] = "  Synthetic primary text\n"
+    with adapter.repair_session(["101"], verify_created_ids=["101"]):
+        proof = ensure_in_run(adapter)
+    assert proof["disposition"] == "adopted"
+    assert len(server.posts) == 1
+
+
+@pytest.mark.parametrize("active", [False, True])
+def test_explicit_partial_recheck_requires_saved_create_and_never_creates(tmp_path, active):
+    server = SkillServer(active=[item()] if active else [])
+    adapter = adapter_for(tmp_path, server)
+    with pytest.raises(PilotError, match="create_result_required|created_item_missing"):
+        with adapter.repair_session(["101"], verify_created_ids=["101"]):
+            ensure_in_run(adapter)
+    assert not server.posts
+
+
+def test_partial_recheck_scope_must_be_selected_before_inventory(tmp_path):
+    server = SkillServer()
+    adapter = adapter_for(tmp_path, server)
+    with pytest.raises(PilotError, match="metadata_check_outside_selection"):
+        with adapter.repair_session(["101"], verify_created_ids=["102"]):
+            pass
+    assert not server.calls
 
 
 def test_pending_create_result_must_match_selected_active_id(tmp_path):

@@ -25,7 +25,7 @@ backfill receipt format. Review both repository PRs and the source dependency.
 ```python
 adapter = RaindropAdapter(ledger_dir=private_path, script=absolute_skill_script)
 snapshot = adapter.enumerate_now()
-receipt = adapter.ensure_raindrop(pid, source_url, archive_ref, category=category)
+receipt = adapter.ensure_raindrop(pid, source_url, archive_ref, post_text=saved_primary_text)
 proof = adapter.verify_raindrop_now(pid, raindrop_id)
 ```
 
@@ -50,6 +50,8 @@ New pointers use Unsorted, `to-read`, a generic title and the saved primary post
 first 250 Unicode characters as the note. Archive JSON URLs and numeric category
 notes were superseded by the owner's 19 November decision. Full text and category
 evidence stay in the archive. Existing entries receive **no PUT or metadata changes**.
+The legacy `category` argument / `--category` option remains accepted for caller
+compatibility and is validated, but does not affect the Raindrop payload.
 
 Snapshot schema (private `raindrop-inventory.private.json`):
 
@@ -135,10 +137,26 @@ not global duplicate-freedom or comparison of all unrelated metadata.
 
 Resume uses the existing canonical ledger. A prior successful create is adopted
 and freshly verified; a missing local mapping is published without repeating the
-POST. A previous intent with no active match stops instead of automatically
+POST. The repair command explicitly rechecks intended note/title/tags for our
+saved creates without a local mapping, even if a legacy identity-only receipt
+exists. It uses `repair_session(..., verify_created_ids=...)` for that selected
+subset. The create response and exact intent must agree, and a current GET must
+pass before linking. A real mismatch stops without editing the provider item.
+Already-linked entries retain normal adoption behavior, preserving later owner
+edits; possession of an arbitrary old receipt alone is not metadata proof.
+A previous intent with no active match stops instead of automatically
 retrying a possibly successful POST. Conflicts and Trash matches still stop.
 If a POST response was lost, an active match is adopted on fresh identity proof;
 its metadata cannot distinguish our uncertain create from an existing owner edit.
+
+`no_repost` remains effective in default/worker callers as well. An absent match
+requires manual reconciliation: preserve the intent/results, inspect fresh
+active/Trash evidence and any known response, and adopt a unique verified match
+when available. If absence persists, keep the item blocked; any further create
+needs a separately reviewed, explicitly authorized resolution retaining the old
+attempt evidence. There is no automated reset/retry command, and deleting an
+intent or clearing `no_repost` is not the recovery procedure. FOS-169 owns this
+remaining operational step before unattended rollout.
 
 The command checkpoints each provider result before local publication and records
 local completion afterward, before attempting the next item. Failures retain prior
@@ -151,6 +169,14 @@ Readback accepts differences only in note edge whitespace (`strip`); the intende
 payload remains exact `text[:250]`. Internal whitespace/content changes remain
 mismatches. Raw GET evidence is retained privately before validation, so a failed
 check is diagnosable without another sequence of provider calls.
+
+GET evidence is intentionally retained, including successful prospective checks.
+No automatic cleanup is implemented. The operator owns retention; FOS-169 must
+check storage headroom and define reviewed compaction before scheduled operation.
+Keep all failed/uncertain evidence and bodies referenced by receipts/removal
+intents. Any cleanup of redundant successful reads requires verified backup
+coverage and must preserve current proofs; do not prune the ledger by filename
+age alone.
 
 This mode changes historical repair orchestration, not the prospective X removal
 gate. Official [single-item](https://developer.raindrop.io/v1/raindrops/single),

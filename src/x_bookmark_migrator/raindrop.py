@@ -247,7 +247,7 @@ class RaindropAdapter:
         return snapshot
 
     @contextmanager
-    def repair_session(self, selected_ids, *, max_seconds=900):
+    def repair_session(self, selected_ids, *, max_seconds=900, verify_created_ids=()):
         """Route existing ensure callers through one bounded historical run.
 
         Yield the same stats dict exposed as repair_stats. GET/POST counts are
@@ -257,10 +257,14 @@ class RaindropAdapter:
         if self._repair_run is not None:
             raise blocked("repair_session_already_active")
         selected = _selected_ids(selected_ids)
+        verify_created = _selected_ids(verify_created_ids) if verify_created_ids else frozenset()
+        if not verify_created <= selected:
+            raise blocked("metadata_check_outside_selection")
         self.repair_stats = {}
         with self.bounded_inventory(
             max_operations=len(selected), max_age_seconds=max_seconds, post_ids=selected
         ) as run:
+            run.verify_created_ids = verify_created
             self._repair_run = run
             self.repair_stats = run.stats
             try:
@@ -308,7 +312,11 @@ class RaindropAdapter:
         if type(raindrop_id) is not int or raindrop_id <= 0:
             raise blocked("invalid_raindrop_id")
         body = self._get_evidence(pid, raindrop_id)
-        if body.get("result") is not True:
+        if (
+            not isinstance(body, dict)
+            or body.get("result") is not True
+            or not isinstance(body.get("item"), dict)
+        ):
             raise blocked("response_failed", retryable=True)
         item = body.get("item")
         rid, cid = item_identity(item)
@@ -352,18 +360,10 @@ class RaindropAdapter:
         if type(raindrop_id) is not int or raindrop_id <= 0:
             raise blocked("invalid_raindrop_id")
         with self.store.locked():
-            before = self._get_evidence(pid, raindrop_id)["item"]
-            rid, cid = item_identity(before)
-            if (
-                rid != raindrop_id
-                or (cid != -1 and cid <= 0)
-                or before.get("removed", False) is not False
-                or raindrop_post_id(before["link"]) != pid
-            ):
-                raise blocked("inactive_or_wrong_raindrop")
+            _, before = self._verify_item(pid, raindrop_id)
             note = post_text[:250]
-            self._call("update-note-json", rid, payload={"note": note})
-            after = self._get_evidence(pid, rid)["item"]
+            self._call("update-note-json", raindrop_id, payload={"note": note})
+            proof, after = self._verify_item(pid, raindrop_id)
             preserved = (
                 "_id",
                 "link",
@@ -385,7 +385,7 @@ class RaindropAdapter:
                 before.get(key) != after.get(key) for key in preserved
             ):
                 raise blocked("note_update_readback_mismatch")
-            return self.verify_raindrop_now(pid, rid)
+            return proof
 
     def ensure_raindrop(self, pid, source_url, archive_ref, *, category=None, post_text=None):
         """Create at most once plus one reconciled recovery attempt, under one lock."""
@@ -443,6 +443,8 @@ class RaindropAdapter:
                 evidence = run.evidence
             if match["state"] not in ("active", "absent"):
                 raise blocked("dedupe_" + match["state"])
+            if run is not None and pid in run.verify_created_ids and match["state"] != "active":
+                raise blocked("created_item_missing")
             old = self.store.read(base + ".receipt.private.json")
             if old:
                 validate_receipt(old, pid)
@@ -454,8 +456,11 @@ class RaindropAdapter:
             verify_created_metadata = False
             if match["state"] == "active":
                 rid = match["raindrop_ids"][0]
-                if not old:
+                explicit_check = run is not None and pid in run.verify_created_ids
+                if not old or explicit_check:
                     created = self.store.read(base + ".create-result.private.json")
+                    if explicit_check and created is None:
+                        raise blocked("create_result_required")
                     if created is not None:
                         try:
                             created_rid, _ = item_identity(created["response"]["item"])
@@ -611,6 +616,7 @@ class _InventoryRun:
         self.deadline = deadline
         self.closed = False
         self.selection = selection
+        self.verify_created_ids = frozenset()
         self.stats = {
             "inventory_operations": 1,
             "baseline_pages_per_pass": {
