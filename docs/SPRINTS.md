@@ -92,6 +92,57 @@ content goes to public fixtures.
 
 **M2. Trackers: FOS-216, FOS-166, FOS-169.**
 
+### 21 November — efficient repair and migration checkpoint
+
+Recovery/independent restore/cleanup and publication of the captured 103 records /
+117 media are complete. OpenClaw/Mnemosyne retrieval is owner-attested. The older
+S1 pause and S2 pilot instructions below are historical where these results
+supersede them; do not repeat them.
+
+Of 25 known historical removals, 19 have completed Raindrop/local-link repair,
+one has a created, identity-verified pointer without completed local publication,
+and five are unprocessed. The partial record's saved create response differs from
+its exact intended note only in edge whitespace. The stopped run and all original
+receipts remain preserved. Removal-source coverage is owner-attested; helper
+retirement is separate.
+
+**Current deliverable:** improve the existing shared adapter and repair command
+before live continuation, rather than adding another temporary migration engine.
+
+- One real complete active/Trash inventory at run start, retaining the existing
+  two-pass pagination validation; targeted GET per affected item afterward.
+  Run-local matches must not masquerade as a newly observed full inventory.
+- Compare note readback after stripping edge whitespace only. Preserve the exact
+  `text[:250]` intent/payload and complete immutable source text. Internal content
+  changes still stop. Preserve existing entries on adoption.
+- Resume from durable provider receipts and repair missing local mappings without
+  another POST. An uncertain prior POST with no active match stops for resolution;
+  absence is not permission to retry automatically in this repair mode.
+- Save private GET evidence before validation and checkpoint each verified item
+  before attempting the next. A publication failure stops further creates; resume
+  repairs the local projection. Report phases, counts and the actual request budget.
+- Bound the run and hold the existing shared ledger lock. Other account writers
+  must remain paused. This proves selected-item readback, not a transactional
+  server snapshot, global duplicate-freedom or an unrelated-metadata comparison.
+
+**Code exit tests:** one inventory operation for multiple items; trimmed notes
+accepted but changed internal text rejected; existing metadata not overwritten;
+Trash/duplicate conflicts; uncertain POST with no retry; create-before-publication
+and publication-before-completion crashes resume without duplicate creates; raw
+failure evidence retained; no further writes after a stop; full regression checks.
+Independent review and owner-run protected execution remain distinct evidence.
+
+**Then advance the migration:** finish selected-item reconciliation/local links
+for the historical 25, complete helper retirement and the existing worker's
+current-policy acceptance, then the 32 archived-complete main records and measured
+blocker fixes. Prior blocker counts overlap: missing author 18, missing media 10,
+unsupported media expansion 9, missing reference 7, byte limit 7, partial API
+response 3, Article completeness 2 and media-count bound 2. Start with retained
+evidence and fixable classes; seven byte-limit cases had no other recorded blocker.
+Recheck affected official X contracts before changing source integration or
+incurring new reads. Retain the existing budget and history-window stop rules.
+Full-history coverage, sustained intake/backups and search acceptance stay open.
+
 ### 19 November formatting checkpoint
 
 Owner-approved default for subsequent migration:

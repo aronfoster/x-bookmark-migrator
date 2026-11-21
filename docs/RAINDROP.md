@@ -45,10 +45,11 @@ private URL. Changing which X paths may be ignored requires a shared-parser cont
 change coordinated with FOS-216, not a second parser in this adapter.
 
 `archive_ref` is either a concise archive URL or a dict containing exactly
-`manifest` and `payload` receipt objects. The structured form is retained privately;
-only its payload Drive URL is sent in the short note. New pointers use Unsorted,
-`to-read`, a generic title, archive link and optional original category. Full post
-text stays in the archive. Existing entries receive **no PUT or metadata changes**.
+`manifest` and `payload` receipt objects. The structured form is retained privately.
+New pointers use Unsorted, `to-read`, a generic title and the saved primary post's
+first 250 Unicode characters as the note. Archive JSON URLs and numeric category
+notes were superseded by the owner's 19 November decision. Full text and category
+evidence stay in the archive. Existing entries receive **no PUT or metadata changes**.
 
 Snapshot schema (private `raindrop-inventory.private.json`):
 
@@ -68,6 +69,10 @@ Receipt/proof schema v1: `source_post_id`, `source_post_url`, integer
 `raindrop_id`, `verified_at`, original `primary_link`, active integer
 `collection_id`, and SHA-256 `response_sha256`. Ensure receipts add `archive_ref`,
 `disposition` (`created` or `adopted`), `coverage`, and `inventory_sha256`.
+Bounded repair receipts instead name these two fields `baseline_coverage` and
+`baseline_inventory_sha256`, so the initial inventory cannot be mistaken for a
+post-write observation. Identity/readback fields and the canonical receipt path
+are shared with the default path.
 Receipt filenames are `raindrop-<pid>.receipt.private.json`. Fresh verifier proofs
 are stored in the X removal intent, not substituted with an old receipt.
 
@@ -107,10 +112,53 @@ The adapter passes `--delay 600` for every operation; list-all forwards that del
 to every page request. Standalone list-all also defaults to 600ms. This limits one
 sequential migrator to at most 100 requests/minute, leaving headroom below 120/min;
 other account clients can still consume that headroom and cause a safe 429 stop.
-Full scans remain per-item; no stale batch snapshot is reused for absence decisions.
+The default prospective path retains per-item full scans. Historical repair uses
+the explicitly bounded session below rather than repeating the pilot checks.
 The prospective transaction stops the batch on retryable provider failures.
 No X DELETE follows an import/readback failure. Raindrop reads are outside X's
 paid-call ledger; actual provider/billing behavior remains separately observed.
+
+### Historical repair: one inventory per bounded run
+
+The repair command uses a shared-adapter `repair_session` around its selected
+primaries. It holds the same ledger lock and takes one validated active/Trash
+inventory at entry. The existing helper internally makes two pagination passes;
+one inventory operation does **not** mean one HTTP request or one pagination pass.
+Afterward, only selected items receive targeted GETs and, when genuinely absent
+with no previous intent, a create. No closing whole-library scan is required.
+
+The session's in-memory matching state is not a fresh provider inventory and is
+never published as one. A new invocation gets a new inventory. Keep other account
+writers paused during the bounded run: the API does not provide a transactional
+snapshot or a documented create idempotency key. We claim selected-item readback,
+not global duplicate-freedom or comparison of all unrelated metadata.
+
+Resume uses the existing canonical ledger. A prior successful create is adopted
+and freshly verified; a missing local mapping is published without repeating the
+POST. A previous intent with no active match stops instead of automatically
+retrying a possibly successful POST. Conflicts and Trash matches still stop.
+If a POST response was lost, an active match is adopted on fresh identity proof;
+its metadata cannot distinguish our uncertain create from an existing owner edit.
+
+The command checkpoints each provider result before local publication and records
+local completion afterward, before attempting the next item. Failures retain prior
+progress. Re-running the same authorized selection repairs an interrupted local
+publication; a different existing local Raindrop association still blocks.
+Progress goes to stderr; the final summary remains JSON. Original stopped private
+helpers are preserved as evidence and must not be blindly rerun.
+
+Readback accepts differences only in note edge whitespace (`strip`); the intended
+payload remains exact `text[:250]`. Internal whitespace/content changes remain
+mismatches. Raw GET evidence is retained privately before validation, so a failed
+check is diagnosable without another sequence of provider calls.
+
+This mode changes historical repair orchestration, not the prospective X removal
+gate. Official [single-item](https://developer.raindrop.io/v1/raindrops/single),
+[listing](https://developer.raindrop.io/v1/raindrops/multiple) and
+[rate-limit](https://developer.raindrop.io/#rate-limiting) references were rechecked
+21 November 2026. Whitespace tolerance, quiet-window batching and completeness
+validation are local policies; the saved whitespace difference is observed
+provider behavior, not a documented normalization guarantee.
 
 ## Prospective transaction
 

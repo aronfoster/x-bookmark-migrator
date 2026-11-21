@@ -287,6 +287,59 @@ def test_backfill_only_calls_shared_ensure_for_removed_and_unknown(corpus, tmp_p
     assert "payload" in adapter.calls[0][2]
 
 
+def test_backfill_checkpoints_each_item_before_next_provider_write(corpus, tmp_path):
+    _, report = audit(corpus, tmp_path)
+    adapter = Adapter()
+    checkpoints = []
+
+    def checkpoint(entry):
+        checkpoints.append((entry["source_post_id"], len(adapter.calls)))
+
+    backfill(report, adapter, ["101", "102"], confirmed=True, on_result=checkpoint)
+    assert checkpoints == [("101", 1), ("102", 2)]
+
+
+def test_backfill_publication_failure_stops_before_next_create(corpus, tmp_path):
+    _, report = audit(corpus, tmp_path)
+    adapter = Adapter()
+
+    def failed_publication(entry):
+        raise OSError("synthetic disk failure")
+
+    with pytest.raises(OSError, match="synthetic disk failure"):
+        backfill(report, adapter, ["101", "102"], confirmed=True, on_result=failed_publication)
+    assert [call[0] for call in adapter.calls] == ["101"]
+
+
+def test_backfill_metadata_mismatch_reports_only_safe_fields(corpus, tmp_path):
+    _, report = audit(corpus, tmp_path)
+
+    class Failed:
+        def ensure_raindrop(self, *args, **kwargs):
+            raise PilotError(
+                "Synthetic mismatch",
+                summary={
+                    "reason": "create_metadata_readback_mismatch",
+                    "metadata_mismatch": {
+                        "note": True,
+                        "title": False,
+                        "tags": False,
+                        "note_actual_length": 249,
+                        "note_expected_length": 250,
+                        "note_equal_after_strip": False,
+                        "raw_note": "PRIVATE CONTENT",
+                    },
+                },
+            )
+
+    result = backfill(report, Failed(), ["101", "102"], confirmed=True)
+    assert result["summary"]["blocked"]
+    assert result["summary"]["processed"] == 1
+    detail = result["results"][0]["metadata_mismatch"]
+    assert detail["note"] and detail["note_actual_length"] == 249
+    assert "PRIVATE" not in json.dumps(result) and "raw_note" not in detail
+
+
 @pytest.mark.parametrize("error", ["http_401", "http_429", "partial_inventory", "create_unknown"])
 def test_backfill_no_retry_on_provider_error(corpus, tmp_path, error):
     _, report = audit(corpus, tmp_path)
@@ -742,7 +795,8 @@ def test_overlapping_output_rejected_before_writes_or_provider(
         repair_cli.run(args)
 
 
-def test_backfill_reruns_keep_paired_reports_and_create_once(corpus, tmp_path, monkeypatch):
+@pytest.mark.parametrize("crash", [None, "before_link", "after_link"])
+def test_backfill_reruns_keep_paired_reports_and_create_once(corpus, tmp_path, monkeypatch, crash):
     from test_raindrop import SkillServer, adapter_for
 
     from x_bookmark_migrator import repair_cli
@@ -774,6 +828,25 @@ def test_backfill_reruns_keep_paired_reports_and_create_once(corpus, tmp_path, m
     adapter = adapter_for(tmp_path, server)
     module = repair_cli.shared_raindrop()
     monkeypatch.setattr(module, "RaindropAdapter", lambda *a: adapter)
+    if crash:
+        original_link = repair_cli.link_raindrop
+
+        def interrupted_link(*args):
+            if crash == "after_link":
+                original_link(*args)
+            raise OSError("synthetic publication interruption")
+
+        monkeypatch.setattr(repair_cli, "link_raindrop", interrupted_link)
+        with pytest.raises(OSError, match="synthetic publication"):
+            repair_cli.run(args)
+        assert len(server.posts) == 1
+        assert adapter.store.read("raindrop-101.receipt.private.json")
+        checkpoint = next(args.output_dir.glob("repair-progress-*.private.json"))
+        saved = json.loads(checkpoint.read_text())
+        assert saved["results"][0]["state"] == "verified"
+        assert not saved["complete"]
+        assert not saved["results"][0].get("local_link_persisted")
+        monkeypatch.setattr(repair_cli, "link_raindrop", original_link)
     assert repair_cli.run(args)["verified"] == 1
     assert read_catalog(catalog)[-1] == extra
     original = {p.name: p.read_bytes() for p in args.output_dir.glob("*.private.json")}
@@ -781,11 +854,19 @@ def test_backfill_reruns_keep_paired_reports_and_create_once(corpus, tmp_path, m
     assert len(read_catalog(catalog)) == 4
     assert read_catalog(catalog)[0]["raindrop_id"] == server.active[0]["_id"]
     assert len(server.posts) == 1
+    assert sum(c[0] == ("list-all",) for c in server.calls) == (3 if crash else 2)
     reports = list(args.output_dir.glob("repair-backfill-*.private.json"))
     assert len(reports) == 2
     for report in reports:
         assert report.with_name(report.name.replace("backfill", "audit")).exists()
     assert all((args.output_dir / name).read_bytes() == raw for name, raw in original.items())
+    notes = catalog.read("annotations.private.json")
+    notes["raindrop_links"]["101"]["raindrop_id"] += 1000
+    catalog.write("annotations.private.json", notes)
+    calls_before = list(server.calls)
+    with pytest.raises(PilotError, match="Conflicting local and ledger"):
+        repair_cli.run(args)
+    assert server.calls == calls_before
 
 
 @pytest.mark.parametrize("value", [True, -1, "-1", "1.5", "1e2", "９９", "9" * 21, "PRIVATE"])

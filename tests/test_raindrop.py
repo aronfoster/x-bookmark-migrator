@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from x_bookmark_migrator.core import PilotError
+from x_bookmark_migrator.drive import digest, encode
 from x_bookmark_migrator.raindrop import (
     RaindropAdapter,
     inspect_inventory,
@@ -126,6 +127,7 @@ def test_existing_alias_metadata_untouched_zero_create(tmp_path, link):
         validate_receipt(receipt, "101")
     assert not server.posts and server.active == [existing]
     assert len([c for c in server.calls if c[0][0] == "get"]) == 2
+    assert len([c for c in server.calls if c[0] == ("list-all",)]) == 2
 
 
 def test_post_then_crash_recovers_exact_receipt_without_duplicate(tmp_path):
@@ -398,3 +400,459 @@ def test_missing_text_and_changed_recovery_note_never_post(tmp_path):
             "101", "https://x.com/i/status/101", "https://archive.invalid", post_text="New text"
         )
     assert not server.posts
+
+
+def ensure_in_run(run, pid="101"):
+    return run.ensure_raindrop(
+        pid,
+        f"https://x.com/i/status/{pid}",
+        "https://archive.invalid",
+        post_text="Synthetic primary text",
+    )
+
+
+def saved_gets(adapter, pid="101"):
+    return [
+        adapter.store.read(path.name)
+        for path in sorted(adapter.store.root.glob(f"raindrop-{pid}.get-*.private.json"))
+    ]
+
+
+def test_bounded_inventory_one_baseline_and_fresh_get_per_operation(tmp_path):
+    existing = item()
+    server = SkillServer([existing])
+    adapter = adapter_for(tmp_path, server)
+    baseline = snapshot([existing])
+    with adapter.bounded_inventory(max_operations=3) as run:
+        receipts = [ensure_in_run(run, pid) for pid in ("101", "102", "102")]
+        # The baseline remains the actual enumeration, not invented completeness.
+        assert adapter.store.read("raindrop-inventory.private.json") == baseline
+        assert run.match("102") == {"state": "active", "raindrop_ids": [1001]}
+    assert [c[0][0] for c in server.calls] == ["list-all", "get", "add-json", "get", "get"]
+    assert server.active[0] == existing
+    for receipt in receipts:
+        validate_receipt(receipt, receipt["source_post_id"])
+        assert "coverage" not in receipt and "inventory_sha256" not in receipt
+        assert receipt["baseline_coverage"] == baseline["coverage"]
+        assert receipt["baseline_inventory_sha256"] == receipts[0]["baseline_inventory_sha256"]
+    with pytest.raises(PilotError, match="inventory_run_closed"):
+        ensure_in_run(run)
+
+
+def test_bounded_crash_requires_new_inventory_then_adopts_without_post(tmp_path):
+    server = SkillServer()
+    adapter = adapter_for(tmp_path, server)
+    server.crash_after_post = True
+    with adapter.bounded_inventory(max_operations=3) as run:
+        with pytest.raises(RuntimeError):
+            ensure_in_run(run)
+        assert run.match("101")["state"] == "absent"
+        with pytest.raises(PilotError, match="inventory_run_closed"):
+            ensure_in_run(run)
+    assert adapter.store.read("raindrop-101.intent.private.json")["no_repost"] is True
+    fresh = adapter_for(tmp_path, server)
+    with fresh.bounded_inventory(max_operations=1) as resumed:
+        receipt = ensure_in_run(resumed)
+    assert receipt["disposition"] == "adopted"
+    assert [c[0][0] for c in server.calls] == ["list-all", "add-json", "list-all", "get"]
+
+
+@pytest.mark.parametrize("legacy_intent", [False, True])
+def test_bounded_uncertain_absence_never_reposts_on_resume(tmp_path, legacy_intent):
+    server = SkillServer()
+    adapter = adapter_for(tmp_path, server)
+    original = adapter._call
+    post_attempts = []
+
+    def uncertain(*args, **kwargs):
+        if args == ("add-json",):
+            post_attempts.append(args)
+            raise PilotError("unknown outcome")
+        return original(*args, **kwargs)
+
+    adapter._call = uncertain
+    if legacy_intent:
+        with pytest.raises(PilotError):
+            adapter.ensure_raindrop("101", "https://x.com/i/status/101", "https://archive.invalid")
+    else:
+        with adapter.bounded_inventory(max_operations=1) as run, pytest.raises(PilotError):
+            ensure_in_run(run)
+    for _ in range(2):
+        with adapter.bounded_inventory(max_operations=1) as run:
+            with pytest.raises(PilotError, match="uncertain_create_requires_reconciliation"):
+                ensure_in_run(run)
+    if not legacy_intent:
+        with pytest.raises(PilotError, match="uncertain_create_requires_reconciliation"):
+            adapter.ensure_raindrop("101", "https://x.com/i/status/101", "https://archive.invalid")
+    assert len(post_attempts) == 1
+    assert adapter.store.read("raindrop-101.intent.private.json")["attempts"] == 1
+
+
+@pytest.mark.parametrize("fault", ["duplicates", "trash", "both"])
+def test_bounded_baseline_conflicts_block_without_get_or_post(tmp_path, fault):
+    server = SkillServer(
+        active=[item(), item(rid=2)]
+        if fault == "duplicates"
+        else [item()]
+        if fault == "both"
+        else [],
+        trash=[item(rid=3, cid=-99)] if fault in ("trash", "both") else [],
+    )
+    adapter = adapter_for(tmp_path, server)
+    with adapter.bounded_inventory(max_operations=1) as run, pytest.raises(PilotError):
+        ensure_in_run(run)
+    assert server.calls == [(("list-all",), None)]
+
+
+def test_bounded_previous_receipt_not_recreated(tmp_path):
+    server = SkillServer([item()])
+    adapter = adapter_for(tmp_path, server)
+    with adapter.bounded_inventory(max_operations=1) as run:
+        ensure_in_run(run)
+    server.active.clear()
+    with adapter.bounded_inventory(max_operations=1) as run:
+        with pytest.raises(PilotError, match="previous_receipt_conflicts"):
+            ensure_in_run(run)
+    assert not server.posts
+
+
+def test_bounded_expired_baseline_never_posts(tmp_path, monkeypatch):
+    clock = [0]
+    monkeypatch.setattr("x_bookmark_migrator.raindrop.time.monotonic", lambda: clock[0])
+    server = SkillServer()
+    adapter = adapter_for(tmp_path, server)
+    with adapter.bounded_inventory(max_operations=1, max_age_seconds=10) as run:
+        clock[0] = 10
+        with pytest.raises(PilotError, match="inventory_baseline_expired"):
+            ensure_in_run(run)
+    assert server.calls == [(("list-all",), None)]
+    assert adapter.store.read("raindrop-101.intent.private.json") is None
+
+
+def test_bounded_operation_limit_and_ledger_lock(tmp_path):
+    server = SkillServer([item()])
+    adapter = adapter_for(tmp_path, server)
+    with adapter.bounded_inventory(max_operations=1) as run:
+        with pytest.raises(PilotError, match="Another command"):
+            adapter.ensure_raindrop("101", "https://x.com/i/status/101", "https://archive.invalid")
+        ensure_in_run(run)
+        with pytest.raises(PilotError, match="inventory_operation_bound_exhausted"):
+            ensure_in_run(run)
+    assert [c[0][0] for c in server.calls] == ["list-all", "get"]
+
+
+def test_bounded_checks_age_again_after_durable_intent_before_post(tmp_path, monkeypatch):
+    clock = [0]
+    monkeypatch.setattr("x_bookmark_migrator.raindrop.time.monotonic", lambda: clock[0])
+    server = SkillServer()
+    adapter = adapter_for(tmp_path, server)
+    original = adapter.store.write
+
+    def slow_write(name, value):
+        original(name, value)
+        if name.endswith(".intent.private.json"):
+            clock[0] = 10
+
+    monkeypatch.setattr(adapter.store, "write", slow_write)
+    with adapter.bounded_inventory(max_operations=1, max_age_seconds=10) as run:
+        with pytest.raises(PilotError, match="inventory_baseline_expired"):
+            ensure_in_run(run)
+    assert not server.posts
+    assert adapter.store.read("raindrop-101.intent.private.json")["no_repost"] is True
+
+
+def test_bounded_rejects_incomplete_baseline_before_yield(tmp_path):
+    server = SkillServer()
+    server.bad_inventory = snapshot()
+    server.bad_inventory["coverage"]["complete"] = False
+    adapter = adapter_for(tmp_path, server)
+    with pytest.raises(PilotError, match="incomplete_enumeration"):
+        with adapter.bounded_inventory(max_operations=1):
+            pytest.fail("Incomplete provider inventory must never become a run")
+    assert server.calls == [(("list-all",), None)]
+
+
+def test_bounded_selection_is_frozen_and_rejects_unselected_post(tmp_path):
+    server = SkillServer([item()])
+    adapter = adapter_for(tmp_path, server)
+    selected = ["101"]
+    with adapter.bounded_inventory(max_operations=2, post_ids=selected) as run:
+        selected.append("102")
+        ensure_in_run(run)
+        with pytest.raises(PilotError, match="post_outside_inventory_selection"):
+            ensure_in_run(run, "102")
+    assert [c[0][0] for c in server.calls] == ["list-all", "get"]
+
+
+@pytest.mark.parametrize("selection", [[], "101", [101]])
+def test_bounded_invalid_selection_never_enumerates(tmp_path, selection):
+    server = SkillServer()
+    adapter = adapter_for(tmp_path, server)
+    with pytest.raises(PilotError):
+        with adapter.bounded_inventory(max_operations=1, post_ids=selection):
+            pytest.fail("Invalid selection must fail before enumeration")
+    assert not server.calls
+
+
+def test_repair_session_routes_existing_adapter_calls_and_reports_counts(tmp_path):
+    server = SkillServer([item()])
+    adapter = adapter_for(tmp_path, server)
+    with adapter.repair_session(["101", "102"], max_seconds=60) as stats:
+        for pid in ("101", "102"):
+            adapter.ensure_raindrop(pid, f"https://x.com/i/status/{pid}", "https://archive.invalid")
+        assert stats is adapter.repair_stats
+    assert stats == {
+        "inventory_operations": 1,
+        "baseline_pages_per_pass": {"active": 1, "trash": 1},
+        "baseline_stable_passes": 2,
+        "get_attempts": 2,
+        "post_attempts": 1,
+    }
+    assert [c[0][0] for c in server.calls] == ["list-all", "get", "add-json", "get"]
+    adapter.ensure_raindrop("101", "https://x.com/i/status/101", "https://archive.invalid")
+    assert [c[0][0] for c in server.calls[-2:]] == ["list-all", "get"]
+    assert stats["get_attempts"] == 2
+
+
+def test_repair_session_crash_stats_and_fresh_resume(tmp_path):
+    server = SkillServer()
+    adapter = adapter_for(tmp_path, server)
+    server.crash_after_post = True
+    with pytest.raises(RuntimeError):
+        with adapter.repair_session(["101"]):
+            adapter.ensure_raindrop("101", "https://x.com/i/status/101", "https://archive.invalid")
+    assert adapter.repair_stats["post_attempts"] == 1
+    assert adapter.repair_stats["get_attempts"] == 0
+    with adapter.repair_session(["101"]):
+        receipt = adapter.ensure_raindrop(
+            "101", "https://x.com/i/status/101", "https://archive.invalid"
+        )
+    assert receipt["disposition"] == "adopted"
+    assert adapter.repair_stats["post_attempts"] == 0
+    assert adapter.repair_stats["get_attempts"] == 1
+    assert len([c for c in server.calls if c[0] == ("list-all",)]) == 2
+
+
+@pytest.mark.parametrize(
+    "field,value,accepted",
+    [
+        ("note", "\n Synthetic primary text \t", True),
+        ("note", "Synthetic  primary text", False),
+        ("note", None, False),
+        ("title", "Wrong title", False),
+        ("tags", ["other"], False),
+        ("link", "https://x.com/i/status/999", False),
+    ],
+)
+def test_created_metadata_verified_from_saved_get_before_index_update(
+    tmp_path, field, value, accepted
+):
+    server = SkillServer()
+    adapter = adapter_for(tmp_path, server)
+    original = adapter._call
+
+    def changed_get(*args, **kwargs):
+        response = original(*args, **kwargs)
+        if args[0] == "get":
+            response["item"][field] = value
+        return response
+
+    adapter._call = changed_get
+    with adapter.bounded_inventory(max_operations=1) as run:
+        if accepted:
+            ensure_in_run(run)
+            assert run.match("101")["state"] == "active"
+        else:
+            with pytest.raises(PilotError):
+                ensure_in_run(run)
+            assert run.match("101")["state"] == "absent"
+            assert adapter.store.read("raindrop-101.receipt.private.json") is None
+    saved = saved_gets(adapter)[-1]
+    assert saved["response"]["item"][field] == value
+    assert len(server.posts) == 1
+
+
+@pytest.mark.parametrize("note,accepted", [(" \nnew\ntext \t", True), ("new text", False)])
+def test_note_update_only_tolerates_edge_whitespace(tmp_path, note, accepted):
+    from unittest.mock import Mock
+
+    adapter = RaindropAdapter(tmp_path / "ledger", Path(__file__).resolve())
+    before = item()
+    after = {**before, "note": note}
+    adapter._call = Mock(
+        side_effect=[
+            {"result": True, "item": before},
+            {"result": True},
+            {"result": True, "item": after},
+            {"result": True, "item": after},
+        ]
+    )
+    if accepted:
+        adapter.replace_note("101", 1, "new\ntext")
+    else:
+        with pytest.raises(PilotError, match="note_update_readback_mismatch"):
+            adapter.replace_note("101", 1, "new\ntext")
+    assert any(saved["response"]["item"] == after for saved in saved_gets(adapter))
+
+
+@pytest.mark.parametrize("selection", [["101", "101"], [str(i) for i in range(101)]])
+def test_repair_session_rejects_duplicates_and_oversized_selection(tmp_path, selection):
+    server = SkillServer()
+    adapter = adapter_for(tmp_path, server)
+    with pytest.raises(PilotError):
+        with adapter.repair_session(selection):
+            pytest.fail("Invalid selection must fail before inventory")
+    assert not server.calls
+
+
+def test_bounded_operation_cap_never_enumerates(tmp_path):
+    server = SkillServer()
+    adapter = adapter_for(tmp_path, server)
+    with pytest.raises(PilotError):
+        with adapter.bounded_inventory(max_operations=101):
+            pytest.fail("Oversized operation bound must fail before inventory")
+    assert not server.calls
+
+
+def test_failed_metadata_evidence_survives_successful_resume_with_safe_diagnostics(tmp_path):
+    server = SkillServer()
+    adapter = adapter_for(tmp_path, server)
+    original = adapter._call
+    private_note = "Synthetic  primary text"
+
+    def content_changed(*args, **kwargs):
+        response = original(*args, **kwargs)
+        if args[0] == "get":
+            response["item"]["note"] = private_note
+        return response
+
+    adapter._call = content_changed
+    with pytest.raises(PilotError) as exc:
+        with adapter.repair_session(["101"]):
+            ensure_in_run(adapter)
+    diagnostics = exc.value.summary["metadata_mismatch"]
+    assert diagnostics == {
+        "note": True,
+        "title": False,
+        "tags": False,
+        "note_actual_length": len(private_note),
+        "note_expected_length": len("Synthetic primary text"),
+        "note_equal_after_strip": False,
+    }
+    assert private_note not in json.dumps(exc.value.summary)
+    prior = saved_gets(adapter)
+    assert len(prior) == 1
+    assert prior[0]["response"]["item"]["note"] == private_note
+    adapter._call = original
+    with adapter.repair_session(["101"]):
+        receipt = ensure_in_run(adapter)
+    retained = saved_gets(adapter)
+    assert len(retained) == 2
+    assert prior[0] in retained
+    assert any(
+        digest(encode(entry["response"])) == receipt["response_sha256"] for entry in retained
+    )
+    assert len(server.posts) == 1
+
+
+@pytest.mark.parametrize("bounded", [False, True])
+def test_own_unverified_create_resume_checks_metadata_until_receipt_then_preserves_edits(
+    tmp_path, bounded
+):
+    from contextlib import nullcontext
+
+    server = SkillServer()
+    adapter = adapter_for(tmp_path, server)
+    original = adapter._call
+
+    def changed_create(*args, **kwargs):
+        response = original(*args, **kwargs)
+        if args == ("add-json",):
+            server.active[0]["note"] = "Different content"
+        return response
+
+    adapter._call = changed_create
+    for _ in range(2):
+        with pytest.raises(PilotError, match="create_metadata_readback_mismatch"):
+            with adapter.repair_session(["101"]) if bounded else nullcontext():
+                ensure_in_run(adapter)
+        assert adapter.store.read("raindrop-101.receipt.private.json") is None
+    assert len(server.posts) == 1
+    server.active[0]["note"] = " \nSynthetic primary text\t"
+    with adapter.repair_session(["101"]) if bounded else nullcontext():
+        receipt = ensure_in_run(adapter)
+    validate_receipt(receipt, "101")
+    server.active[0].update(note="Later owner edit", title="Owner title", tags=["owner"])
+    with adapter.repair_session(["101"]) if bounded else nullcontext():
+        receipt = ensure_in_run(adapter)
+    validate_receipt(receipt, "101")
+    assert server.active[0]["note"] == "Later owner edit"
+    assert len(server.posts) == 1
+    assert len(saved_gets(adapter)) == 4
+
+
+@pytest.mark.parametrize("change", ["note", "identity", "archive"])
+def test_own_pending_metadata_resume_requires_original_intent_binding(tmp_path, change):
+    server = SkillServer()
+    adapter = adapter_for(tmp_path, server)
+    server.bad_get = {"result": True, "item": item(rid=1000)}
+    with pytest.raises(PilotError, match="create_metadata_readback_mismatch"):
+        with adapter.repair_session(["101"]):
+            ensure_in_run(adapter)
+    server.bad_get = None
+    intent = adapter.store.read("raindrop-101.intent.private.json")
+    key, value = {
+        "note": ("note", "Different intended content"),
+        "identity": ("source_post_id", "999"),
+        "archive": ("archive_ref", "https://different.invalid"),
+    }[change]
+    intent[key] = value
+    adapter.store.write("raindrop-101.intent.private.json", intent)
+    with pytest.raises(PilotError, match="intent_conflict"):
+        with adapter.repair_session(["101"]):
+            ensure_in_run(adapter)
+    assert len(server.posts) == 1
+
+
+def test_existing_created_receipt_preserves_later_owner_edits(tmp_path):
+    server = SkillServer()
+    adapter = adapter_for(tmp_path, server)
+    receipt = ensure_in_run(adapter)
+    validate_receipt(receipt, "101")
+    server.active[0]["note"] = "Different content"
+    with adapter.repair_session(["101"]):
+        receipt = ensure_in_run(adapter)
+    validate_receipt(receipt, "101")
+    assert server.active[0]["note"] == "Different content"
+    assert len(server.posts) == 1
+
+
+def test_pending_create_result_must_match_selected_active_id(tmp_path):
+    server = SkillServer()
+    adapter = adapter_for(tmp_path, server)
+    server.bad_get = {"result": True, "item": item(rid=1000)}
+    with pytest.raises(PilotError, match="create_metadata_readback_mismatch"):
+        with adapter.repair_session(["101"]):
+            ensure_in_run(adapter)
+    server.bad_get = None
+    server.active[0]["_id"] = 2000
+    with pytest.raises(PilotError, match="create_result_conflict"):
+        with adapter.repair_session(["101"]):
+            ensure_in_run(adapter)
+    assert len(saved_gets(adapter)) == 1
+    assert len(server.posts) == 1
+
+
+def test_unknown_post_without_saved_response_adopts_identity_preserving_note(tmp_path):
+    server = SkillServer()
+    adapter = adapter_for(tmp_path, server)
+    server.crash_after_post = True
+    with pytest.raises(RuntimeError):
+        with adapter.repair_session(["101"]):
+            ensure_in_run(adapter)
+    server.active[0]["note"] = "Owner content"
+    with adapter.repair_session(["101"]):
+        receipt = ensure_in_run(adapter)
+    assert receipt["disposition"] == "adopted"
+    assert server.active[0]["note"] == "Owner content"
+    assert len(server.posts) == 1
