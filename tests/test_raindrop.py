@@ -3,6 +3,7 @@
 import copy
 import json
 import subprocess
+from functools import partial
 from pathlib import Path
 
 import pytest
@@ -79,6 +80,7 @@ class SkillServer:
 def adapter_for(tmp_path, server):
     adapter = RaindropAdapter(tmp_path / "raindrop", Path(__file__).resolve())
     adapter._call = server.call
+    adapter.ensure_raindrop = partial(adapter.ensure_raindrop, post_text="Synthetic primary text")
     server.adapter = adapter
     return adapter
 
@@ -350,3 +352,49 @@ def test_explicit_note_update_is_primary_bound_and_note_only(tmp_path):
     )
     with pytest.raises(PilotError):
         adapter.replace_note("101", 42, text)
+
+
+@pytest.mark.parametrize("text", ["Short post", "🔥\n" * 200])
+def test_new_create_uses_only_primary_text_and_preserves_adopted_note(tmp_path, text):
+    server = SkillServer()
+    adapter = adapter_for(tmp_path, server)
+    adapter.ensure_raindrop(
+        "101",
+        "https://x.com/i/status/101",
+        "https://archive.invalid",
+        category="123456789",
+        post_text=text,
+    )
+    assert server.posts[0][1]["note"] == text[:250]
+    server.active[0]["note"] = "Owner edited this"
+    adapter.ensure_raindrop(
+        "101", "https://x.com/i/status/101", "https://archive.invalid", post_text="Changed"
+    )
+    assert len(server.posts) == 1 and server.active[0]["note"] == "Owner edited this"
+
+
+def test_missing_text_and_changed_recovery_note_never_post(tmp_path):
+    server = SkillServer()
+    adapter = adapter_for(tmp_path, server)
+    with pytest.raises(PilotError):
+        adapter.ensure_raindrop(
+            "101", "https://x.com/i/status/101", "https://archive.invalid", post_text=None
+        )
+    assert not server.posts
+    assert adapter.store.read("raindrop-101.intent.private.json") is None
+    adapter.store.write(
+        "raindrop-101.intent.private.json",
+        {
+            "schema_version": 1,
+            "source_post_id": "101",
+            "source_post_url": "https://x.com/i/status/101",
+            "archive_ref": "https://archive.invalid",
+            "attempts": 1,
+            "note": "Different original note",
+        },
+    )
+    with pytest.raises(PilotError):
+        adapter.ensure_raindrop(
+            "101", "https://x.com/i/status/101", "https://archive.invalid", post_text="New text"
+        )
+    assert not server.posts

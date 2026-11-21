@@ -316,7 +316,9 @@ def test_catalog_merge_keeps_all_versions_and_owner_annotations(migration, tmp_p
     assert result[0]["versions"][0]["media"][0]["browse_visibility"] == "hidden"
     w = make_worker(migration, tmp_path)
     assert w.run(allow_delete=True)["stop_reason"] is None
-    assert catalog.path("annotations.private.json").read_bytes() == before
+    annotations = catalog.read("annotations.private.json")
+    assert annotations.pop("raindrop_links")
+    assert annotations == json.loads(before)
 
 
 def test_corrupt_external_archive_prevents_every_delete(migration, tmp_path):

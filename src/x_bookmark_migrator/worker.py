@@ -15,7 +15,14 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from .archive import archive_batch, enrich_references, restore_batch
-from .catalog import apply_annotations, build, publish, read_catalog
+from .catalog import (
+    apply_annotations,
+    build,
+    link_raindrop,
+    primary_post_text,
+    publish,
+    read_catalog,
+)
 from .core import TOKEN_ROTATION, Client, PilotError
 from .discovery_gate import positive_media_only
 from .drive import digest
@@ -520,14 +527,17 @@ class Worker:
                 classification = (self.catalog.read("media-only.private.json") or {}).get(pid)
             try:
                 if not positive_media_only(payload, classification, row["payload"]["sha256"]):
-                    self.raindrop.ensure_raindrop(
+                    raindrop_receipt = self.raindrop.ensure_raindrop(
                         pid,
                         source_url(pid),
                         {
                             "manifest": self.store.read(item["receipt"])["manifest"],
                             "payload": row["payload"],
                         },
+                        post_text=primary_post_text(payload["posts"], pid),
                     )
+                    with self.catalog.locked():
+                        link_raindrop(self.catalog, read_catalog(self.catalog), raindrop_receipt)
             except PilotError as exc:
                 retry_at = self.clock() + 86400
                 if exc.code == "blocked_raindrop_retryable":

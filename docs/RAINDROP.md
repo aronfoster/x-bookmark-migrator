@@ -151,8 +151,21 @@ locally, or revise it to call only the reviewed gate, before making the attestat
 
 Separate `raindrop-inventory`, `raindrop-ensure` and `raindrop-verify` commands
 perform no X calls. Ensure reads a private `--archive-ref-file` and requires
-`--confirm-raindrop-create`. A standalone verify result never authorizes deletion;
+`--payload-file`, `--catalog-dir` and `--confirm-raindrop-create`. The payload must
+match the archive receipt's hash/size and exact primary ID; the primary must
+already be in the local catalog. Verified links are published into that catalog.
+A standalone verify result never authorizes deletion;
 apply always verifies again. CLI stdout contains counts/status rather than content.
+
+### Owner-approved note format (19 November)
+
+New creates use only the first 250 Unicode characters of the saved primary post
+text, without an ellipsis. Archive JSON URLs and category numbers are not added
+to the note. Empty/missing primary text blocks creation; existing entries are
+adopted without editing their notes. The intended note is persisted before POST,
+and a missing/different note in an old intent blocks an automatic recovery POST.
+The single-method documentation linked below was rechecked for this change;
+the 250-character cap is owner policy, not a provider limit.
 
 ## Provider contract checked 2026-11-16
 

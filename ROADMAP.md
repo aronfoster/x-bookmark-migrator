@@ -113,6 +113,23 @@ release scope follows from a failed checkpoint. See S2/S4 for the stopping rule.
 
 ## Current checkpoint and next actions
 
+### 19 November Raindrop formatting decision
+
+The owner accepted the revised one-bookmark preview and directed subsequent
+migration work to use the same format: the saved primary post's first 250
+characters as the note, with a direct Raindrop link in its local catalog record
+and index. This replaces the rejected JSON-link/numeric-category note; original
+archive and category evidence remain local. See the S2 formatting checkpoint.
+The preview update and link persistence passed owner-run checks across the
+103-record, 117-media catalog. On 20 November, the owner attested that only the
+two audited helpers performed automated removals of these captured bookmarks;
+this is owner confirmation, not independent verification.
+Next is a separately authorized bounded Raindrop-only backfill; helper retirement and X-operation
+acceptance remain separate.
+
+The following 18 November checkpoint is historical; do not repeat completed
+recovery or publication work solely from this earlier snapshot.
+
 Baseline: main `9b3ce5e`, merged worker #10, readiness #11 and recovery preparation
 #13. Local evidence is owner-reported, not a new remote audit. Effective Raindrop
 skill, dedicated runtime/protected build, staged complete catalog and initial

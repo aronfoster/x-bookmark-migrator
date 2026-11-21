@@ -313,7 +313,7 @@ class RaindropAdapter:
                 raise blocked("note_update_readback_mismatch")
             return self.verify_raindrop_now(pid, rid)
 
-    def ensure_raindrop(self, pid, source_url, archive_ref, *, category=None):
+    def ensure_raindrop(self, pid, source_url, archive_ref, *, category=None, post_text=None):
         """Create at most once plus one reconciled recovery attempt, under one lock."""
         exact_id(pid)
         from .source import source_url as canonical_url
@@ -360,6 +360,9 @@ class RaindropAdapter:
             if match["state"] == "active":
                 rid = match["raindrop_ids"][0]
             else:
+                if not isinstance(post_text, str) or not post_text.strip():
+                    raise blocked("primary_post_text_required")
+                note = post_text[:250]
                 intent_name = base + ".intent.private.json"
                 intent = self.store.read(intent_name)
                 if intent:
@@ -368,6 +371,7 @@ class RaindropAdapter:
                         or intent.get("source_post_id") != pid
                         or intent.get("source_post_url") != source_url
                         or intent.get("archive_ref") != archive_ref
+                        or intent.get("note") != note
                         or type(intent.get("attempts")) is not int
                         or not 1 <= intent["attempts"] <= 2
                     ):
@@ -384,6 +388,7 @@ class RaindropAdapter:
                         "source_post_id": pid,
                         "source_post_url": source_url,
                         "archive_ref": archive_ref,
+                        "note": note,
                         "attempts": 0,
                         "created_at": now(),
                     }
@@ -401,9 +406,7 @@ class RaindropAdapter:
                     "collection": {"$id": -1},
                     "title": "Archived X post",
                     "tags": ["to-read"],
-                    "note": "Archive: "
-                    + archive_link
-                    + ("\nOriginal category: " + category if category else ""),
+                    "note": note,
                 }
                 response = self._call("add-json", payload=payload)
                 self.store.write(

@@ -57,6 +57,14 @@ def drive_link(receipt):
     return "https://drive.google.com/file/d/" + drive_id(receipt["file_id"]) + "/view"
 
 
+def primary_post_text(posts, pid):
+    exact_id(pid)
+    matches = [p for p in posts if p.get("id") == pid]
+    if len(matches) != 1 or not isinstance(matches[0].get("text"), str):
+        raise PilotError("Exactly one saved primary post text is required.")
+    return matches[0]["text"]
+
+
 def asset_key(asset):
     pid = exact_id(asset["post_id"])
     index, key = asset["index"], asset["media_key"]
@@ -174,8 +182,6 @@ def apply_annotations(records, annotations):
     from .raindrop import validate_receipt
 
     for pid, receipt in links.items():
-        if pid not in {r["post_id"] for r in records}:
-            raise PilotError("Raindrop link refers to an absent saved primary record.")
         validate_receipt(receipt, pid)
     if len({r["raindrop_id"] for r in links.values()}) != len(links):
         raise PilotError("Raindrop bookmark is associated with multiple saved primaries.")
@@ -229,6 +235,8 @@ def link_raindrop(output, records, receipt):
 
     pid = receipt.get("source_post_id")
     validate_receipt(receipt, pid)
+    if pid not in {r["post_id"] for r in records}:
+        raise PilotError("Raindrop link refers to an absent saved primary record.")
     notes = copy.deepcopy(output.read("annotations.private.json") or {})
     links = notes.setdefault("raindrop_links", {})
     if pid in links and links[pid]["raindrop_id"] != receipt["raindrop_id"]:

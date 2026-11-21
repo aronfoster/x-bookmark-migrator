@@ -17,6 +17,7 @@ from x_bookmark_migrator.catalog import (
     link_raindrop,
     lookup,
     post_id,
+    primary_post_text,
     publish,
     raindrop_matches,
     read_catalog,
@@ -24,6 +25,14 @@ from x_bookmark_migrator.catalog import (
 )
 from x_bookmark_migrator.core import PilotError, Store
 from x_bookmark_migrator.drive import digest, encode
+
+
+def test_primary_text_does_not_substitute_referenced_post():
+    posts = [{"id": "102", "text": "Quoted text"}, {"id": "101", "text": "Primary text"}]
+    assert primary_post_text(posts, "101") == "Primary text"
+    for invalid in (posts[:1], posts + [posts[1]], [{"id": "101", "text": None}]):
+        with pytest.raises(PilotError):
+            primary_post_text(invalid, "101")
 
 
 def test_raindrop_link_survives_rebuild_and_preserves_annotations(corpus):
