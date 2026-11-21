@@ -4,7 +4,7 @@ import json
 import secrets
 from pathlib import Path
 
-from .catalog import build, private_bytes
+from .catalog import build, link_raindrop, private_bytes, read_catalog
 from .core import PilotError, Store
 from .publication import PublicationStore
 from .repair import (
@@ -141,10 +141,16 @@ def run(args):
             report["native_helper_provenance"] = provenance
         output.write(f"repair-audit-{run_id}.private.json", report)
         if args.command == "repair-backfill":
+            published = read_catalog(catalog)
+            if set(args.post_id) - {r["post_id"] for r in published}:
+                raise PilotError("Selected primary is absent from the published catalog.")
             module = shared_raindrop()
             adapter = module.RaindropAdapter(args.raindrop_ledger_dir, args.raindrop_script)
             result = backfill(report, adapter, args.post_id, confirmed=True, limit=args.limit)
             output.write(f"repair-backfill-{run_id}.private.json", result)
+            for entry in result["results"]:
+                if entry["state"] == "verified":
+                    link_raindrop(catalog, published, entry["receipt"])
             return result["summary"]
         return {
             **report["summary"],

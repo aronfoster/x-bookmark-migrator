@@ -4,8 +4,9 @@ import json
 import os
 from pathlib import Path
 
-from .catalog import private_bytes
+from .catalog import checked_bytes, link_raindrop, primary_post_text, private_bytes, read_catalog
 from .core import PilotError
+from .publication import PublicationStore
 from .raindrop import RaindropAdapter, require_distinct_state_dirs
 from .source import source_url
 
@@ -36,6 +37,8 @@ def add_commands(sub):
             p.add_argument("--post-id", required=True)
         if command == "raindrop-ensure":
             p.add_argument("--archive-ref-file", type=Path, required=True)
+            p.add_argument("--payload-file", type=Path, required=True)
+            p.add_argument("--catalog-dir", type=Path, required=True)
             p.add_argument("--category")
             p.add_argument("--confirm-raindrop-create", action="store_true")
         elif command == "raindrop-verify":
@@ -55,12 +58,25 @@ def run(args):
     if args.command == "raindrop-ensure":
         if not args.confirm_raindrop_create:
             raise PilotError("Raindrop writes require --confirm-raindrop-create.")
-        receipt = adapter.ensure_raindrop(
-            args.post_id,
-            source_url(args.post_id),
-            json.loads(private_bytes(args.archive_ref_file)),
-            category=args.category,
-        )
+        archive_ref = json.loads(private_bytes(args.archive_ref_file))
+        if not isinstance(archive_ref, dict) or set(archive_ref) != {"manifest", "payload"}:
+            raise PilotError("An archive manifest and payload receipt are required.")
+        payload = json.loads(checked_bytes(args.payload_file, archive_ref["payload"]))
+        if payload.get("post_id") != args.post_id:
+            raise PilotError("Archive payload does not match the saved primary.")
+        catalog = PublicationStore(args.catalog_dir)
+        with catalog.locked():
+            records = read_catalog(catalog)
+            if args.post_id not in {r["post_id"] for r in records}:
+                raise PilotError("Saved primary is absent from the local catalog.")
+            receipt = adapter.ensure_raindrop(
+                args.post_id,
+                source_url(args.post_id),
+                archive_ref,
+                category=args.category,
+                post_text=primary_post_text(payload["posts"], args.post_id),
+            )
+            link_raindrop(catalog, records, receipt)
         return {"verified": True, "disposition": receipt["disposition"], "x_api_calls": 0}
     adapter.verify_raindrop_now(args.post_id, args.raindrop_id)
     return {"verified": True, "x_api_calls": 0, "deletion_authorized": False}

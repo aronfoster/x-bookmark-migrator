@@ -3,6 +3,7 @@
 import copy
 import json
 import subprocess
+from functools import partial
 from pathlib import Path
 
 import pytest
@@ -79,8 +80,29 @@ class SkillServer:
 def adapter_for(tmp_path, server):
     adapter = RaindropAdapter(tmp_path / "raindrop", Path(__file__).resolve())
     adapter._call = server.call
+    adapter.ensure_raindrop = partial(adapter.ensure_raindrop, post_text="Synthetic primary text")
     server.adapter = adapter
     return adapter
+
+
+def test_homepages_preserved_without_blocking_exact_post_inventory(tmp_path):
+    homepages = [
+        item(rid=2, link="http://twitter.com/"),
+        item(rid=3, link="https://x.com/"),
+    ]
+    server = SkillServer(
+        active=[item(), *homepages], trash=[item(rid=4, link="https://x.com/", cid=-99)]
+    )
+    before = copy.deepcopy((server.active, server.trash))
+    adapter = adapter_for(tmp_path, server)
+    inventory = adapter.enumerate_now()
+    assert inspect_inventory(inventory, "101")["state"] == "active"
+    assert inspect_inventory(inventory, "102")["state"] == "absent"
+    assert inventory["active"]["items"] == before[0]
+    assert inventory["trash"]["items"] == before[1]
+    assert adapter.store.read("raindrop-inventory.private.json") == inventory
+    assert (server.active, server.trash) == before
+    assert server.calls == [(("list-all",), None)]
 
 
 @pytest.mark.parametrize(
@@ -293,3 +315,86 @@ def test_cli_rejects_symlinked_state_directory_before_adapter(tmp_path):
                 raindrop_script=Path(__file__).resolve(),
             )
         )
+
+
+def test_explicit_note_update_is_primary_bound_and_note_only(tmp_path):
+    from unittest.mock import Mock
+
+    script = tmp_path / "skill.sh"
+    script.write_text("synthetic")
+    adapter = RaindropAdapter(tmp_path / "ledger", script)
+    before = item(pid="101", rid=42)
+    before.update(title="Keep title", note="Replace me", tags=["keep"])
+    text = "🔥\n" * 200
+    after = {**before, "note": text[:250]}
+    adapter._call = Mock(
+        side_effect=[
+            {"result": True, "item": before},
+            {"result": True},
+            {"result": True, "item": after},
+            {"result": True, "item": after},
+        ]
+    )
+    receipt = adapter.replace_note("101", 42, text)
+    assert receipt["raindrop_id"] == 42
+    assert adapter._call.call_args_list[1].args == ("update-note-json", 42)
+    assert adapter._call.call_args_list[1].kwargs == {"payload": {"note": text[:250]}}
+    adapter._call = Mock(return_value={"result": True, "item": item(pid="102", rid=42)})
+    with pytest.raises(PilotError):
+        adapter.replace_note("101", 42, text)
+    assert adapter._call.call_count == 1
+    adapter._call = Mock(
+        side_effect=[
+            {"result": True, "item": before},
+            {"result": True},
+            {"result": True, "item": {**after, "tags": []}},
+        ]
+    )
+    with pytest.raises(PilotError):
+        adapter.replace_note("101", 42, text)
+
+
+@pytest.mark.parametrize("text", ["Short post", "🔥\n" * 200])
+def test_new_create_uses_only_primary_text_and_preserves_adopted_note(tmp_path, text):
+    server = SkillServer()
+    adapter = adapter_for(tmp_path, server)
+    adapter.ensure_raindrop(
+        "101",
+        "https://x.com/i/status/101",
+        "https://archive.invalid",
+        category="123456789",
+        post_text=text,
+    )
+    assert server.posts[0][1]["note"] == text[:250]
+    server.active[0]["note"] = "Owner edited this"
+    adapter.ensure_raindrop(
+        "101", "https://x.com/i/status/101", "https://archive.invalid", post_text="Changed"
+    )
+    assert len(server.posts) == 1 and server.active[0]["note"] == "Owner edited this"
+
+
+def test_missing_text_and_changed_recovery_note_never_post(tmp_path):
+    server = SkillServer()
+    adapter = adapter_for(tmp_path, server)
+    with pytest.raises(PilotError):
+        adapter.ensure_raindrop(
+            "101", "https://x.com/i/status/101", "https://archive.invalid", post_text=None
+        )
+    assert not server.posts
+    assert adapter.store.read("raindrop-101.intent.private.json") is None
+    adapter.store.write(
+        "raindrop-101.intent.private.json",
+        {
+            "schema_version": 1,
+            "source_post_id": "101",
+            "source_post_url": "https://x.com/i/status/101",
+            "archive_ref": "https://archive.invalid",
+            "attempts": 1,
+            "note": "Different original note",
+        },
+    )
+    with pytest.raises(PilotError):
+        adapter.ensure_raindrop(
+            "101", "https://x.com/i/status/101", "https://archive.invalid", post_text="New text"
+        )
+    assert not server.posts

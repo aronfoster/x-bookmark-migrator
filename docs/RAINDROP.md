@@ -33,7 +33,12 @@ IDs are exact decimal **strings**, never numeric JSON IDs. New primary links are
 exactly `https://x.com/i/status/<pid>`. `source.raindrop_post_id` accepts the
 FOS-216 official aliases, renamed handles, photo/video suffixes and i/web/status.
 Unsupported X links block complete matching; search alone never establishes absence.
-This includes profile/list/Space links under the accepted fail-closed contract;
+Bare HTTP(S) site roots on the supported X/Twitter hosts (empty path or `/`, no
+query, fragment, port or credentials) are non-post links. They remain unchanged in
+the complete inventory but do not participate in exact-post matching. This is a
+local matching policy, not a provider guarantee. Profile, list, Space, search and
+ambiguous links still block; do not generalize this exception to other paths.
+The remaining blockers include profile/list/Space links under the fail-closed contract;
 they are not silently discarded. A blocked provider summary identifies the numeric
 `raindrop_id`; offline inspection adds `blocking_raindrop_id`. Neither exposes the
 private URL. Changing which X paths may be ignored requires a shared-parser contract
@@ -146,8 +151,21 @@ locally, or revise it to call only the reviewed gate, before making the attestat
 
 Separate `raindrop-inventory`, `raindrop-ensure` and `raindrop-verify` commands
 perform no X calls. Ensure reads a private `--archive-ref-file` and requires
-`--confirm-raindrop-create`. A standalone verify result never authorizes deletion;
+`--payload-file`, `--catalog-dir` and `--confirm-raindrop-create`. The payload must
+match the archive receipt's hash/size and exact primary ID; the primary must
+already be in the local catalog. Verified links are published into that catalog.
+A standalone verify result never authorizes deletion;
 apply always verifies again. CLI stdout contains counts/status rather than content.
+
+### Owner-approved note format (19 November)
+
+New creates use only the first 250 Unicode characters of the saved primary post
+text, without an ellipsis. Archive JSON URLs and category numbers are not added
+to the note. Empty/missing primary text blocks creation; existing entries are
+adopted without editing their notes. The intended note is persisted before POST,
+and a missing/different note in an old intent blocks an automatic recovery POST.
+The single-method documentation linked below was rechecked for this change;
+the 250-character cap is owner policy, not a provider limit.
 
 ## Provider contract checked 2026-11-16
 

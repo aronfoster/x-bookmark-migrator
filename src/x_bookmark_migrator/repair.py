@@ -6,7 +6,7 @@ import re
 from collections import Counter
 from pathlib import Path
 
-from .catalog import private_bytes, source_sidecar
+from .catalog import primary_post_text, private_bytes, source_sidecar
 from .core import PilotError, exact_id
 from .drive import digest, encode
 from .source import source_url
@@ -406,8 +406,8 @@ def reconcile(records, attempts, *, decisions=None, coverage=None, inspect_raind
                 chosen = min(
                     usable, key=lambda v: (v["manifest"]["sha256"], v["payload_receipt"]["sha256"])
                 )
-                # Retain full original labels and overrides above; the shared
-                # adapter's concise note contract allows at most 200 characters.
+                # Retain the historical concise category projection for audit
+                # consumers; new Raindrop notes use primary post text instead.
                 row["repair_category"] = (record.get("category_override") or chosen["category"])[
                     :200
                 ]
@@ -415,6 +415,7 @@ def reconcile(records, attempts, *, decisions=None, coverage=None, inspect_raind
                     "manifest": chosen["manifest"],
                     "payload": chosen["payload_receipt"],
                 }
+                row["repair_post_text"] = primary_post_text(chosen["posts"], pid)
         else:
             kind = "ambiguous"
             row.update(classification=kind, archives=[], original_categories=[], drive_links=[])
@@ -538,7 +539,10 @@ def backfill(report, adapter, selected_ids, *, confirmed=False, limit=3):
             # Adapter holds the lock, refreshes full inventory, recovers uncertain
             # POSTs and returns only after fresh GET. Do not implement retries here.
             receipt = adapter.ensure_raindrop(
-                pid, source_url(pid), row["repair_archive_ref"], category=row["repair_category"]
+                pid,
+                source_url(pid),
+                row["repair_archive_ref"],
+                post_text=row.get("repair_post_text"),
             )
         except PilotError as exc:
             # Only the shared adapter's structured diagnostics, never exception

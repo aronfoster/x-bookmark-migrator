@@ -92,6 +92,34 @@ content goes to public fixtures.
 
 **M2. Trackers: FOS-216, FOS-166, FOS-169.**
 
+### 19 November formatting checkpoint
+
+Owner-approved default for subsequent migration:
+
+- New Raindrop notes contain only the first 250 Unicode characters of the saved
+  primary post text, without an ellipsis. Never substitute a referenced post.
+  The owner rejected archive JSON links and numeric category notes as unhelpful.
+- Preserve existing Raindrop notes and metadata on adoption. Explicit preview
+  edits are separate from the create/adopt path.
+- Persist verified Raindrop receipts as local navigation mappings. Project direct
+  links into catalog records and HTML; preserve mappings through partial archive
+  builds, merged worker publications and full rebuilds.
+- A recovery POST must retain the same intended note. Legacy intents lacking the
+  note require review rather than silently changing the recovery payload.
+- Exit tests: adapter truncation/adoption/recovery, exact-primary text selection,
+  historical backfill and worker link persistence, annotation preservation and
+  full regression checks. Live installation is separate from local tests.
+
+The accepted preview is complete. On 20 November, the owner attested that only
+the two audited helpers performed automated removals of these captured bookmarks,
+resolving the earlier “probably” checkpoint. This is owner confirmation, not
+independent verification. Next: prepare the reviewed installation and bounded
+Raindrop-only backfill (at most three IDs), then obtain explicit owner go-ahead
+for its live run, with fresh matching and readback. Helper retirement remains
+unverified; this confirmation does not authorize X removal or scheduling.
+
+### Existing rollout sequence
+
 1. After M1, use the existing protected rollout to install the accepted readiness
    release. Publish the complete catalog/HTML/source sidecar/annotations; preserve
    old catalogs and curation. Run archive-bound writer checks and actual-reader

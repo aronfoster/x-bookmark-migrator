@@ -201,6 +201,11 @@ also block; this is a deliberately conservative input contract, not a claim abou
 which schemes Raindrop stores. Unresolved t.co short links block because the local
 parser cannot establish their target without a network lookup. No redirects are
 followed. Ordinary foreign HTTP(S) links are ignored.
+Bare HTTP(S) X/Twitter site roots are also non-post links for Raindrop matching:
+only an empty path or `/`, without query, fragment, port or credentials, qualifies.
+Supported host aliases and trailing-dot normalization apply. These entries remain
+in the full inventory unchanged. Exact `post_id` parsing still rejects homepages;
+other unsupported X paths and unresolved short links still block deduplication.
 
 Run the separately authorized read-only Raindrop inventory before any create pilot.
 If it reports unsupported links, preserve existing bookmarks and metadata, record
