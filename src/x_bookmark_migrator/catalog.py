@@ -169,13 +169,17 @@ def build(batches, output):
             ):
                 record["versions"].append(version)
     result = [records[k] for k in sorted(records)]
-    for record in result:
-        record["versions"].sort(
-            key=lambda v: (v["manifest"]["sha256"], v["payload_receipt"]["sha256"])
-        )
-    return apply_annotations(
-        add_source_links(result), output.read("annotations.private.json") or {}
-    )
+    return apply_annotations(add_source_links(result), read_annotations(output))
+
+
+def read_annotations(output):
+    name = "annotations.private.json"
+    notes = output.read(name)
+    if notes is None and not output.path(name).exists():
+        return {}
+    if not isinstance(notes, dict):
+        raise PilotError("Invalid canonical annotations object.")
+    return notes
 
 
 def apply_annotations(records, annotations):
@@ -260,7 +264,7 @@ def link_raindrop(output, records, receipt):
     validate_receipt(receipt, pid)
     if pid not in {r["post_id"] for r in records}:
         raise PilotError("Raindrop link refers to an absent saved primary record.")
-    notes = copy.deepcopy(output.read("annotations.private.json") or {})
+    notes = read_annotations(output)
     links = notes.setdefault("raindrop_links", {})
     if pid in links and links[pid]["raindrop_id"] != receipt["raindrop_id"]:
         raise PilotError("Conflicting Raindrop bookmark association.")
@@ -270,12 +274,24 @@ def link_raindrop(output, records, receipt):
     publish(output, projected)
 
 
+def has_bound_description(asset):
+    binding = asset.get("description_sha256")
+    return (
+        isinstance(binding, str)
+        and SHA256.fullmatch(binding) is not None
+        and binding == asset.get("storage", {}).get("sha256")
+    )
+
+
 def add_source_links(records):
     """Upgrade only derived copies; raw payloads/manifests are never rewritten."""
     records = copy.deepcopy(records)
     for record in records:
         pid = exact_id(record["post_id"])
         record.update(source_post_id=pid, source_post_url=source_url(pid))
+        record["versions"].sort(
+            key=lambda v: (v["manifest"]["sha256"], v["payload_receipt"]["sha256"])
+        )
         for version in record["versions"]:
             seen = set()
             for post in version["posts"]:
@@ -288,12 +304,7 @@ def add_source_links(records):
                 post.update(source_post_id=child, source_post_url=source_url(child))
             for asset in version["media"]:
                 # Older publications contain a projected caption with no evidence of its bytes.
-                binding = asset.get("description_sha256")
-                if not (
-                    isinstance(binding, str)
-                    and SHA256.fullmatch(binding)
-                    and binding == asset.get("storage", {}).get("sha256")
-                ):
+                if not has_bound_description(asset):
                     asset.pop("description_sha256", None)
                     asset["description"] = NO_DESCRIPTION
                 asset.update(
@@ -596,15 +607,15 @@ def annotate(
     edit_id=None,
 ):
     assets = [a for r in records for v in r["versions"] for a in v["media"] if a["asset_id"] == key]
-    if not assets:
+    notes = read_annotations(output)
+    if not assets and edit_id not in notes.get("description_edit_history", {}):
         raise PilotError("Unknown exact attachment ID.")
-    notes = output.read("annotations.private.json") or {}
     note = notes.setdefault(key, {})
     if confirm_legacy:
         if description is not None or "description" not in note:
             raise PilotError("Legacy confirmation requires an existing private legacy description.")
         description = note["description"]
-    if description is not None:
+    if description is not None or confirm_legacy:
         validate_description(description)
         if not isinstance(sha256, str) or not SHA256.fullmatch(sha256):
             raise PilotError("Supply the SHA-256 of the reviewed attachment bytes.")
@@ -630,6 +641,10 @@ def annotate(
             raise PilotError("Legacy description already confirmed for another digest.")
         descriptions = note.setdefault("descriptions", {})
         previous = descriptions.get(sha256)
+        if confirm_legacy and previous is not None and previous != description:
+            raise PilotError(
+                "These bytes already have a different description; use an explicit edit."
+            )
         if (
             edit_id is not None
             or previous != description
@@ -720,12 +735,18 @@ def run(args):
         # Count all retained legacy notes, including assets absent from the current catalog.
         if not args.catalog_dir.is_dir():
             raise PilotError("Catalog directory must exist.")
-        notes = PublicationStore(args.catalog_dir).read("annotations.private.json") or {}
-        legacy = [v for k, v in notes.items() if ":" in k and "description" in v]
-        return {
-            "legacy_descriptions": len(legacy),
-            "awaiting_confirmation": sum("legacy_confirmed_sha256" not in v for v in legacy),
-        }
+        notes = read_annotations(PublicationStore(args.catalog_dir))
+        legacy = [note for key, note in notes.items() if ":" in key and "description" in note]
+        pending = 0
+        for note in legacy:
+            if "legacy_confirmed_sha256" not in note:
+                pending += 1
+                continue
+            binding = note["legacy_confirmed_sha256"]
+            if not isinstance(binding, str) or not SHA256.fullmatch(binding):
+                raise PilotError("Invalid legacy description binding.")
+            validate_description(note.get("descriptions", {}).get(binding))
+        return {"legacy_descriptions": len(legacy), "awaiting_confirmation": pending}
     if args.command in ("catalog-lookup", "catalog-check", "catalog-drive-text"):
         output = PublicationReader(args.catalog_dir)
         if args.command == "catalog-drive-text":

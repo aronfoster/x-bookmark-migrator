@@ -736,3 +736,85 @@ def test_pre_upgrade_reader_suppresses_unbound_persisted_text(corpus):
         output.path("catalog.jsonl").chmod(0o600)
         assert "Legacy text" not in json.dumps(read_catalog(output))
         assert output.path("catalog.jsonl").read_bytes() == raw
+
+
+def test_legacy_confirmation_preserves_newer_caption(corpus):
+    batch, output, _, _ = corpus
+    key = "101:1:photo-1"
+    output.write("annotations.private.json", {key: {"description": "Old caption"}})
+    records = build([batch], output)
+    sha = lookup(records, "101", key)[0]["storage"]["sha256"]
+    # A retry without a decision ID must also preserve intervening edits.
+    annotate(output, records, key, sha256=sha, confirm_legacy=True)
+    annotate(output, records, key, sha256=sha, description="New caption")
+    before = {p: p.read_bytes() for p in output.root.iterdir()}
+    with pytest.raises(PilotError, match="different description"):
+        annotate(output, records, key, sha256=sha, confirm_legacy=True)
+    assert before == {p: p.read_bytes() for p in before}
+
+
+@pytest.mark.parametrize("invalid", [None, [], False])
+def test_invalid_annotation_file_cannot_pass_audit_or_be_replaced(
+    corpus, invalid, monkeypatch, capsys
+):
+    batch, output, _, _ = corpus
+    records = build([batch], output)
+    output.write("annotations.private.json", invalid)
+    canonical = output.path("annotations.private.json").read_bytes()
+    monkeypatch.setattr(
+        sys, "argv", ["x-migrator", "catalog-description-audit", "--catalog-dir", str(output.root)]
+    )
+    assert cli.main() == 1
+    assert not capsys.readouterr().out
+    with pytest.raises(PilotError):
+        annotate(output, records, "101:1:photo-1", visibility="hidden")
+    assert output.path("annotations.private.json").read_bytes() == canonical
+
+
+def test_drive_unit_uses_receipts_and_source_ids(corpus):
+    from x_bookmark_migrator.search_projection import drive_text
+
+    batch, output, _, _ = corpus
+    record = build([batch], output)[0]
+    version = record["versions"][0]
+    asset = version["media"][0]
+    urls = [record["source_post_url"], version["payload_url"], asset["archive_url"]]
+    stale = "https://example.invalid/stale"
+    record.update(source_post_url=stale, raindrop_id=42, raindrop_url=stale)
+    version["payload_url"] = version["posts"][0]["source_post_url"] = stale
+    asset.update(
+        archive_url=stale,
+        attachment_post_url=stale,
+        description="Caption for different bytes",
+        description_sha256="f" * 64,
+    )
+    body = drive_text(record)["body"]
+    assert stale not in body and "Caption for different bytes" not in body
+    assert all(url in body for url in urls)
+    assert "https://app.raindrop.io/my/0/item/42" in body
+
+
+def test_replay_after_target_batch_leaves_the_projection(corpus):
+    batch, output, _, _ = corpus
+    records = build([batch], output)
+    asset = records[0]["versions"][0]["media"][0]
+    edit = dict(description="Remembered", sha256=asset["storage"]["sha256"], edit_id="kept-edit")
+    annotate(output, records, asset["asset_id"], **edit)
+    publish(output, records[1:])
+    before = {p: p.read_bytes() for p in output.root.iterdir()}
+    annotate(output, read_catalog(output), asset["asset_id"], **edit)
+    assert before == {p: p.read_bytes() for p in before}
+
+
+def test_audit_rejects_unsubstantiated_legacy_confirmation(corpus, monkeypatch, capsys):
+    _, output, _, _ = corpus
+    key = "101:1:photo-1"
+    output.write(
+        "annotations.private.json",
+        {key: {"description": "Retained", "legacy_confirmed_sha256": None}},
+    )
+    monkeypatch.setattr(
+        sys, "argv", ["x-migrator", "catalog-description-audit", "--catalog-dir", str(output.root)]
+    )
+    assert cli.main() == 1
+    assert not capsys.readouterr().out

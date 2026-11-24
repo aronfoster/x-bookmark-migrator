@@ -128,7 +128,9 @@ copy against its receipt, keeps the original legacy text, and binds it only to
 that attachment ID and digest. Use a fresh `--description` for a different
 version. Visibility-only edits still take just the attachment ID. Keep the
 decision reference and any private supporting evidence in the protected handoff.
-The private history records the target, digest, previous text and submitted edit.
+Legacy confirmation preserves a newer caption on those bytes. To replace it,
+submit an explicit description edit. The private history records the target,
+digest, previous text and submitted edit.
 Retry with the same decision ID after interruption; a different request using
 that ID fails. A later loss of local bytes leaves a previously verified binding
 searchable alongside the missing-local status.

@@ -27,6 +27,7 @@ from x_bookmark_migrator.discovery_gate import positive_media_only
 from x_bookmark_migrator.raindrop import inspect_inventory
 from x_bookmark_migrator.search_projection import drive_text
 from x_bookmark_migrator.source import raindrop_post_id
+from x_bookmark_migrator.worker import merge_publication
 
 TAIL = "The last sluice opened at moonrise."
 LONG_TEXT = "Winter runoff filled the model reservoir. " * 900 + TAIL
@@ -280,6 +281,15 @@ def test_shared_quote_and_replaced_media(archive, storage, tmp_path):  # noqa: F
         sha256=replacement["storage"]["sha256"],
     )
     rebuilt = build([newer, *reversed(batches)], output)
+    # Reproduce reversed arrival through the worker, then compare with the complete build.
+    expected = next(r for r in rebuilt if r["post_id"] == "701")
+    low, high = expected["versions"]
+    publish(output, [{**expected, "versions": [high]}])
+    merge_publication(output, [{**expected, "versions": [low]}])
+    assert json.loads(output.path("catalog.jsonl").read_bytes()) == expected
+    incremental = read_catalog(output)[0]
+    assert drive_text(incremental) == drive_text(expected)
+    assert incremental == expected
     for a in lookup(rebuilt, "704", PHOTO_ID):
         assert a["description"] == (
             IMAGE if a["storage"]["sha256"] == original_hash else "Green replacement"
