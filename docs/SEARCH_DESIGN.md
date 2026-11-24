@@ -19,7 +19,11 @@ remains the release test. This proposal adds no runtime command or account acces
 Render deterministically in catalog order, with readable section labels, LF and UTF-8.
 No run timestamps in text. Changes to labels/layout change the renderer version.
 The machine consumer keeps structured occurrence identity from JSONL rather than
-parsing free text for IDs or treating user text as instructions.
+parsing free text for IDs. Give the reader typed, escaped data fields for candidate
+snippets, OCR and captions. Resolve tool arguments from the selected catalog
+occurrence and the user's request. S3 must exercise a snippet containing an
+instruction and a foreign URL: display it as quoted data, open only the selected
+receipt-backed asset, and observe zero extra tool calls.
 
 ## Updating one record and recovering a full index
 
@@ -27,13 +31,24 @@ parsing free text for IDs or treating user text as instructions.
    [catalog-build/annotate](CATALOG.md). Upsert an approved edit by its exact
    target; record decision/provenance and previous value once per edit ID. Replaying
    that ID with different content is a conflict. Retain unrelated fields, approvals
-   and Raindrop receipts. Proposed tags, provenance and generated text need a small
-   versioned extension in S3. Rebuild from fresh immutable inputs plus canonical
-   annotations so removal of an override also removes its search terms.
+   and Raindrop receipts. S3 adds a locked set/clear category writer and an edit
+   journal in the canonical annotations file. Commit the decision ID, target,
+   previous value and new value together under the lock. An identical replay is
+   a no-op even after restart or a newer edit; a conflicting replay leaves the
+   file unchanged. Rebuild from fresh immutable inputs to remove retired terms.
+
+   Bind each explicit visual description to (asset_id, storage SHA-256) at edit
+   time. All primaries containing that asset ID and digest share the edit. A new digest needs
+   a separate description or explicit confirmation. Preserve the old description
+   and its decision history on the original bytes. The current catalog projects
+   legacy descriptions by asset_id alone. Migrate one only with evidence of the
+   reviewed digest; otherwise keep the text privately for review and omit it from
+   search snippets and sidecars. Never infer the binding from today's sole match.
+   Preserve existing visibility preferences independently.
 2. Pin the complete receipt set and input generation under the lock, then run
    writer `catalog-verify` and actual-reader `catalog-check` against independent
    expected populations. Keep the verified generation available while preparing
-   units. Hash each rendered body and map (primary, surface) to intended digest,
+   units. Hash each rendered body and map (primary, surface, format) to intended digest,
    renderer version, Drive file ID and last verified digest in protected state.
    A later batch rebuild includes earlier batches. An edit to a shared attachment
    invalidates every containing primary. Sorting and byte comparison make a full
@@ -41,16 +56,21 @@ parsing free text for IDs or treating user text as instructions.
    input is missing; hold the generation for reconciliation.
 3. Extend only the **derived** Drive writer in S3. Reuse the allocation journal,
    parent/key lookup and receipt readback in [drive.py](../src/x_bookmark_migrator/drive.py).
-   Use a stable logical key per primary independent of digest, file name, category
+   Use a stable logical key per primary and format independent of digest, file name, category
    or renderer version. Persist the allocated file ID and intent before create.
    Reuse the same ID after a timeout. Keep archive `Drive.put/save` create-only.
    Update just the existing verified sidecar ID for an edit. Check pinned account,
-   parent, key, MIME, permissions and expected prior bytes; serialize writers and
-   reject concurrent/external changes. Store sidecars in an owner-controlled folder
-   with one writer. Inspect actual ACLs before publishing sensitive descriptions.
-4. For each pending intent, read the target. Matching desired bytes confirm success
-   even after a lost acknowledgement. Verified prior bytes allow the pending edit;
-   any third digest, duplicate logical key, wrong parent, or inaccessible previously
+   parent, key, MIME, permissions and explicit `trashed == false`. A missing
+   trash flag or a trashed target blocks both writes and checkpoints. Serialize
+   the local publishers and fence stale generations before writes and checkpoints.
+   Require an owner-controlled, single-writer destination and inspect actual ACLs.
+   Prior-byte checks and post-write readback detect observable conflicts; an
+   external UI edit between check and update can still be overwritten. Stop on
+   observed drift. If exclusive writing cannot be maintained, hold publication.
+4. For each current intent, read the target. With those preconditions satisfied,
+   matching desired bytes confirm success even after a lost acknowledgement.
+   Verified prior bytes allow the pending edit. Any third digest, duplicate
+   logical key, wrong parent, or inaccessible previously
    confirmed ID stops reconciliation. Never allocate a replacement merely because a
    lookup failed. Verify uploaded bytes before advancing its receipt. Same digest on
    a verified target requires zero writes. Interrupted multi-file publication remains
@@ -98,12 +118,27 @@ benefit and local/manual alternatives to the owner before processing.
 | Ordinary Drive | In the intended desktop browser and Android Drive app, under the intended account, search the same body-only phrase, long-tail term, original/approved category, image description and video description. Open the matching unit and follow its links to context and actual image/video on both clients. Record upload/readback time, first visible hit or last miss, rank, open/play result and file ID per client. Probe at 0, 5, 30 minutes and 24 hours as an observation window; record actual times and pending observations. After a description edit test new and retired terms in isolation, same file ID and unchanged asset links. A provider API match is diagnostic only. |
 | Raindrop | Use ordinary collection/tag and concise metadata search on the existing tier. Open a uniquely matched active pointer and validate its original link with the shared exact-primary parser/adapter. To return to preservation, copy the result's original URL to existing catalog lookup, or take its status ID to the named Drive unit. Open the payload/asset there even if X is unavailable. Demonstrate this return trip from the provider UI. Preserve adopted titles, notes, tags and collection. New pointers follow the accepted Unsorted / to-read / first 250 primary characters policy. An approved category may exist only in the catalog; measure provider discovery with actual available metadata. A required hit missing in Raindrop is a failed probe. |
 
-If plain text fails after the observation window, isolate body indexing, long-tail
-truncation, openable links and permissions independently. Try a supported derived
-representation on the same synthetic examples (e.g. native Doc with clickable
-links if the viewer is the failure). Repeat **both** clients including long-body and
-edit probes; record limitations and the file-identity migration plan before a
-format switch. Private corpus publication follows a successful bounded probe.
+If the bounded text probe fails, isolate indexing, long-tail truncation, clickable
+links and permissions separately. For a native Doc trial, allocate a **new**
+format-specific mapping. Pre-generated binary IDs and UTF-8 download hashes
+apply only to the text path. Persist the Doc create intent and a unique logical
+key before creation. If the response is lost, reconcile by that key in the
+pinned parent; an uncertain absence or multiple matches holds without retry.
+Read back the document structure. Compare ordered paragraph text and hyperlink
+targets/ranges to the intended canonical model, normalizing only the documented
+paragraph terminator and ignoring formatting outside the renderer's contract.
+Retain the verified model digest and revision. Private app properties can locate a
+candidate; they cannot certify its content. Use the freshly read Docs revision as
+`requiredRevisionId` for each update; on conflict reread and reconcile. A stale
+revision or a changed link with identical visible text must fail the S3 fixture.
+
+Repeat the long-body, open and edit probes on desktop and Android before switching
+the active mapping. Retain the old ID as a superseded alias with its successor;
+prevent further writes to it and account for stale search hits before acceptance.
+Measure the native Doc's own return route from Raindrop. Preserve immutable asset
+links through either format. Private rollout follows the bounded client proof.
+[Docs readback](https://developers.google.com/workspace/docs/api/reference/rest/v1/documents/get)
+and [revision-controlled updates](https://developers.google.com/workspace/docs/api/reference/rest/v1/documents/batchUpdate).
 [Desktop Drive](https://support.google.com/drive/answer/2375114?co=GENIE.Platform%3DDesktop),
 [Android Drive](https://support.google.com/drive/answer/2375114?co=GENIE.Platform%3DAndroid),
 [Raindrop search](https://help.raindrop.io/using-search), [adapter/format](RAINDROP.md).
@@ -122,14 +157,21 @@ in public evidence. The synthetic cases below can travel with the code.
 | Frozen synthetic clue or scenario | Expected result |
 | --- | --- |
 | Last sluice phrase near the end of a long body; separately, “how the model caught snowmelt” | Primary 701, untruncated saved text and quoted context. Test exact and paraphrased queries separately. |
-| “origami bird riding a scarlet circle” | Photo on quoted 704, saved under 701. Literal substring search misses; the S3 reader must return and open the target. |
+| “origami bird riding a scarlet circle” | Photo on quoted 704, saved under 701 and also 703 after the late batch. Literal substring search misses; the S3 reader must return and open the target. |
 | “paper heron”, then “the one with the brass crank” | Consider both 701/photo and 702/video; narrow to 702 and play the hidden but explicitly requested video. |
 | “violet submarine”; image candidate with local bytes absent | Empty result for the first query. For the second, report missing local bytes and only claim a Drive open following successful readback. |
 | Late rain-gauge batch, approved Kinetic sculpture category and replacement video description | 703 becomes findable. Updated terms find 702, retired description disappears, original folder remains. Replay/full rebuild preserve identities and curation. |
 | Existing tagged Raindrop alias, quoted-post distractor, duplicate primary | Resolve alias to 701 with existing metadata, then open its archived context; flag duplicate as a conflict. Exercise the existing affirmative media-only predicate and its negative tests. |
 
 Run `uv run pytest -q tests/test_search_design.py tests/test_discovery_gate.py tests/test_raindrop.py`.
-The first file exercises restored synthetic batches and a test-only text renderer.
+The first file exercises restored synthetic batches, two primaries sharing a quote,
+a changed digest, category set/clear, an incomplete Article and an affirmative
+media-only exemption. The text renderer, edit examples and byte reconciliation
+decision table specify S3 behavior in tests. S3 must exercise the actual locked
+edit command and derived writer against a fake provider, including lost replies,
+reverts, Trash and stale generations. The existing
+`test_existing_alias_metadata_untouched_zero_create` exercises adoption and
+metadata preservation through the adapter.
 Its descriptions are invented labels, independent of the fixture media bytes.
 Exact/substring results measure field presence. Semantic ranking, desktop/Android
 search, real playback and provider discovery require observations in S3.
