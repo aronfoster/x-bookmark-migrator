@@ -145,7 +145,7 @@ repair. Implementation and synthetic checks are not protected installation or
 live completion. [S2](docs/SPRINTS.md#s2--publish-reconcile-and-operate) owns the
 exit tests and remaining work.
 
-**Next outcomes:** finish the historical 25; retire or gate the audited removal
+**At that checkpoint**, the plan was to finish the historical 25, retire or gate the audited removal
 helpers; accept the existing worker under current policy; process the 32 known
 archived-but-not-removed main records and resolve measured blockers among the
 43 blocked main records (plus two blocked earlier pilots). These populations

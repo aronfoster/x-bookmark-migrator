@@ -47,7 +47,7 @@ def setup(tmp_path):
     )
     calls = []
 
-    def run(inventory, handler, max_calls=50, cap="50", **kwargs):
+    def run(inventory, handler, max_calls=50, cap="50", budget=None, **kwargs):
         def handle(req):
             calls.append(req)
             assert req.method == "GET" and req.url.host == "api.x.com"
@@ -61,7 +61,7 @@ def setup(tmp_path):
         with httpx.Client(transport=httpx.MockTransport(handle)) as http:
             return inventory.run(
                 Client(store, http, "app"),
-                Budget(store, ".1", cap, "100"),
+                budget if budget is not None else Budget(store, ".1", cap, "100"),
                 max_calls=max_calls,
                 **kwargs,
             )
@@ -909,3 +909,52 @@ def test_invalid_primary_limit_fails_before_requests(setup, limit):
     with pytest.raises(PilotError, match="Primary selection limit"):
         run(Inventory(store, OWNER), example, primary_limit=limit)
     assert not calls
+
+
+@pytest.mark.parametrize("max_requests", [2, 50])
+def test_inventory_reports_only_its_own_per_operation_reservations(setup, max_requests):
+    from x_bookmark_migrator.worker import OPERATIONS, CumulativeBudget, reservation_total
+
+    store, calls, run = setup
+    rates = dict.fromkeys(OPERATIONS, ".01")
+    rates.update(main=".03", hydrate=".05", other=".20")
+    budget = CumulativeBudget(store, rates, "2", max_requests)
+    budget.reserve_operation("other")  # Work already reserved before this inventory call.
+    report = run(Inventory(store, OWNER), example, budget=budget)
+    expected = {
+        op: {"requests": count, "estimated_reserved_usd": str(Decimal(rates[op]) * count)}
+        for op, count in budget.operations.items()
+        if op != "other"
+    }
+    assert report["reservations_by_operation"] == expected
+    assert Decimal(report["estimated_reserved_usd"]) == budget.used - Decimal(".20")
+    assert reservation_total(store) == budget.used
+    assert report["get_attempts_this_run"] == len(calls)
+    assert len(calls) == sum(entry["requests"] for entry in expected.values())
+    assert report["stop_reason"] == ("spend_cap" if max_requests == 2 else None)
+
+
+def test_primary_limit_spans_lookup_chunks_without_replacing_missing_results(setup):
+    store, calls, run = setup
+    ids = [str(2000 + n) for n in range(33)]
+
+    def folder_only(req):
+        if req.url.path == BASE:
+            return page([])
+        if req.url.path == BASE + "/folders":
+            return page([{"id": "10", "name": "Synthetic folder"}])
+        if req.url.path == BASE + "/folders/10":
+            return page([{"id": pid} for pid in ids])
+        batch = req.url.params["ids"].split(",")
+        return page([post(pid) for pid in batch if pid != ids[1]])
+
+    inv = Inventory(store, OWNER)
+    report = run(inv, folder_only, primary_limit=21, hydrate_batch_size=20, skip_hydration={ids[0]})
+    assert report["stop_reason"] is None
+    assert [r.url.params["ids"].split(",") for r in calls if r.url.path == "/2/tweets"] == [
+        ids[1:21],
+        ids[21:22],
+    ]
+    assert inv.state["posts"][ids[1]]["hydration_status"] == "unresolved"
+    assert report["hydration_counts"] == {"pending": 12, "unresolved": 1, "read": 20}
+    assert all(p["folder_ids"] == ["10"] for p in inv.state["posts"].values())

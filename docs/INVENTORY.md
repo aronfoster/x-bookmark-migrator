@@ -79,7 +79,10 @@ The dollar amounts are illustrative operator reservations, **not guaranteed X
 prices**. Larger pages and expansions can cost more. Each GET reserves the same
 configured amount against the existing persistent run/month budget. Stdout separates
 reservation counts/costs for identity, main bookmarks, folder enumeration, folder
-contents, and hydration. Actual charges remain `unverified` until checked in Console.
+contents, and hydration. The worker can reserve a different amount per operation.
+The inventory summary counts each successful reservation immediately before its GET,
+including requests that later fail. A refusal before reservation contributes zero.
+The reported amounts cover this inventory invocation. Actual charges remain `unverified` until checked in Console.
 Published indicative resource rates are $0.001 for eligible main-bookmark Owned Reads
 and $0.005 for standard Post lookup; **folder endpoint fees are unverified**. Eligibility,
 expansion charges and actual deductions must be measured, not inferred from identity.
