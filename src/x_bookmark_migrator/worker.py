@@ -419,12 +419,13 @@ class Worker:
             max_calls=self.config["max_calls"],
             hydrate_batch_size=20,
             skip_hydration=skipped,
+            primary_limit=self.config["max_items"],
         )
         self.counts["discovered"] += len(set(inv.state["posts"]) - set(self.state["items"]))
         self.coverage(inv)
         if report["stop_reason"]:
             raise PilotError("Inventory stopped.", code=report["stop_reason"])
-        ids = [pid for pid in inv.state["posts"] if self.eligible(pid)][: self.config["max_items"]]
+        ids = inv.primary_candidates(skipped, self.config["max_items"])
         for offset in range(0, len(ids), 20):
             batch = ids[offset : offset + 20]
             enriched = [pid for pid in batch if inv.state["posts"][pid].get("post")]

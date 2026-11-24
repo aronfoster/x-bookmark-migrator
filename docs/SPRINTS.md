@@ -89,7 +89,21 @@ content goes to public fixtures.
 
 **M2. Trackers: FOS-216, FOS-166, FOS-169.**
 
-### 21 November — efficient repair and migration checkpoint
+### Desktop resume checkpoint — 24 November
+
+| Step | Action and evidence to retain |
+| --- | --- |
+| Start at the first unresolved operation | In the protected handoff, check for the result of the reviewed GET-only collection diagnostic. If absent, use that exact diagnostic under its existing scope. The title export and drafts already exist. Reconcile the observed lookup failure before any separately authorized update of those same 25 IDs. Preserve notes, primary URLs, collection identity, local mappings and targeted GET proof. |
+| Establish removal readiness | Inspect the original helper-retirement STOP and the deployed entry points read-only. Identify the last completed phase and actual partial changes before preparing a specific corrective step. Owner runs reviewed privileged steps. Use the existing [worker dry-run/report-only commands](WORKER.md#modes-and-configuration) under the intended account with the protected config. Verify history, counts, holds and the original ledger. |
+| Triage the backlog | Start with the saved per-record evidence and overlapping counts below. For the seven byte-limit-only items inspect recorded size, rendition and configured limit before considering a bounded retry. Missing author/media/reference, unsupported expansions, partial responses and Articles need evidence-specific resolution. Preserve blocked records and original receipts. |
+| Price and accept one transaction | Compare the retained reservations with the separate Console observation, per-operation whole-request reserves and the cumulative ceiling. Follow the existing S2 rollout sequence for authorized non-destructive and one-item current-policy runs, including fresh external and exact-primary discovery proof, readback, and before/after window partitions. The first three historical removals already showed newly visible IDs. Reuse those comparisons and distinguish IDs outside the frozen inventory from IDs already known. Bookmark age and full-history coverage remain unverified. |
+| Prove daily intake before scaling | Prove that a stalled historical probe stays paused across restart/timer while any separately authorized new-save check keeps its own bounds. The current worker couples main and folder discovery. A due queued archive takes precedence and archive-only mode leaves it queued, so repeated archive-only runs can also skip discovery of new saves. Keep its discovery job paused where the streams cannot be isolated. Require scheduled non-root execution, a later new save, immutable/readable archive and continuing backup evidence. |
+
+The 19-of-25 checkpoint below predates the owner's protected continuation. All
+25 original repairs are complete. The metadata edit, prospective gate and helper
+retirement are separate. Reuse recovery, catalog and repair receipts at each step.
+
+### Historical checkpoint — 21 November before continuation
 
 Recovery/independent restore/cleanup and publication of the captured 103 records /
 117 media are complete. OpenClaw/Mnemosyne retrieval is owner-attested. The older

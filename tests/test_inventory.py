@@ -889,3 +889,23 @@ def test_exact_link_recovery_rejects_other_valid_saved_read(setup, monkeypatch):
         inv.recover(other_name)
     assert inv.state == before and (store.root / inv.name).read_bytes() == disk
     assert inv.state["streams"]["folder:10"]["failed_evidence"] == name
+
+
+def test_standalone_resume_can_hydrate_observed_ids_outside_worker_selection(setup):
+    store, calls, run = setup
+    limited = run(Inventory(store, OWNER), example, primary_limit=1)
+    assert limited["hydration_counts"]["pending"] == 1
+    assert limited["inventory_status"] == "partial"
+    assert all(req.url.path != "/2/tweets" for req in calls)
+
+    resumed = run(Inventory(store, OWNER, resume=True, source_unchanged=True), example)
+    assert resumed["hydration_counts"] == {"read": 4}
+    assert [req.url.params["ids"] for req in calls if req.url.path == "/2/tweets"] == [C]
+
+
+@pytest.mark.parametrize("limit", [-1, 0, True, 1.5])
+def test_invalid_primary_limit_fails_before_requests(setup, limit):
+    store, calls, run = setup
+    with pytest.raises(PilotError, match="Primary selection limit"):
+        run(Inventory(store, OWNER), example, primary_limit=limit)
+    assert not calls
