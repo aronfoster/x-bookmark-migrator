@@ -91,7 +91,7 @@ shift subsequent windows. S4 repeats as needed rather than inventing a drain ETA
 
 | Sprint | Target window | Milestone / demo | Status |
 | --- | --- | --- | --- |
-| S1 | 18–24 Nov 2026 | **M1 Recoverable:** existing bundle restored off-host and completely verified; S3 search/curation designs ready for focused review. | Recovery/restore/cleanup passed; [search design](docs/SEARCH_DESIGN.md) in focused review; curation tracked separately |
+| S1 | 18–24 Nov 2026 | **M1 Recoverable:** existing bundle restored off-host and completely verified; S3 search/curation designs ready for focused review. | Recovery/restore/cleanup passed; [search design](docs/SEARCH_DESIGN.md) merged; curation tracked separately |
 | S2 | 25 Nov–1 Dec 2026 | **M2 Operational:** complete catalog visible, historical repair and prospective gate accepted, one live worker pass and scheduled run proven; blocker triage, exposure evidence and budget checkpoint recorded before scaling. | Planned; requires M1 for live rollout |
 | S3 | 2–8 Dec 2026 | **M3 Findable and organizable:** OpenClaw/Drive/Raindrop search acceptance and categorization plan/rehearsal pass. | Planned; design can proceed during S1 |
 | S4 | 9–15 Dec 2026, then repeat if needed | **M4 V1 accepted:** all-history reconciliation, continuing intake/recovery and v1 acceptance matrix pass; owner dispositions for any irrecoverable remainder. | Planned; no fixed release date |

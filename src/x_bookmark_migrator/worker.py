@@ -21,6 +21,7 @@ from .catalog import (
     link_raindrop,
     primary_post_text,
     publish,
+    read_annotations,
     read_catalog,
 )
 from .core import TOKEN_ROTATION, Client, PilotError
@@ -266,7 +267,7 @@ def merge_publication(output, incoming):
                 else:
                     target["versions"].append(copy.deepcopy(version))
         records = [merged[k] for k in sorted(merged)]
-        publish(output, apply_annotations(records, output.read("annotations.private.json") or {}))
+        publish(output, apply_annotations(records, read_annotations(output)))
 
 
 class Worker:
