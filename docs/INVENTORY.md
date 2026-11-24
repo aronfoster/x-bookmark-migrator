@@ -80,9 +80,21 @@ prices**. Larger pages and expansions can cost more. Each GET reserves the same
 configured amount against the existing persistent run/month budget. Stdout separates
 reservation counts/costs for identity, main bookmarks, folder enumeration, folder
 contents, and hydration. The worker can reserve a different amount per operation.
-The inventory summary counts each successful reservation immediately before its GET,
-including requests that later fail. A refusal before reservation contributes zero.
-The reported amounts cover this inventory invocation. Actual charges remain `unverified` until checked in Console.
+The inventory report uses two fields to describe reservations.
+
+- `get_attempts_this_run` counts GETs that reserved budget. A GET that times out
+  after reservation counts once. A GET refused by the spend cap before reservation
+  counts zero.
+- `estimated_reserved_usd` totals this inventory invocation's reservations. Its
+  value equals the sum of the amounts in `reservations_by_operation`. The pilot,
+  reference-enrichment and unbookmark reports use the same field name for the
+  amount used by their budget object, which can include earlier work in a shared run.
+
+For the $20 cumulative ceiling, read `reserved_cumulative_usd` from the offline
+[worker report](WORKER.md#modes-and-configuration). It sums all months in the
+persistent ledger. Keep the separate Console observation for actual charges.
+Adding command summaries together can double-count shared reservations.
+
 Published indicative resource rates are $0.001 for eligible main-bookmark Owned Reads
 and $0.005 for standard Post lookup; **folder endpoint fees are unverified**. Eligibility,
 expansion charges and actual deductions must be measured, not inferred from identity.
