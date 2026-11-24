@@ -42,7 +42,10 @@ until its exit evidence exists.
 Local decrypt and old marker restores do not count as full recovery. The retired
 source machine is not needed. No repeat setup/capture/key transfer.
 
-### 18 November supervised checkpoint — paused, M1 not accepted
+### Historical S1 checkpoint — 18 November
+
+The 19 November owner receipts confirm remote restore, independent key recovery
+and cleanup passed. The following table records the state before those receipts.
 
 | Work | Evidence and status |
 | --- | --- |
@@ -54,7 +57,7 @@ source machine is not needed. No repeat setup/capture/key transfer.
 | Independent recovery and cleanup | Pending remote retrieval of both ciphertexts, fresh key recovery, complete restored-bundle verification and owner disposition of retained root-only staging. |
 | Search/curation preparation | Existing FOS-220/FOS-223 design tasks remain available; this recovery session did not establish their acceptance. |
 
-**Next actor:** owner with a supervised local agent, when available. First read
+**18 November instruction, since completed:** owner with a supervised local agent. First read
 current backup activity and success evidence. If a job is already running, let it
 finish; if a suitable new snapshot completed, use it. Otherwise the owner starts
 the existing Backups job. Restore from that completed remote snapshot into a new
@@ -89,7 +92,21 @@ content goes to public fixtures.
 
 **M2. Trackers: FOS-216, FOS-166, FOS-169.**
 
-### 21 November — efficient repair and migration checkpoint
+### Desktop resume checkpoint — 24 November
+
+| Step | Action and evidence to retain |
+| --- | --- |
+| Start at the first unresolved operation | In the protected handoff, check for the result of the reviewed GET-only collection diagnostic. If absent, use that exact diagnostic under its existing scope. The title export and drafts already exist. Reconcile the observed lookup failure before any separately authorized update of those same 25 IDs. Preserve notes, primary URLs, collection identity, local mappings and targeted GET proof. |
+| Establish removal readiness | Inspect the original helper-retirement STOP and the deployed entry points read-only. Identify the last completed phase and actual partial changes before preparing a specific corrective step. Owner runs reviewed privileged steps. Use the existing [worker dry-run/report-only commands](WORKER.md#modes-and-configuration) under the intended account with the protected config. Verify history, counts, holds and the original ledger. |
+| Triage the backlog | Start with the saved per-record evidence and overlapping counts below. For the seven byte-limit-only items inspect recorded size, rendition and configured limit before considering a bounded retry. Missing author/media/reference, unsupported expansions, partial responses and Articles need evidence-specific resolution. Preserve blocked records and original receipts. |
+| Price and accept one transaction | Compare the retained reservations with the separate Console observation, per-operation whole-request reserves and the cumulative ceiling. Follow the remaining rollout steps below for separately authorized archive-only and one-item current-policy runs, including fresh external and exact-primary discovery proof, readback, and before/after window partitions. The first three historical removals already showed newly visible IDs. Reuse those comparisons and distinguish IDs outside the frozen inventory from IDs already known. Bookmark age and full-history coverage remain unverified. |
+| Prove daily intake before scaling | Prove that a stalled historical probe stays paused across restart/timer while any separately authorized new-save check keeps its own bounds. The current worker couples main and folder discovery. A due queued archive takes precedence and archive-only mode leaves it queued, so repeated archive-only runs can also skip discovery of new saves. Keep its discovery job paused where the streams cannot be isolated. Require scheduled non-root execution, a later new save, immutable/readable archive and continuing backup evidence. |
+
+The 19-of-25 checkpoint below predates the owner's protected continuation. All
+25 original repairs are complete. The metadata edit, prospective gate and helper
+retirement are separate. Reuse recovery, catalog and repair receipts at each step.
+
+### Historical checkpoint — 21 November before continuation
 
 Recovery/independent restore/cleanup and publication of the captured 103 records /
 117 media are complete. OpenClaw/Mnemosyne retrieval is owner-attested. The older
@@ -129,8 +146,8 @@ and publication-before-completion crashes resume without duplicate creates; raw
 failure evidence retained; no further writes after a stop; full regression checks.
 Independent review and owner-run protected execution remain distinct evidence.
 
-**Then advance the migration:** finish selected-item reconciliation/local links
-for the historical 25, complete helper retirement and the existing worker's
+**Remaining migration work:** the historical 25 passed final reconciliation
+and local-link verification. Complete helper retirement and the existing worker's
 current-policy acceptance, then the 32 archived-complete main records and measured
 blocker fixes. Prior blocker counts overlap: missing author 18, missing media 10,
 unsupported media expansion 9, missing reference 7, byte limit 7, partial API
@@ -170,24 +187,20 @@ Owner-approved default for subsequent migration:
 The accepted preview is complete. On 20 November, the owner attested that only
 the two audited helpers performed automated removals of these captured bookmarks,
 resolving the earlier “probably” checkpoint. This is owner confirmation, not
-independent verification. Next: prepare the reviewed installation and bounded
-Raindrop-only backfill (at most three IDs), then obtain explicit owner go-ahead
-for its live run, with fresh matching and readback. Helper retirement remains
-unverified; this confirmation does not authorize X removal or scheduling.
+independent verification. The owner subsequently completed the historical
+backfill. Helper retirement still requires its own evidence.
 
 ### Existing rollout sequence
 
-1. After M1, use the existing protected rollout to install the accepted readiness
-   release. Publish the complete catalog/HTML/source sidecar/annotations; preserve
-   old catalogs and curation. Run archive-bound writer checks and actual-reader
-   checks; open representative text, images and videos at final paths.
+1. **Complete for the captured corpus.** Use the protected installation, catalog
+   publication and actual-reader receipts as the baseline.
 2. Audit real native/private helper sources and all attempts; preserve original
    evidence, distinguish pre-intent stops, and prove old entry paths retired or
    exclusively delegated to the hardened gate.
-3. Follow [READINESS.md](READINESS.md): separately authorized complete active/Trash
-   inventory, one-record create/adopt/GET/immediate-inventory/idempotent rerun,
-   then bounded historical backfill, initially at most three IDs. Stop on conflicts
-   or uncertain results; never invent receipts or blindly retry provider writes.
+3. **Historical repair complete.** All 25 known prior removals passed targeted
+   readback and local publication. [READINESS.md](READINESS.md) documents the
+   original procedure. Resume the separate metadata edit at the collection
+   diagnostic in the current desktop handoff.
 4. Accept FOS-166's prospective gate separately from FOS-216 historical repair.
    Run the existing worker dry-run, authorized non-destructive live mode, then a
    separately authorized one-item full transaction. Verify post-removal retrieval,

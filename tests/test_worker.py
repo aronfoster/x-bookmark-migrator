@@ -794,3 +794,50 @@ def test_pinned_enumerator_change_blocks_before_any_subprocess(tmp_path, monkeyp
         adapter.helper_sha256 = None
     with pytest.raises(PilotError, match="script_pin_mismatch"):
         adapter._call("list-all")
+
+
+@pytest.mark.parametrize(
+    ("limit", "expected_lookups", "archived"),
+    [(1, [], ["104"]), (2, [["105"]], ["104", "105"])],
+)
+def test_discovery_hydrates_only_the_selected_archive_batch(
+    migration, tmp_path, limit, expected_lookups, archived
+):
+    from test_archive import includes, post
+
+    store, _, _, source, client, *_ = migration
+    lookups = []
+    source.ids = ["101", "105", "106"]
+
+    def handle(request):
+        if request.url.path == "/2/users/100/bookmarks":
+            return httpx.Response(
+                200, json={"data": [post("104")], "includes": includes([]), "meta": {}}
+            )
+        if request.url.path == "/2/tweets":
+            ids = request.url.params["ids"].split(",")
+            lookups.append(ids)
+            return httpx.Response(
+                200, json={"data": [post(pid) for pid in ids], "includes": includes([])}
+            )
+        return source.handle(request)
+
+    client.http = httpx.Client(transport=httpx.MockTransport(handle))
+    worker = make_worker(migration, tmp_path, max_items=limit)
+    worker.bootstrap(Inventory.load(store))
+    for item in worker.state["items"].values():
+        item["state"] = "blocked"
+    worker.save()
+
+    report = worker.run()
+    assert report["stop_reason"] is None
+    assert lookups == expected_lookups
+    assert report["reservations_by_operation"].get("hydrate", {}).get("requests", 0) == len(lookups)
+    assert (
+        sorted(pid for pid in worker.state["items"] if pid not in ("101", "102", "103")) == archived
+    )
+    inv = Inventory.load(store)
+    assert inv.state["posts"]["106"]["folder_ids"] == ["10"]
+    assert inv.state["posts"]["106"]["hydration_status"] == "pending"
+    assert worker.state["items"]["101"]["state"] == "blocked"
+    assert not source.deletes

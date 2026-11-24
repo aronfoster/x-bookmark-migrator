@@ -5,6 +5,7 @@ import json
 import os
 import re
 import secrets
+from collections import Counter
 from datetime import UTC, datetime
 
 import httpx
@@ -554,10 +555,26 @@ class Inventory:
             raise
         return name
 
-    def run(self, client, budget, *, max_calls=10, hydrate_batch_size=100, skip_hydration=()):
+    def primary_candidates(self, excluded, limit):
+        """Select in inventory order, counting posts already returned by the main stream."""
+        return [pid for pid in self.state["posts"] if pid not in excluded][:limit]
+
+    def run(
+        self,
+        client,
+        budget,
+        *,
+        max_calls=10,
+        hydrate_batch_size=100,
+        skip_hydration=(),
+        primary_limit=None,
+    ):
         validate_run_limits(max_calls, hydrate_batch_size)
+        if primary_limit is not None and (type(primary_limit) is not int or primary_limit < 1):
+            raise PilotError("Primary selection limit must be a positive integer.")
         calls = 0
-        reservations = {}
+        reservations = Counter()
+        amounts = Counter()
         state = self.state
         state["stop_reason"] = None
 
@@ -582,11 +599,13 @@ class Inventory:
             )
 
             def reserve():
+                before = budget.used
                 if hasattr(budget, "reserve_operation"):
                     budget.reserve_operation(operation)
                 else:
                     budget.reserve()
-                reservations[operation] = reservations.get(operation, 0) + 1
+                reservations[operation] += 1
+                amounts[operation] += budget.used - before
 
             return client.get(path, params, reserve)
 
@@ -640,11 +659,13 @@ class Inventory:
                 state["in_flight"] = False
                 self.save()
             active = None
-            while pending := [
-                p["id"]
-                for p in state["posts"].values()
-                if p["hydration_status"] == "pending" and p["id"] not in skip_hydration
-            ][:hydrate_batch_size]:
+            pending_ids = [
+                pid
+                for pid in self.primary_candidates(skip_hydration, primary_limit)
+                if state["posts"][pid]["hydration_status"] == "pending"
+            ]
+            for offset in range(0, len(pending_ids), hydrate_batch_size):
+                pending = pending_ids[offset : offset + hydrate_batch_size]
                 body = get("/2/tweets", {"ids": ",".join(pending), **post_fields(state["dialect"])})
                 self.accept_hydration(pending, body, client.observations[-1]["private_file"])
                 state["in_flight"] = False
@@ -661,13 +682,13 @@ class Inventory:
             self.save()
         return {
             **self.summary(),
-            "get_attempts_this_run": calls,
+            "get_attempts_this_run": sum(reservations.values()),
             "lookup_requests_this_run": reservations.get("hydrate", 0),
             "reservations_by_operation": {
-                op: {"requests": count, "estimated_reserved_usd": str(budget.per_call * count)}
+                op: {"requests": count, "estimated_reserved_usd": str(amounts[op])}
                 for op, count in reservations.items()
             },
-            "estimated_reserved_usd": str(budget.used),
+            "estimated_reserved_usd": str(sum(amounts.values())),
             "observed_charge": "unverified",
             "private_export": self.export(),
             "private_checkpoint": self.name,

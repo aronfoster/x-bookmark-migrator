@@ -105,7 +105,13 @@ and crashes, and per-operation counts/amounts appear in each private run report.
   Re-save or other rejection resolution needs a separately reviewed disposition. Missing,
   orphaned, changed or incomplete receipts fail closed.
 * One daily pass reads bounded first windows (one page per stream, 200 retained
-  records, 20 folders). No old positional cursor is resumed after DELETE or
+  records, 20 folders). On a fresh discovery pass, select at most `max_items`
+  eligible primary records in inventory order. A main-stream post whose body
+  is already present uses one slot. Only pending bodies in that selection are
+  looked up. Other observed IDs and their folder memberships stay in the private
+  inventory. Page reads, expansions, reference enrichment for selected posts,
+  and verification still need their own reservations and request bounds.
+  No old positional cursor is resumed after DELETE or
   restart. Existing permanent blockers and attempts are excluded from hydration;
   known transient media failures get a daily retry. Unknown category is retained;
   this inherited transaction requires a positively identified single named folder.

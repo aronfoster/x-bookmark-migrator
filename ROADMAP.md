@@ -113,7 +113,18 @@ release scope follows from a failed checkpoint. See S2/S4 for the stopping rule.
 
 ## Current checkpoint and next actions
 
-### 21 November — improve the migration path before resuming
+### 24 November — resume from the owner receipts
+
+The owner verified the off-host recovery and cleanup, publication of 103 records
+and 117 media files, and retrieval from OpenClaw. The protected installation of
+`0d5c1e9` and all 25 historical Raindrop repairs passed, including final GETs and
+persisted local links. The subsequent title/collection update stopped before
+its first PUT. Resume from the protected diagnostic and [S2 handoff](docs/SPRINTS.md#desktop-resume-checkpoint--24-november).
+The 32 archived main records await fresh gates, 43 main records and two earlier
+pilots have archive blockers, and the unseen population remains unknown.
+Current-policy worker, scheduled intake and continuing backup acceptance remain open.
+
+### Historical checkpoint — 21 November before the final repair batches
 
 Recovery, independent restore and temporary-material cleanup passed. The complete
 captured catalog is published: 103 records and 117 media files, with owner-attested
@@ -134,7 +145,7 @@ repair. Implementation and synthetic checks are not protected installation or
 live completion. [S2](docs/SPRINTS.md#s2--publish-reconcile-and-operate) owns the
 exit tests and remaining work.
 
-**Next outcomes:** finish the historical 25; retire or gate the audited removal
+**At that checkpoint**, the plan was to finish the historical 25, retire or gate the audited removal
 helpers; accept the existing worker under current policy; process the 32 known
 archived-but-not-removed main records and resolve measured blockers among the
 43 blocked main records (plus two blocked earlier pilots). These populations
