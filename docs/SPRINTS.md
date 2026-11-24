@@ -245,6 +245,13 @@ All already-required live permissions and spending limits remain in force.
 
 **M3. Trackers: FOS-220 and FOS-223.**
 
+The first offline packet implements the [catalog and description contract](CATALOG.md#reviewing-legacy-descriptions-and-rendering-drive-search-text-offline)
+and the per-primary Drive text renderer. Synthetic shared and changed captures
+exercise all four projections. The next Drive packet exercises the derived
+publisher against a fake provider through interrupted writes and stale
+generations. Freeze the protected query set before tuning or processing private
+content. Native search, retrieval and full-corpus acceptance remain open.
+
 - Use the existing catalog and exact identity mapping to provide searchable full
   preserved text, category/annotation fields and useful per-asset descriptions.
   Determine missing descriptions/OCR or retrieval logic from measured failures.

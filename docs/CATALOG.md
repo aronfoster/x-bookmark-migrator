@@ -68,8 +68,8 @@ primary records, preserving the distinction between a saved post and its quote.
 Each attachment has an exact `asset_id` = `post_id:index:media_key`, source
 relationship, original storage receipt/name/hash, source URL, logical media type
 and actual container. Identical bytes on different attachments remain independent;
-variants are not silently merged. An annotation follows the attachment across
-snapshots. `local_url` is relative to the catalog directory. `archive_url` is an
+variants are not silently merged. Visibility and semantic role follow the attachment
+ID. An explicit description follows that ID only for the reviewed byte digest. `local_url` is relative to the catalog directory. `archive_url` is an
 explicit Drive link, not a claim that the current grant or file still works.
 
 `availability` is `local_hash_verified`, `missing_local`, or `not_archived`.
@@ -90,7 +90,7 @@ IDs through JavaScript numbers. No authenticated runtime invocation was tested.
 ```sh
 uv run x-migrator catalog-annotate --catalog-dir /private/discovery \
   --asset-id '101:2:synthetic-media-key' --role incidental \
-  --description 'Synthetic researching reaction GIF'
+  --sha256 "$reviewed_sha256" --description 'Synthetic researching reaction GIF'
 
 uv run x-migrator catalog-annotate --catalog-dir /private/discovery \
   --asset-id '101:2:synthetic-media-key' --visibility ordinary
@@ -111,6 +111,42 @@ permanent deletion or tombstones are implemented. Catalog commands use one
 output-directory lock. Each generated file is atomically replaced; interruption
 between the JSONL/HTML writes can leave the views out of sync. Rebuild to repair;
 annotations and immutable source files remain intact. Close/reopen HTML after edits.
+
+### Reviewing legacy descriptions and rendering Drive search text offline
+
+Before the first upgraded publication, back up the private canonical annotations
+and run `catalog-description-audit --catalog-dir DIR` in the protected runtime.
+It reports counts across the entire annotations file, including absent batches.
+The old writer recorded no byte identity. Keep its original text privately until
+historical decision evidence identifies the reviewed digest, or inspect the actual
+asset and confirm the text again. A single occurrence today, a filename and an
+old gallery caption cannot establish which bytes were reviewed.
+
+Pass that digest to `catalog-annotate --catalog-dir DIR --asset-id ID --sha256 SHA
+--confirm-legacy-description --edit-id DECISION`. The writer verifies a local
+copy against its receipt, keeps the original legacy text, and binds it only to
+that attachment ID and digest. Use a fresh `--description` for a different
+version. Visibility-only edits still take just the attachment ID. Keep the
+decision reference and any private supporting evidence in the protected handoff.
+The private history records the target, digest, previous text and submitted edit.
+Retry with the same decision ID after interruption; a different request using
+that ID fails. A later loss of local bytes leaves a previously verified binding
+searchable alongside the missing-local status.
+
+Rebuild with all batch/receipt pairs before exposing an upgraded publication.
+Already-written HTML and JSONL on disk are replaced by that rebuild. Run
+`catalog-verify` and actual-reader `catalog-check` against independent expected
+counts. The upgraded lookup suppresses unbound descriptions even when reading
+older JSONL. Record the remaining audit count privately and retain unresolved
+text and its visibility preferences.
+
+`catalog-drive-text --catalog-dir DIR --post PRIMARY` returns a private JSON
+preview containing the stable filename, renderer version, UTF-8 body and its
+SHA-256 for one saved primary. The body includes all its snapshots, hidden
+attachments, source alt text when available and the same digest-bound descriptions
+as lookup. Paths for opening archived content come from the occurrence's receipt.
+The command reads locally. Drive publication, native indexing and client opens are
+separate S3 steps.
 
 ## Existing Raindrop contract audited 2026-10-22
 

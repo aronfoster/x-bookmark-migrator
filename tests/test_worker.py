@@ -305,8 +305,15 @@ def test_offline_live_conflicts_fail_before_calls(migration, tmp_path, monkeypat
 def test_catalog_merge_keeps_all_versions_and_owner_annotations(migration, tmp_path):
     catalog = migration[3].catalog
     records = read_catalog(catalog)
-    asset = records[0]["versions"][0]["media"][0]["asset_id"]
-    annotate(catalog, records, asset, visibility="hidden", description="Owner memory")
+    asset = records[0]["versions"][0]["media"][0]
+    annotate(
+        catalog,
+        records,
+        asset["asset_id"],
+        visibility="hidden",
+        description="Owner memory",
+        sha256=asset["storage"]["sha256"],
+    )
     before = catalog.path("annotations.private.json").read_bytes()
     incoming = copy.deepcopy(read_catalog(catalog)[:1])
     merge_publication(catalog, incoming)

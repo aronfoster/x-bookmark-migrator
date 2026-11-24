@@ -4,9 +4,11 @@ import copy
 import html
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 from urllib.parse import quote, unquote, urlsplit
+from uuid import uuid4
 
 from .archive import media_format
 from .core import PilotError, exact_id
@@ -14,6 +16,9 @@ from .drive import digest, drive_id, encode
 from .publication import PublicationReader, PublicationStore, publication_bytes
 from .source import post_id as post_id
 from .source import raindrop_post_id, source_url
+
+NO_DESCRIPTION = "Description not yet supplied"
+SHA256 = re.compile(r"[0-9a-f]{64}")
 
 VISIBILITIES = ("featured", "ordinary", "hidden")
 ROLES = ("important", "illustrative", "incidental", "unknown")
@@ -199,6 +204,7 @@ def apply_annotations(records, annotations):
         if record["post_id"] in links:
             rid = links[record["post_id"]]["raindrop_id"]
             record.update(raindrop_id=rid, raindrop_url=raindrop_link(rid))
+        record.pop("category_override", None)
         override = overrides.get(record["post_id"])
         if override is not None:
             if not isinstance(override, str) or not 1 <= len(override) <= 1000:
@@ -213,11 +219,28 @@ def apply_annotations(records, annotations):
                 )
                 if role not in ROLES or visibility not in VISIBILITIES:
                     raise PilotError("Invalid media annotation.")
+                sha = asset.get("storage", {}).get("sha256")
+                descriptions = note.get("descriptions", {})
+                if not isinstance(descriptions, dict):
+                    raise PilotError("Invalid digest-bound descriptions.")
+                description = (
+                    descriptions.get(sha)
+                    if isinstance(sha, str) and SHA256.fullmatch(sha)
+                    else None
+                )
+                status = "unreviewed"
+                if "semantic_role" in note or "browse_visibility" in note:
+                    status = note.get("interpretation_status", status)
+                asset.pop("description_sha256", None)
+                if description is not None:
+                    status = "explicit_annotation"
+                    validate_description(description)
+                    asset["description_sha256"] = sha
                 asset.update(
                     semantic_role=role,
                     browse_visibility=visibility,
-                    description=note.get("description", "Description not yet supplied"),
-                    interpretation_status=note.get("interpretation_status", "unreviewed"),
+                    description=NO_DESCRIPTION if description is None else description,
+                    interpretation_status=status,
                     preservation_state="archived_raw" if "storage" in asset else "not_archived",
                 )
     return records
@@ -264,6 +287,15 @@ def add_source_links(records):
                     raise PilotError("Archived permalink identity mismatch.")
                 post.update(source_post_id=child, source_post_url=source_url(child))
             for asset in version["media"]:
+                # Older publications contain a projected caption with no evidence of its bytes.
+                binding = asset.get("description_sha256")
+                if not (
+                    isinstance(binding, str)
+                    and SHA256.fullmatch(binding)
+                    and binding == asset.get("storage", {}).get("sha256")
+                ):
+                    asset.pop("description_sha256", None)
+                    asset["description"] = NO_DESCRIPTION
                 asset.update(
                     source_post_id=pid,
                     source_post_url=source_url(pid),
@@ -296,7 +328,11 @@ def lookup(records, value, asset_id=None):
     ]
     if asset_id is not None:
         matches = [
-            a
+            {
+                **a,
+                "manifest_sha256": v["manifest"]["sha256"],
+                "payload_sha256": v["payload_receipt"]["sha256"],
+            }
             for r in matches
             for v in r["versions"]
             for a in v["media"]
@@ -527,11 +563,84 @@ def check_publication(output, *, expected_records, expected_media=None, annotati
     }
 
 
-def annotate(output, records, key, *, visibility=None, role=None, description=None):
-    if not any(a["asset_id"] == key for r in records for v in r["versions"] for a in v["media"]):
+def validate_description(text):
+    if not isinstance(text, str) or not text.strip() or len(text) > 1000:
+        raise PilotError("Description must contain 1–1000 characters.")
+
+
+def verify_description_bytes(output, assets, sha256):
+    """Re-open a matching occurrence under the writer lock before binding a decision."""
+    for asset in assets:
+        if asset.get("availability") != "local_hash_verified":
+            continue
+        if asset.get("storage", {}).get("sha256") != sha256:
+            continue
+        try:
+            checked_bytes(output.root / unquote(asset["local_url"]), asset["storage"])
+        except FileNotFoundError:
+            continue  # A shared quote can have another verified local copy.
+        return
+    raise PilotError("No verified local bytes for the selected attachment and SHA-256.")
+
+
+def annotate(
+    output,
+    records,
+    key,
+    *,
+    visibility=None,
+    role=None,
+    description=None,
+    sha256=None,
+    confirm_legacy=False,
+    edit_id=None,
+):
+    assets = [a for r in records for v in r["versions"] for a in v["media"] if a["asset_id"] == key]
+    if not assets:
         raise PilotError("Unknown exact attachment ID.")
     notes = output.read("annotations.private.json") or {}
     note = notes.setdefault(key, {})
+    if confirm_legacy:
+        if description is not None or "description" not in note:
+            raise PilotError("Legacy confirmation requires an existing private legacy description.")
+        description = note["description"]
+    if description is not None:
+        validate_description(description)
+        if not isinstance(sha256, str) or not SHA256.fullmatch(sha256):
+            raise PilotError("Supply the SHA-256 of the reviewed attachment bytes.")
+        if edit_id is not None and (not isinstance(edit_id, str) or not edit_id.strip()):
+            raise PilotError("An edit ID must be nonempty.")
+        edit = dict(
+            asset_id=key,
+            sha256=sha256,
+            description=description,
+            confirm_legacy=confirm_legacy,
+            visibility=visibility,
+            role=role,
+        )
+        history = notes.setdefault("description_edit_history", {})
+        if edit_id in history:
+            if history[edit_id]["edit"] != edit:
+                raise PilotError("Conflicting description edit ID.")
+            # Repair an interrupted publication from current decisions, even on an old replay.
+            publish(output, apply_annotations(records, notes))
+            return
+        verify_description_bytes(output, assets, sha256)
+        if confirm_legacy and note.get("legacy_confirmed_sha256", sha256) != sha256:
+            raise PilotError("Legacy description already confirmed for another digest.")
+        descriptions = note.setdefault("descriptions", {})
+        previous = descriptions.get(sha256)
+        if (
+            edit_id is not None
+            or previous != description
+            or (confirm_legacy and "legacy_confirmed_sha256" not in note)
+        ):
+            history[edit_id or str(uuid4())] = {"edit": edit, "previous": previous}
+        descriptions[sha256] = description
+        if confirm_legacy:
+            note["legacy_confirmed_sha256"] = sha256
+    elif sha256 is not None or edit_id is not None:
+        raise PilotError("A digest or edit ID requires a description edit.")
     if role is not None:
         if role not in ROLES:
             raise PilotError("Invalid semantic role.")
@@ -542,13 +651,10 @@ def annotate(output, records, key, *, visibility=None, role=None, description=No
         if visibility not in VISIBILITIES:
             raise PilotError("Invalid browse visibility.")
         note["browse_visibility"] = visibility
-    if description is not None:
-        if not isinstance(description, str) or not 1 <= len(description) <= 1000:
-            raise PilotError("Description must contain 1–1000 characters.")
-        note["description"] = description
     note["interpretation_status"] = "explicit_annotation"
+    projected = apply_annotations(records, notes)
     output.write("annotations.private.json", notes)
-    publish(output, apply_annotations(records, notes))
+    publish(output, projected)
 
 
 COMMANDS = (
@@ -557,6 +663,8 @@ COMMANDS = (
     "catalog-lookup",
     "catalog-check",
     "catalog-annotate",
+    "catalog-description-audit",
+    "catalog-drive-text",
     "catalog-raindrop-match",
     "catalog-raindrop-link",
 )
@@ -584,16 +692,22 @@ def add_commands(sub):
             p.add_argument("--expected-records", type=int, required=True)
             p.add_argument("--expected-media", type=int)
             p.add_argument("--annotations-file", type=Path)
+        elif command == "catalog-drive-text":
+            p.add_argument("--post", required=True)
         elif command == "catalog-lookup":
             p.add_argument("--post", required=True)
             p.add_argument("--asset-id")
         elif command == "catalog-raindrop-link":
             p.add_argument("--receipt-file", type=Path, required=True)
-        else:
+        elif command == "catalog-annotate":
             p.add_argument("--asset-id", required=True)
             p.add_argument("--visibility", choices=VISIBILITIES)
             p.add_argument("--role", choices=ROLES)
-            p.add_argument("--description")
+            desc = p.add_mutually_exclusive_group()
+            desc.add_argument("--description")
+            desc.add_argument("--confirm-legacy-description", action="store_true")
+            p.add_argument("--sha256", help="Digest of the reviewed attachment bytes")
+            p.add_argument("--edit-id", help="Stable decision ID for retrying a description edit")
 
 
 def run(args):
@@ -602,8 +716,26 @@ def run(args):
             args.post, [json.loads(private_bytes(p)) for p in args.page_file]
         )
         return {"matches": matches, "coverage": "not_established", "create_authorized": False}
-    if args.command in ("catalog-lookup", "catalog-check"):
+    if args.command == "catalog-description-audit":
+        # Count all retained legacy notes, including assets absent from the current catalog.
+        if not args.catalog_dir.is_dir():
+            raise PilotError("Catalog directory must exist.")
+        notes = PublicationStore(args.catalog_dir).read("annotations.private.json") or {}
+        legacy = [v for k, v in notes.items() if ":" in k and "description" in v]
+        return {
+            "legacy_descriptions": len(legacy),
+            "awaiting_confirmation": sum("legacy_confirmed_sha256" not in v for v in legacy),
+        }
+    if args.command in ("catalog-lookup", "catalog-check", "catalog-drive-text"):
         output = PublicationReader(args.catalog_dir)
+        if args.command == "catalog-drive-text":
+            from .search_projection import drive_text
+
+            pid = post_id(args.post)
+            for record in read_catalog(output):
+                if record["post_id"] == pid:
+                    return drive_text(record)
+            raise PilotError("No exact saved primary for the Drive projection.")
         if args.command == "catalog-lookup":
             return {
                 "matches": lookup(read_catalog(output), args.post, args.asset_id),
@@ -637,7 +769,9 @@ def run(args):
                 raise PilotError("Raindrop receipt must be an object.")
             link_raindrop(output, records, receipt)
             return {"raindrop_link_updated": True, "network_calls": 0}
-        if all(v is None for v in (args.visibility, args.role, args.description)):
+        if not args.confirm_legacy_description and all(
+            v is None for v in (args.visibility, args.role, args.description)
+        ):
             raise PilotError("Supply a visibility, role, or description edit.")
         annotate(
             output,
@@ -646,5 +780,8 @@ def run(args):
             visibility=args.visibility,
             role=args.role,
             description=args.description,
+            sha256=args.sha256,
+            confirm_legacy=args.confirm_legacy_description,
+            edit_id=args.edit_id,
         )
         return {"annotation_updated": True, "network_calls": 0}

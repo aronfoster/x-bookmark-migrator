@@ -13,10 +13,19 @@ from test_archive import includes, inventory, media_http, photo, post, storage, 
 from test_raindrop import item, snapshot
 
 from x_bookmark_migrator.archive import archive_batch, restore_batch
-from x_bookmark_migrator.catalog import annotate, build, drive_link, lookup, read_catalog
+from x_bookmark_migrator.catalog import (
+    annotate,
+    build,
+    drive_link,
+    lookup,
+    publish,
+    read_catalog,
+    render,
+)
 from x_bookmark_migrator.core import Store
 from x_bookmark_migrator.discovery_gate import positive_media_only
 from x_bookmark_migrator.raindrop import inspect_inventory
+from x_bookmark_migrator.search_projection import drive_text
 from x_bookmark_migrator.source import raindrop_post_id
 
 TAIL = "The last sluice opened at moonrise."
@@ -80,68 +89,8 @@ def archive(storage, tmp_path):  # noqa: F811
     return output, batches
 
 
-def record_text(record, descriptions=None):
-    """Minimal UTF-8 body for the proposed Drive probe, built from a catalog record."""
-    lines = ["Saved post: " + record["source_post_url"]]
-    if "category_override" in record:
-        lines.append("Approved category: " + record["category_override"])
-    if "raindrop_url" in record:
-        lines.append("Raindrop: " + record["raindrop_url"])
-    for version in record["versions"]:
-        lines.extend(
-            [
-                "Snapshot: "
-                + version["manifest"]["sha256"]
-                + " / "
-                + version["payload_receipt"]["sha256"],
-                "Preserved payload: " + version["payload_url"],
-                "Original category: " + version["category"],
-                *version["blockers"],
-            ]
-        )
-        for folder in version["folders"]:
-            lines.extend(folder["names"])
-        relations = {
-            ref["id"]: ref["type"]
-            for parent in version["posts"]
-            for ref in parent["raw"].get(
-                "referenced_posts", parent["raw"].get("referenced_tweets", [])
-            )
-        }
-        for p in version["posts"]:
-            label = "Primary" if p["id"] == record["post_id"] else relations[p["id"]]
-            if p["author"]:
-                lines.append("Author: " + p["author"]["username"])
-            article = p["raw"].get("article")
-            if isinstance(article, dict):
-                for field in ("title", "plain_text"):
-                    if isinstance(article.get(field), str):
-                        lines.append("Article " + field + ": " + article[field])
-            lines.extend(
-                [
-                    label + ": " + p["source_post_url"],
-                    p["text"] if p["text"] is not None else "(text unavailable)",
-                ]
-            )
-        for asset in version["media"]:
-            caption = (descriptions or {}).get(
-                (asset["asset_id"], asset.get("storage", {}).get("sha256"))
-            )
-            lines.extend(
-                [
-                    "Attachment: " + asset["asset_id"],
-                    asset.get("logical_type", "unknown type"),
-                    asset["attachment_post_url"],
-                    asset["availability"],
-                    asset["browse_visibility"],
-                    "Explicit description: " + caption
-                    if caption
-                    else "Description awaiting evidence",
-                ]
-            )
-            if "archive_url" in asset:
-                lines.append(asset["archive_url"])
-    return "\n".join(lines) + "\n"
+def record_text(record):
+    return drive_text(record)["body"]
 
 
 def literal_hits(units, clue):
@@ -176,13 +125,18 @@ def test_search_units_and_incremental_rebuild(archive):
         if p.is_file()
     }
     first = build(batches[:1], output)
-    annotate(output, first, PHOTO_ID, description=IMAGE)
-    annotate(output, read_catalog(output), VIDEO_ID, description=VIDEO, visibility="hidden")
     image_hash = lookup(first, "704", PHOTO_ID)[0]["storage"]["sha256"]
     video_hash = lookup(first, "702", VIDEO_ID)[0]["storage"]["sha256"]
-    # S3 binds the accepted text to the bytes shown at edit time.
-    descriptions = {(PHOTO_ID, image_hash): IMAGE, (VIDEO_ID, video_hash): VIDEO}
-    before = {r["post_id"]: record_text(r, descriptions) for r in build(batches[:1], output)}
+    annotate(output, first, PHOTO_ID, description=IMAGE, sha256=image_hash)
+    annotate(
+        output,
+        read_catalog(output),
+        VIDEO_ID,
+        description=VIDEO,
+        visibility="hidden",
+        sha256=video_hash,
+    )
+    before = {r["post_id"]: record_text(r) for r in build(batches[:1], output)}
     assert set(before) == {"701", "702"}
     assert LONG_TEXT in before["701"]
     assert literal_hits(before, TAIL) == {"701"}
@@ -202,12 +156,11 @@ def test_search_units_and_incremental_rebuild(archive):
     category_edit(output, "first", "702", "Kinetic sculpture")
     records = build(batches, output)
     changed = "A tin kingfisher spins a flywheel."
-    annotate(output, records, VIDEO_ID, description=changed)
+    annotate(output, records, VIDEO_ID, description=changed, sha256=video_hash)
     saved_notes = output.read("annotations.private.json")
-    annotate(output, read_catalog(output), VIDEO_ID, description=changed)
+    annotate(output, read_catalog(output), VIDEO_ID, description=changed, sha256=video_hash)
     assert output.read("annotations.private.json") == saved_notes
-    descriptions[VIDEO_ID, video_hash] = saved_notes[VIDEO_ID]["description"]
-    after = {r["post_id"]: record_text(r, descriptions) for r in read_catalog(output)}
+    after = {r["post_id"]: record_text(r) for r in read_catalog(output)}
     assert set(after) == {"701", "702", "703", "705", "706"}
     assert "Article title: Waterworks ledger" in after["706"]
     assert (
@@ -222,8 +175,7 @@ def test_search_units_and_incremental_rebuild(archive):
     assert literal_hits(after, "brass crank") == set()
     assert literal_hits(after, "synthetic category") == set(after)
     assert {
-        r["post_id"]: record_text(r, descriptions)
-        for r in build([*reversed(batches), batches[0]], output)
+        r["post_id"]: record_text(r) for r in build([*reversed(batches), batches[0]], output)
     } == after
     hidden = lookup(read_catalog(output), "702", VIDEO_ID)[0]
     assert hidden["browse_visibility"] == "hidden"
@@ -236,7 +188,7 @@ def test_search_units_and_incremental_rebuild(archive):
     with pytest.raises(ValueError, match="conflicting edit ID"):
         category_edit(reopened, "first", "703", "Kinetic sculpture")
     assert reopened.read("annotations.private.json") == cleared_notes
-    cleared = {r["post_id"]: record_text(r, descriptions) for r in build(batches, output)}
+    cleared = {r["post_id"]: record_text(r) for r in build(batches, output)}
     assert literal_hits(cleared, "kinetic sculpture") == set()
     assert literal_hits(cleared, "synthetic category") == set(after)
     assert literal_hits(cleared, changed) == {"702"}
@@ -247,11 +199,11 @@ def test_missing_bytes_and_raindrop_archive_return(archive):
     output, batches = archive
     records = build(batches, output)
     asset = lookup(records, "704", PHOTO_ID)[0]
+    annotate(output, records, PHOTO_ID, description=IMAGE, sha256=asset["storage"]["sha256"])
     (output.root / unquote(asset["local_url"])).unlink()
     # Matching a description can establish a candidate even when opening local bytes fails.
     records = build(batches, output)
-    annotate(output, records, PHOTO_ID, description=IMAGE)
-    missing = lookup(read_catalog(output), "704", PHOTO_ID)[0]
+    missing = lookup(records, "704", PHOTO_ID)[0]
     assert missing["availability"] == "missing_local" and "local_url" not in missing
     assert missing["description"] == IMAGE and missing["archive_url"] == asset["archive_url"]
 
@@ -274,13 +226,13 @@ def test_shared_quote_and_replaced_media(archive, storage, tmp_path):  # noqa: F
     assert len({a["storage"]["sha256"] for a in shared}) == 1
     before = {r["post_id"]: record_text(r) for r in records}
     original_hash = shared[0]["storage"]["sha256"]
-    annotate(output, records, PHOTO_ID, description=IMAGE)
-    note = output.read("annotations.private.json")[PHOTO_ID]
-    bound = {(PHOTO_ID, original_hash): note["description"]}
+    annotate(output, records, PHOTO_ID, description=IMAGE, sha256=original_hash)
     rebuilt = build(batches, output)
-    after = {r["post_id"]: record_text(r, bound) for r in rebuilt}
+    after = {r["post_id"]: record_text(r) for r in rebuilt}
     assert {pid for pid in after if after[pid] != before[pid]} == {"701", "703"}
     assert all(a["description"] == IMAGE for a in lookup(rebuilt, "704", PHOTO_ID))
+    other = lookup(rebuilt, "705", "705:1:solo")[0]
+    assert other["storage"]["sha256"] == original_hash and other["description"] != IMAGE
 
     # Another valid one-pixel PNG in a later capture of the same primary/quote.
     png = base64.b64decode(
@@ -299,13 +251,39 @@ def test_shared_quote_and_replaced_media(archive, storage, tmp_path):  # noqa: F
     versions = primary["versions"]
     assert len(versions) == 2
     assert len({v["media"][0]["storage"]["sha256"] for v in versions}) == 2
+    publish(output, merged)
+    persisted = [
+        json.loads(line) for line in output.path("catalog.jsonl").read_bytes().splitlines()
+    ]
+    assert persisted == merged
+    rows = lookup(read_catalog(output), "704", PHOTO_ID)
+    assert output.path("index.html").read_text().count(f'alt="{IMAGE}"') == 2
+    assert (
+        len({(a["source_post_id"], a["manifest_sha256"], a["payload_sha256"]) for a in rows}) == 3
+    )
+    for a in rows:
+        assert (a["description"] == IMAGE) == (a["storage"]["sha256"] == original_hash)
+    replacement = next(a for a in rows if a["storage"]["sha256"] != original_hash)
     for version in versions:
         asset = version["media"][0]
-        # The existing catalog projects by ID. The S1 rendering must narrow this by digest.
-        assert asset["asset_id"] == PHOTO_ID and asset["description"] == IMAGE
-        unit = record_text({**primary, "versions": [version]}, bound)
-        assert (IMAGE in unit) == (asset["storage"]["sha256"] == original_hash)
-        assert IMAGE not in record_text({**primary, "versions": [version]})  # unbound legacy
+        matches = asset["storage"]["sha256"] == original_hash
+        assert (asset.get("description_sha256") == original_hash) == matches
+        unit = {**primary, "versions": [version]}
+        assert (IMAGE in record_text(unit)) == matches
+        assert (f'alt="{IMAGE}"' in render([unit])) == matches
+        assert asset["archive_url"] in record_text(unit)
+    annotate(
+        output,
+        merged,
+        PHOTO_ID,
+        description="Green replacement",
+        sha256=replacement["storage"]["sha256"],
+    )
+    rebuilt = build([newer, *reversed(batches)], output)
+    for a in lookup(rebuilt, "704", PHOTO_ID):
+        assert a["description"] == (
+            IMAGE if a["storage"]["sha256"] == original_hash else "Green replacement"
+        )
 
 
 def test_media_only_surface_populations(archive):
