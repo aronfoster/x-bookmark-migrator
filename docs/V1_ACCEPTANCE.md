@@ -7,6 +7,9 @@ v1 outcomes. The hosted gallery and new source integrations are v2.
 
 ## Search contract
 
+The [S1 design and synthetic probes](SEARCH_DESIGN.md) specify the proposed per-record
+format, stable asset links, rebuild behavior and focused S3 measurements.
+
 Use one corpus with stable source/asset identities and separate original evidence,
 generated descriptions/suggestions and human-approved annotations. Every preserved
 record and attachment must be accounted for as indexed or explicitly failed with a

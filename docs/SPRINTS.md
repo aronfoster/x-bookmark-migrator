@@ -77,13 +77,10 @@ roundtrip, two recovery-key test methods with positive/negative crypto cases, an
 three isolated quota fixtures. These are distinct from the owner-reported live
 PASS results above and do not establish remote recovery.
 
-**Remote work available now:** FOS-220 designs the fixed query/coverage set and a
-per-record Drive searchable unit linked to immutable originals, with source/asset
-IDs, text, categories, descriptions and links. Specify its format, stable file
-mapping, idempotent update/rebuild path after annotation edits, and native UI
-indexing probe; a derived text sidecar is the starting candidate, not a proven
-Drive representation. Select a description producer within existing authorization
-and record any genuine privacy/spend decision before processing private content.
+**24 November search handoff:** [FOS-220 S1 design and executable fixtures](SEARCH_DESIGN.md)
+are ready for focused review. Review primary/attachment mapping, edit and crash
+recovery, and the native Drive and vague-memory acceptance probes before S3
+implementation. Desktop/Android indexing and provider discovery still need S3 proof.
 FOS-223 reviews the category queue/rehearsal in [V1_ACCEPTANCE.md](V1_ACCEPTANCE.md).
 These tasks do not require private recovery keys or wait for M1. No private
 content goes to public fixtures.
