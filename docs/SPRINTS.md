@@ -27,6 +27,18 @@ until its exit evidence exists.
 The owner-run checkpoint is 103 linked, 58 archive-complete and linked, 27
 confirmed removed. The cumulative reservation was $19.238, not a provider bill.
 
+Repair triage accounts for each of the 45 captured exceptions once:
+
+| Primary reason for repair | Records | Evidence and next check |
+| --- | ---: | --- |
+| Missing author or referenced post | 24 | 19 lack an author, seven lack a reference, and two are in both groups. A retained lookup supplied one exact author; no retained post supplied the seven missing references. Require a reproducible successor before clearing a blocker. |
+| Media origin only | 8 | Preserve the relation to the source post. Ordinary media bytes alone cannot establish its origin. |
+| Media exceeded byte limit only | 7 | Credential-free CDN size checks found five original renditions within the 256 MiB repair ceiling; two exceed it. Require content, Drive readback and local restore, not just a successful size check. |
+| Media count only | 2 | Each source declared 20 attachments and returned all 20 expansions; the prior local limit archived 16. Restore and verify all 20 for each primary. |
+| Article only | 2 | Article text is present; neither cover media key had a matching object in the retained expansions. Keep both incomplete. |
+| Missing media only | 1 | No matching media object or verified stored asset was found for the missing keys in the captured set. |
+| Folder unknown only | 1 | Require positive evidence of placement; absence from a capped folder page cannot establish that it was unfiled. |
+
 ### Working rules
 
 1. Select one current-sprint deliverable and name the existing implementation/runbook.

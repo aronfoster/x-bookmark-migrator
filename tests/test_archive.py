@@ -660,6 +660,102 @@ def test_source_media_never_counts_as_complete(storage, with_keys, nested):
     assert payload["posts"][-1]["raw"]["attachments"] == attachments
 
 
+def source_media_fixture():
+    keys = ["photo-1", "photo-2"]
+    origin = post("102", attachments={"media_keys": keys.copy()})
+    primary = post(attachments={"media_source_tweet_id": ["102"], "media_keys": keys})
+    inc = includes([photo(key) for key in keys], [origin])
+    return primary, inc, {"status": 200, "response": {"data": [primary], "includes": inc}}
+
+
+def test_complete_source_media_keeps_each_primary_asset_and_its_exact_origin(storage):
+    store, drive, server, _ = storage
+    primary, inc, _ = source_media_fixture()
+    inv = inventory(store, [primary], inc)
+    with httpx.Client(transport=httpx.MockTransport(media_http)) as media:
+        result = archive_batch(inv, drive, media)
+    assert result["bytes_verified"] == 1
+    row = json.loads(server.bytes[manifest(store, result)])
+    payload = json.loads(server.bytes[row["payload"]["file_id"]])
+    assert [(a["post_id"], a["index"], a["media_key"]) for a in payload["media"]] == [
+        ("101", 1, "photo-1"),
+        ("101", 2, "photo-2"),
+    ]
+    for asset in payload["media"]:
+        assert asset["media_origin"] == {"post": inc["posts"][0], "author": inc["users"][0]}
+        assert server.bytes[asset["storage"]["file_id"]] == PNG
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "missing_provenance",
+        "merged",
+        "partial",
+        "author",
+        "extra_key",
+        "missing_key",
+        "duplicate_key",
+        "self_cycle",
+        "origin_cycle",
+        "multiple_origins",
+        "unavailable",
+        "conflict",
+        "missing_media",
+        "different_includes",
+        "scalar_id",
+        "origin_reference",
+        "malformed_origin_entity",
+        "primary_absent",
+    ],
+)
+def test_source_media_incomplete_evidence_never_certifies(failure):
+    primary, inc, evidence = source_media_fixture()
+    origin = inc["posts"][0]
+    attachments = primary["attachments"]
+    if failure == "missing_provenance":
+        evidence = None
+    elif failure == "merged":
+        evidence["original_response"] = evidence["response"].copy()
+    elif failure == "partial":
+        evidence["response"]["errors"] = [{}]
+    elif failure == "author":
+        origin["author_id"] = "901"
+    elif failure == "extra_key":
+        origin["attachments"]["media_keys"].append("other")
+    elif failure == "missing_key":
+        origin["attachments"]["media_keys"].pop()
+    elif failure == "duplicate_key":
+        for item in (primary, origin):
+            item["attachments"]["media_keys"].append("photo-1")
+    elif failure == "self_cycle":
+        attachments["media_source_tweet_id"] = ["101"]
+    elif failure == "origin_cycle":
+        origin["attachments"]["media_source_tweet_id"] = ["101"]
+    elif failure == "multiple_origins":
+        attachments["media_source_tweet_id"].append("103")
+    elif failure == "unavailable":
+        origin["withheld"] = {}
+    elif failure == "conflict":
+        evidence["response"]["data"].append(dict(origin, text="different"))
+    elif failure == "missing_media":
+        inc["media"].pop()
+    elif failure == "different_includes":
+        evidence["response"]["includes"] = {}
+    elif failure == "scalar_id":
+        attachments["media_source_tweet_id"] = "102"
+    elif failure == "origin_reference":
+        origin["referenced_posts"] = [{"id": "101", "type": "quoted"}]
+    elif failure == "malformed_origin_entity":
+        origin["entities"] = {"urls": [None]}
+    elif failure == "primary_absent":
+        evidence["response"]["data"] = [origin]
+    _, assets, blockers = plan_post(primary, inc, evidence)
+    assert "blocked_unsupported_media_source" in blockers
+    assert [asset["media_key"] for asset in assets] == attachments["media_keys"]
+    assert all("media_origin" not in asset for asset in assets)
+
+
 @pytest.mark.parametrize("failure", [403, 429, "transport", "readback"])
 def test_media_storage_failure_aborts_entire_batch(storage, failure):
     store, _, server, _ = storage
