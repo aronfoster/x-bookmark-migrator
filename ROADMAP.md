@@ -113,6 +113,15 @@ release scope follows from a failed checkpoint. See S2/S4 for the stopping rule.
 
 ## Current checkpoint and next actions
 
+### 26 November — repair and remove the captured backlog first
+
+All 103 captured records have distinct Raindrop links. Of those, 58 have complete
+archives and 27 have confirmed X removals. Prioritize the 31 verified archives
+pending removal and the 45 incomplete archives. Two IDs observed outside the
+catalog and unreliable folder paging leave historical coverage open. A new-save
+worker demonstration is a separate automation milestone, not a prerequisite
+for backlog repair. See the [backlog exit criteria](docs/SPRINTS.md#captured-backlog-exit-criteria--26-november).
+
 ### 24 November — resume from the owner receipts
 
 The owner verified the off-host recovery and cleanup, publication of 103 records

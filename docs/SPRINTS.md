@@ -8,6 +8,27 @@ until its exit evidence exists.
 
 ## Session and sprint discipline
 
+### Captured backlog exit criteria — 26 November
+
+1. Drain the 31 complete, linked records first when live checks and the existing
+   budget allow. Require a positive source match, verified archive and Drive
+   receipts, the saved Raindrop ID's fresh GET, and a confirmed X result. Keep
+   uncertain attempts separate; do not retry them as new removals.
+2. Repair the 45 incomplete records from retained evidence where possible.
+   Preserve earlier versions. Publish and restore-check the repaired version
+   before promoting a record to the removal queue. Count distinct records, not
+   resolved blocker labels; a record can have several.
+3. Account for IDs observed outside the catalog separately. Resume new-save
+   worker acceptance with one real primary through discovery, local and Drive
+   archival, Mnemosyne retrieval, titled Raindrop publication and X confirmation;
+   verify restart without duplicate publication or removal. A successful sample
+   is not evidence of exhaustive historical coverage.
+
+The owner-run checkpoint is 103 linked, 58 archive-complete and linked, 27
+confirmed removed. The cumulative reservation was $19.238, not a provider bill.
+
+### Working rules
+
 1. Select one current-sprint deliverable and name the existing implementation/runbook.
    Keep one active implementation owner per file/slice. Do not start v2 during v1
    unless the owner changes priority. Read latest private receipts before local work.

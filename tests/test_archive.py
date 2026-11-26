@@ -300,6 +300,16 @@ def test_incomplete_content_never_claimed_complete(extra, inc, reason):
     assert reason in blockers
 
 
+@pytest.mark.parametrize("count", [20, 21])
+def test_full_carousel_or_explicit_count_blocker(count):
+    keys = [f"photo-{i}" for i in range(count)]
+    _, assets, blockers = plan_post(
+        post(attachments={"media_keys": keys}), includes([photo(k) for k in keys])
+    )
+    assert [asset["media_key"] for asset in assets] == keys[:20]
+    assert blockers == ([] if count == 20 else ["blocked_media_count"])
+
+
 def test_both_documented_long_text_dialects_and_conflict():
     assert plan_post(post(note_tweet={"text": "full"}), includes())[0][0]["text"] == "full"
     assert (

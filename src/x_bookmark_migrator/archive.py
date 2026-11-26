@@ -299,9 +299,9 @@ def plan_post(post, includes):
         if not isinstance(keys, list) or any(not isinstance(k, str) for k in keys):
             blockers.append("blocked_invalid_attachments")
             keys = []
-        if len(keys) > 16:
+        if len(keys) > 20:
             blockers.append("blocked_media_count")
-            keys = keys[:16]
+            keys = keys[:20]
         if attachments.get("poll_ids"):
             blockers.append("blocked_unsupported_poll")
         for index, key in enumerate(keys, 1):
@@ -470,6 +470,10 @@ def archive_batch(inventory, drive, media_http, *, post_ids=None, limit=5):
                 "deletion_eligible": False,
             }
         )
+    return finish_batch(inventory.store, drive, rows)
+
+
+def finish_batch(store, drive, rows):
     raw_manifest = b"".join(encode(r) for r in rows)
     manifest = drive.save(
         "batches", digest(raw_manifest) + ".jsonl", raw_manifest, "application/x-ndjson"
@@ -491,9 +495,9 @@ def archive_batch(inventory, drive, media_http, *, post_ids=None, limit=5):
     name = "archive-" + receipt_id + ".private.json"
     # Store.write replaces atomically; a random new name plus explicit existence guard
     # keeps batch receipts immutable under the enclosing state lock.
-    if inventory.store.path(name).exists():
+    if store.path(name).exists():
         raise PilotError("Archive receipt collision.")
-    inventory.store.write(name, receipt)
+    store.write(name, receipt)
     return {
         "records": receipt["records"],
         "bytes_verified": receipt["bytes_verified"],
