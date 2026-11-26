@@ -226,3 +226,19 @@ record with fresh state and no X access; inspect text and decode media, compare
 photo dimensions, and check whether plain quotes include their authors; document
 unsupported cases and actual charges privately. Fixture tests and merged code
 do not satisfy this gate. FOS-167 live deletion remains blocked until it passes.
+
+## Retained-author successors
+
+Use `archive-repair --reason retained_author` with the receipt-bound source and
+donor batches to preview an author-only repair. Apply requires the preview digest,
+the pinned Drive destination and a separate `--output-dir`. To promote the
+restored version, supply the existing `--catalog-dir` and a restore directory
+with the same reader permissions inside the catalog's archive tree.
+
+The successor keeps the original lookup unchanged. It links separately to the
+predecessor and donor manifests and payloads, and pins the donor lookup digest.
+The writer verifies those chains and all restored successor bytes using a fresh
+Drive client before issuing a completion receipt. Catalog merge requires both
+source versions to be present and preserves earlier versions and annotations.
+An interrupted run can resume the same plan and restore directory. This repair
+does not change the X removal verifier or authorize removal.
