@@ -8,7 +8,7 @@ from pathlib import Path
 import httpx
 
 from .backlog import prepare_one, require_complete_history, select_backlog, staged_one
-from .billing import SETTLEMENT, cutoff, settle
+from .billing import cutoff, ledger, settle, settlement_state
 from .catalog import private_bytes
 from .core import PilotError, Store, exact_id
 from .drive import MAX_BYTES, Drive, digest, encode
@@ -264,8 +264,8 @@ def run(args):
         bill = store.read("worker-billing.private.json")
         if not isinstance(bill, dict) or not bill.get("observed_at"):
             raise PilotError("Record the reviewed Console billing observation before live work.")
-        if staged and not store.path(SETTLEMENT).is_file():
-            raise PilotError("Reconcile the historical billing cutoff before staged removal.")
+        if staged:
+            settlement_state(store, ledger(store), bill, required=True)
         budget = CumulativeBudget(
             store,
             config["reservation_usd"],

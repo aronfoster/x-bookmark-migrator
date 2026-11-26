@@ -122,6 +122,30 @@ def verify_months(current, floor):
         raise PilotError("Monthly reservation ledger regressed; no request permitted.")
 
 
+def settlement_state(store, months, bill, *, required=False):
+    receipt, marker = store.read(SETTLEMENT), store.read(HIGH_WATER)
+    if not store.path(SETTLEMENT).exists() and not store.path(HIGH_WATER).exists():
+        if required:
+            raise PilotError("Reconcile the historical billing cutoff before staged removal.")
+        return {}, None, Decimal(0)
+    if (
+        not isinstance(receipt, dict)
+        or not isinstance(marker, dict)
+        or marker.get("settlement_sha256") != fingerprint(receipt)
+        or bill is None
+    ):
+        raise PilotError("Incomplete settlement or high-water record; no request permitted.")
+    covered = monthly(receipt["reserved_by_month_usd"])
+    previous = monthly(marker.get("months"))
+    verify_months(previous, covered)
+    verify_months(months, previous)
+    return (
+        covered,
+        marker,
+        max(money(receipt["provider_cumulative_usd"]), money(marker["actual_usd"])),
+    )
+
+
 def reserve(store, amount, *, month_cap=None, cap=CAP, actual=Decimal(0)):
     """Charge the shared ledger before dispatch. Neither settlement nor failure releases it."""
     raw = raw_ledger(store)
@@ -131,23 +155,10 @@ def reserve(store, amount, *, month_cap=None, cap=CAP, actual=Decimal(0)):
         if not isinstance(bill, dict) or not bill.get("observed_at"):
             raise PilotError("Invalid private billing observation.")
         actual = max(actual, money(bill.get("actual_usd")))
-    covered = {}
-    marker = None
-    receipt, marker = store.read(SETTLEMENT), store.read(HIGH_WATER)
-    if store.path(SETTLEMENT).exists() or store.path(HIGH_WATER).exists():
-        if (
-            not isinstance(receipt, dict)
-            or not isinstance(marker, dict)
-            or marker.get("settlement_sha256") != fingerprint(receipt)
-            or bill is None
-        ):
-            raise PilotError("Incomplete settlement or high-water record; no request permitted.")
-        covered = monthly(receipt["reserved_by_month_usd"])
-        previous = monthly(marker.get("months"))
-        verify_months(previous, covered)
-        verify_months(months, previous)
+    covered, marker, settled_actual = settlement_state(store, months, bill)
+    if marker is not None:
         prior_actual = money(marker.get("actual_usd"))
-        actual = max(actual, money(receipt["provider_cumulative_usd"]), prior_actual)
+        actual = max(actual, settled_actual)
         if actual > prior_actual:
             # A denied reservation must not forget a higher observed lifetime charge.
             marker = {**marker, "actual_usd": str(actual)}

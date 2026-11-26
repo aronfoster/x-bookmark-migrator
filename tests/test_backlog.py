@@ -13,9 +13,9 @@ from test_worker import config, make_worker
 from x_bookmark_migrator import cli, worker_cli
 from x_bookmark_migrator.archive import batch_receipt, save_manifest
 from x_bookmark_migrator.backlog import select_backlog
-from x_bookmark_migrator.billing import cutoff, settle
+from x_bookmark_migrator.billing import HIGH_WATER, cutoff, settle
 from x_bookmark_migrator.catalog import publish, read_catalog
-from x_bookmark_migrator.core import PilotError
+from x_bookmark_migrator.core import TOKEN_ROTATION, PilotError
 from x_bookmark_migrator.drive import digest, encode
 from x_bookmark_migrator.unbookmark import make_plan
 from x_bookmark_migrator.worker import JOURNAL
@@ -288,9 +288,19 @@ def test_real_cli_requires_complete_sources_and_rejects_staged_artifact_on_gener
 
 
 @pytest.mark.parametrize(
-    "fault", ["none", "hold", "repinned", "missing_link", "missing_restore", "rate_limit"]
+    "fault",
+    [
+        "none",
+        "hold",
+        "repinned",
+        "missing_link",
+        "missing_restore",
+        "rate_limit",
+        "half_settled",
+        "identity_denied",
+    ],
 )
-def test_staged_worker_dispatch(migration, tmp_path, monkeypatch, fault):
+def test_staged_worker_dispatch(migration, tmp_path, monkeypatch, capsys, fault):
     store, _, server, source, client, _, _, _ = migration
     worker = make_worker(migration, tmp_path, max_items=1, helper_descriptors=[])
     cfg = dict(
@@ -390,6 +400,33 @@ def test_staged_worker_dispatch(migration, tmp_path, monkeypatch, fault):
                 *args,
             ],
         )
+        if fault in ("half_settled", "identity_denied"):
+            calls = []
+
+            def deny(req):
+                calls.append(req.url.path)
+                return httpx.Response(403, json={"detail": "fixture"})
+
+            client.http = real_client(transport=httpx.MockTransport(deny))
+            if fault == "half_settled":
+                store.path(HIGH_WATER).unlink()
+                store.write(
+                    "tokens.private.json", dict(store.read("tokens.private.json"), expires_at=0)
+                )
+            token_before = store.read("tokens.private.json")
+            rotation_before = store.read(TOKEN_ROTATION)
+            assert cli.main() == 1
+            output = capsys.readouterr()
+            assert calls == ([] if fault == "half_settled" else ["/2/users/me"])
+            assert len(server.calls) == before[0] and not source.provider.calls
+            assert not list(store.root.glob("unbookmark-*.intent.private.json"))
+            assert store.read("tokens.private.json") == token_before
+            assert store.read(TOKEN_ROTATION) == rotation_before
+            if fault == "identity_denied":
+                name = client.observations[-1]["private_file"]
+                assert store.read(name)["status"] == 403
+                assert name not in output.err + output.out and "http_403" in output.err
+            return
         status = cli.main()
         targets = [r.url.path.rsplit("/", 1)[-1] for r in source.deletes]
         intents = len(list(store.root.glob("unbookmark-*.intent.private.json")))

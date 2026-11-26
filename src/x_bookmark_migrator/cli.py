@@ -211,6 +211,14 @@ def main():
                 if result.get("inventory_status") == "partial":
                     return 1
     except PilotError as exc:
+        if getattr(args, "staged_backlog", None):
+            reason = (
+                exc.code
+                if exc.code in {"http_401", "http_403", "http_429", "spend_cap"}
+                else "verification_failed"
+            )
+            print(f"Staged removal stopped: {reason}. Inspect protected evidence.", file=sys.stderr)
+            return 1
         if exc.summary is not None:
             print(json.dumps(exc.summary))
         print(str(exc), file=sys.stderr)
