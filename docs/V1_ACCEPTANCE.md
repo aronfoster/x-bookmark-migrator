@@ -123,6 +123,25 @@ ticket or authorize automatic edits.
    explicit per-asset decision. Owner commentary is valuable state, not disposable
    generated text; future authored Wiki work remains separately backed up.
 
+### Correct one bookmark description
+
+FOS-170: let the owner start with a specific Raindrop or original post link
+instead of waiting for a batch. Resolve the existing bookmark, show its current
+description and relevant media, and preview a replacement description in the
+owner's search vocabulary. Describe what the image shows; distinguish personal
+recall cues from facts about the image. Do not generate search tags.
+
+After approval, record the decision and apply the description to that same
+Raindrop item. Retain the approved media description against the exact reviewed
+attachment in the private catalog. Read back the description and confirm the
+title, tags, note, collection and source URL are unchanged. Use the review
+history and reconciliation rules above for undo, interrupted edits and retries.
+
+FOS-220: choose a distinctive term absent from the title, tags, note, URL and
+source text. Confirm that an ordinary Raindrop search for that term finds and
+opens the same bookmark after the description correction. A successful edit
+readback alone does not pass the search test.
+
 ### Concrete rehearsal and acceptance
 
 Use three synthetic records to review the plan before live implementation:
