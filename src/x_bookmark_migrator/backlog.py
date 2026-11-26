@@ -1,5 +1,6 @@
 """Manual, offline selection. A saved positive is not a fresh removal check."""
 
+import json
 import re
 import time
 from collections import defaultdict
@@ -8,8 +9,14 @@ from datetime import datetime
 import httpx
 
 from . import large_mp4
-from .archive import archive_evidence, batch_receipt, plan_post
-from .catalog import raindrop_link, read_annotations, read_catalog
+from .archive import batch_receipt
+from .catalog import (
+    raindrop_link,
+    read_annotations,
+    read_catalog,
+    restored_media_filename,
+    restored_media_path,
+)
 from .core import PilotError, Store, exact_id, validate_page
 from .drive import Drive, digest, encode
 from .inventory import Inventory
@@ -150,6 +157,23 @@ def require_complete_history(config):
         raise PilotError("Complete removal history must be confirmed before backlog selection.")
 
 
+def ordinary_repair_payload(catalog, pid, version):
+    """Old receipts have no kind. Classify only the restored, receipt-bound successor."""
+    receipt = version["payload_receipt"]
+    for asset in version["media"]:
+        if not asset.get("local_url"):
+            continue
+        path = restored_media_path(catalog, asset["local_url"], restored_media_filename(pid, asset))
+        try:
+            data = publication_bytes(path.with_name(pid + ".json"))
+        except FileNotFoundError:
+            continue
+        if len(data) == receipt["size_bytes"] and digest(data) == receipt["sha256"]:
+            payload = json.loads(data)
+            return payload.get("post_id") == pid and "retained_author_source" not in payload
+    return False
+
+
 def select_backlog(store, catalog, config, folder, catalog_sha256):
     """Caller holds state then catalog lock. Return private bindings in saved page order."""
     require_complete_history(config)
@@ -233,20 +257,9 @@ def select_backlog(store, catalog, config, folder, catalog_sha256):
                         )
                     ):
                         continue
-                    # Untagged legacy repairs can include a donor-dependent
-                    # successor. Removal requires replay from the primary alone.
-                    evidence = archive_evidence(inventory, post)
-                    posts, _, blockers = plan_post(
-                        post["post"], evidence["response"].get("includes", {}), evidence
-                    )
-                    if blockers or posts != [
-                        {
-                            k: v
-                            for k, v in archived.items()
-                            if k not in ("source_post_id", "source_post_url")
-                        }
-                        for archived in version["posts"]
-                    ]:
+                    # Untagged legacy receipts may also name a donor-dependent
+                    # successor. Only its original archived bytes distinguish it.
+                    if source is None and not ordinary_repair_payload(catalog, pid, version):
                         continue
                 if source is not None:
                     media = [

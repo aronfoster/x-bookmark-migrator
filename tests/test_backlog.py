@@ -89,7 +89,24 @@ def test_completed_repair_requires_published_exact_payload_and_bound_plan(
     cfg = dict(config(tmp_path), helper_descriptors=[])
     catalog = source.catalog
     original = store.read(archived["private_receipt"])["manifest"]
-    row, *_ = map(json.loads, drive.verify(original).splitlines())
+    row, donor, *_ = map(json.loads, drive.verify(original).splitlines())
+    if repair == "legacy_author":
+        payload = json.loads(drive.verify(row["payload"]))
+        evidence = payload["source_evidence"]
+        evidence["response"]["includes"]["users"] = []
+        payload["retained_author_source"] = {
+            "manifest": original,
+            "payload": donor["payload"],
+            "post_id": donor["post_id"],
+            "envelope_sha256": digest(
+                encode(json.loads(drive.verify(donor["payload"]))["source_evidence"])
+            ),
+        }
+        data = encode(payload)
+        row["payload"] = drive.save(
+            row["category"], row["post_id"] + ".json", data, "application/json"
+        )
+        (tmp_path / "restored" / (row["post_id"] + ".json")).write_bytes(data)
     manifest = save_manifest(drive, [row])
     plan = "e" * 64
     name = f"repair-{plan}.receipt.private.json"
@@ -101,15 +118,7 @@ def test_completed_repair_requires_published_exact_payload_and_bound_plan(
     records = read_catalog(catalog)
     record = next(r for r in records if r["post_id"] == row["post_id"])
     (predecessor,) = record["versions"]
-    successor = dict(predecessor, manifest=manifest)
-    if repair == "legacy_author":
-        # The retained primary response lacks the author in the published successor.
-        from x_bookmark_migrator.inventory import Inventory
-
-        entry = Inventory.load(store).state["posts"][row["post_id"]]
-        envelope = store.read(entry["expansions_ref"])
-        envelope["response"]["includes"]["users"] = []
-        store.write(entry["expansions_ref"], envelope)
+    successor = dict(predecessor, manifest=manifest, payload_receipt=row["payload"])
     predecessor.update(archive_status="blocked", blockers=["blocked_byte_limit"])
     record["versions"].append(successor)
     source.ids = [row["post_id"]]
@@ -122,6 +131,21 @@ def test_completed_repair_requires_published_exact_payload_and_bound_plan(
 
     assert inspect() == []  # Frozen manifest intent is not completion evidence.
     store.create(name, receipt)
+    store.write("config.json", cfg)
+    parser = argparse.ArgumentParser()
+    worker_cli.add_commands(parser.add_subparsers(dest="command"))
+    args = parser.parse_args(
+        [
+            "worker",
+            "--config",
+            str(store.path("config.json")),
+            "--inspect-backlog",
+            "10",
+            digest(catalog.path("catalog.jsonl").read_bytes()),
+        ]
+    )
+    args.state_dir = store.root
+    assert worker_cli.run(args)["candidates"] == int(repair == "media")
     if repair != "media":
         assert inspect() == []  # The archive is complete but removal needs donor replay.
         return
