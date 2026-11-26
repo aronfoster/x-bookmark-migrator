@@ -398,9 +398,26 @@ class RaindropAdapter:
         )
 
     def _ensure_raindrop(
-        self, pid, source_url, archive_ref, *, category=None, post_text=None, run=None
+        self,
+        pid,
+        source_url,
+        archive_ref,
+        *,
+        category=None,
+        post_text=None,
+        run=None,
+        title="Archived X post",
+        collection_id=-1,
     ):
         exact_id(pid)
+        if (
+            not isinstance(title, str)
+            or not title.strip()
+            or len(title) > 200
+            or type(collection_id) is not int
+            or not (collection_id == -1 or collection_id > 0)
+        ):
+            raise blocked("invalid_create_metadata")
         from .source import source_url as canonical_url
 
         if source_url != canonical_url(pid):
@@ -519,8 +536,8 @@ class RaindropAdapter:
                 self.store.write(intent_name, intent)
                 payload = {
                     "link": source_url,
-                    "collection": {"$id": -1},
-                    "title": "Archived X post",
+                    "collection": {"$id": collection_id},
+                    "title": title,
                     "tags": ["to-read"],
                     "note": note,
                 }
@@ -547,7 +564,12 @@ class RaindropAdapter:
                 actual_note = verified_item.get("note")
                 mismatch = {
                     "note": not _same_note(actual_note, note),
-                    "title": verified_item.get("title") != "Archived X post",
+                    "title": verified_item.get("title") != title,
+                    **(
+                        {"collection": proof["collection_id"] != collection_id}
+                        if collection_id != -1
+                        else {}
+                    ),
                     "tags": verified_item.get("tags") != ["to-read"],
                 }
                 if any(mismatch.values()):
@@ -659,7 +681,17 @@ class _InventoryRun:
         # Only the authenticated, identity-checked GET enters this overlay.
         self.index[pid] = {"active": [item["_id"]], "trash": []}
 
-    def ensure_raindrop(self, pid, source_url, archive_ref, *, category=None, post_text=None):
+    def ensure_raindrop(
+        self,
+        pid,
+        source_url,
+        archive_ref,
+        *,
+        category=None,
+        post_text=None,
+        title="Archived X post",
+        collection_id=-1,
+    ):
         try:
             self.check()
             if self.selection is not None and pid not in self.selection:
@@ -674,6 +706,8 @@ class _InventoryRun:
                 category=category,
                 post_text=post_text,
                 run=self,
+                title=title,
+                collection_id=collection_id,
             )
         except BaseException:
             # Even a caller catching a transport/crash error must start fresh.

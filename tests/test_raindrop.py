@@ -560,6 +560,41 @@ def test_bounded_baseline_conflicts_block_without_get_or_post(tmp_path, fault):
     assert server.calls == [(("list-all",), None)]
 
 
+@pytest.mark.parametrize("wrong_collection", [False, True])
+def test_bounded_descriptive_title_and_destination(tmp_path, wrong_collection):
+    server = SkillServer()
+    adapter = adapter_for(tmp_path, server)
+    if wrong_collection:
+        server.bad_get = {
+            "result": True,
+            "item": {
+                **item(rid=1000),
+                "title": "Reading list",
+                "note": "Primary text",
+                "tags": ["to-read"],
+            },
+        }
+    with adapter.bounded_inventory(max_operations=1, post_ids=["101"]) as run:
+
+        def create():
+            return run.ensure_raindrop(
+                "101",
+                "https://x.com/i/status/101",
+                "https://archive.invalid",
+                post_text="Primary text",
+                title="Reading list",
+                collection_id=7,
+            )
+
+        if wrong_collection:
+            with pytest.raises(PilotError, match="create_metadata_readback_mismatch"):
+                create()
+        else:
+            assert create()["collection_id"] == 7
+    assert server.posts[0][1]["title"] == "Reading list"
+    assert server.posts[0][1]["collection"] == {"$id": 7}
+
+
 def test_bounded_previous_receipt_not_recreated(tmp_path):
     server = SkillServer([item()])
     adapter = adapter_for(tmp_path, server)
