@@ -203,16 +203,20 @@ def test_failed_connection_then_revert_requires_no_update(publisher, monkeypatch
     assert len(fake.writes) == 5 and store.read(STATE)["rows"] == original
 
 
-def test_inflight_patch_cannot_be_retried_over_a_newer_edit(publisher, monkeypatch):
+@pytest.mark.parametrize("method,missing_flag", [("PUT", False), ("PATCH", False), ("PATCH", True)])
+def test_inflight_write_cannot_be_retried_over_a_newer_edit(
+    publisher, monkeypatch, method, missing_flag
+):
     store, catalog, fake, rebuild, run = publisher
-    run(rebuild())
+    if method == "PATCH":
+        run(rebuild())
     category_edit(catalog, "edit", "701", "Delayed")
     delayed = []
     real = fake.handle
     with monkeypatch.context() as m:
 
         def timeout(req):
-            if req.method == "PATCH":
+            if req.method == method:
                 delayed.append(req)
                 raise httpx.ReadTimeout("unknown outcome", request=req)
             return real(req)
@@ -220,15 +224,27 @@ def test_inflight_patch_cannot_be_retried_over_a_newer_edit(publisher, monkeypat
         m.setattr(fake, "handle", timeout)
         with pytest.raises(httpx.ReadTimeout):
             run(rebuild())
+    state = store.read(STATE)
+    interrupted = state["rows"]["701"]
+    if missing_flag:
+        del interrupted["dispatched"]
+        store.write(STATE, state)
     category_edit(catalog, "next", "701", "Newer edit")
     newest = rebuild()
     with pytest.raises(PilotError, match="still pending"):
         run(newest)
-    assert len(fake.writes) == 5
+    assert store.read(STATE)["rows"]["701"] == interrupted
+    assert store.read(STATE)["complete"] is None
+    assert len(fake.writes) == (5 if method == "PATCH" else 0)
     real(delayed.pop())
     assert run(newest)["verified"] == 5
     fid = store.read(STATE)["rows"]["701"]["file_id"]
-    assert b"Newer edit" in fake.server.bytes[fid] and len(fake.writes) == 7
+    assert fid == interrupted["file_id"] and b"Newer edit" in fake.server.bytes[fid]
+    assert [m for m, target in fake.writes if target == fid] == (
+        ["PUT", "PATCH", "PATCH"] if method == "PATCH" else ["PUT", "PATCH"]
+    )
+    assert len({target for _, target in fake.writes}) == 5
+    assert store.read(STATE)["complete"] == newest
 
 
 def test_generation_change_during_recovered_readback_preserves_intent(publisher, monkeypatch):

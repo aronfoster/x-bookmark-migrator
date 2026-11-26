@@ -93,8 +93,8 @@ through an injected fake Drive in [the recovery tests](../tests/test_search_publ
 It rebuilds the reviewed catalog from the supplied batches, locks the catalog and
 private state through publication, and checks sole-owner access to the derived
 folder and files. A failed connection before sending an edit can be retried.
-After an ambiguous PATCH, if Drive still returns the old bytes, it holds the
-item: sending another edit could let a delayed request overwrite newer text.
+After an ambiguous create or PATCH, a missing file or the old bytes leave the
+item on hold: a delayed request may still publish the older text.
 Readback of the intended bytes releases that hold. Back up the private search
 mapping with the existing allocation journal. This packet has no live command;
 desktop/Android indexing and actual-reader checks remain separate acceptance tests.

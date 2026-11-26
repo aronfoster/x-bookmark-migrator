@@ -169,12 +169,12 @@ def publish_search(
             if row["pending"] is not None:
                 if observed != row["pending"]:
                     require(observed == row["verified"], "Unexpected search file bytes.")
-                    # Prior bytes alone do not prove a timed-out PATCH cannot land later.
+                    # Neither prior bytes nor a 404 proves a timed-out write cannot land later.
                     require(
-                        not row.get("patch_dispatched"), "Uncertain search update is still pending."
+                        row.get("dispatched") is False, "Uncertain search write is still pending."
                     )
                 current_generation()
-                row.update(verified=observed, pending=None, patch_dispatched=False)
+                row.update(verified=observed, pending=None, dispatched=False)
                 store.write(STATE, state)
             require(
                 observed == row["verified"],
@@ -182,43 +182,43 @@ def publish_search(
             )
             if observed != desired:
                 current_generation()
-                row["pending"] = desired
+                row.update(pending=desired, dispatched=False)
                 store.write(STATE, state)
-                if observed is None:
-                    drive.create_upload(
-                        {
-                            "id": file_id,
-                            "name": unit["name"],
-                            "parents": [parent],
-                            "mimeType": MIME,
-                            "appProperties": {"xm_key": token},
-                        },
-                        body,
-                    )
-                else:
-                    headers = {**drive.headers(), "Content-Type": MIME}
-                    current_generation()
-                    row["patch_dispatched"] = True
-                    store.write(STATE, state)
-                    try:
+                headers = {**drive.headers(), "Content-Type": MIME}
+                current_generation()
+                row["dispatched"] = True
+                store.write(STATE, state)
+                try:
+                    if observed is None:
+                        drive.create_upload(
+                            {
+                                "id": file_id,
+                                "name": unit["name"],
+                                "parents": [parent],
+                                "mimeType": MIME,
+                                "appProperties": {"xm_key": token},
+                            },
+                            body,
+                        )
+                    else:
                         response = http.patch(
                             f"{UPLOAD}/{file_id}",
                             params={"uploadType": "media"},
                             headers=headers,
                             content=body,
                         )
-                    except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout):
-                        # No request body was dispatched. A later caller may use newer bytes.
-                        row["patch_dispatched"] = False
-                        store.write(STATE, state)
-                        raise
-                    checked(response)
+                        checked(response)
+                except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout):
+                    # No content request reached Drive. A later caller may use newer bytes.
+                    row["dispatched"] = False
+                    store.write(STATE, state)
+                    raise
                 require(
                     read_target(drive, row, parent, token, owner) == desired,
                     "Search readback differs.",
                 )
                 current_generation()
-                row.update(verified=desired, pending=None, patch_dispatched=False)
+                row.update(verified=desired, pending=None, dispatched=False)
                 store.write(STATE, state)
         current_generation()
         require(
