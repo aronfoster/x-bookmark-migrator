@@ -132,13 +132,18 @@ owner's search vocabulary. Describe what the image shows; distinguish personal
 recall cues from facts about the image. Do not generate search tags.
 
 After approval, record the decision and apply the description to that same
-Raindrop item. Retain the approved media description against the exact reviewed
-attachment in the private catalog. Read back the description and confirm the
-title, tags, note, collection and source URL are unchanged. Use the review
-history and reconciliation rules above for undo, interrupted edits and retries.
+Raindrop item by updating only `excerpt`. Bind a media description to the exact
+reviewed attachment when one exists in the private catalog; for a Raindrop-only
+item, keep the decision in the review history. Read back the item and confirm
+that every field except `excerpt` and provider-managed update timestamps is
+unchanged, including `note`, highlights and the important flag. After a rejected
+write, correct the cause before retrying. After an uncertain reply, reconcile the
+same item by readback before authorizing another edit.
 
-FOS-220: choose a distinctive term absent from the title, tags, note, URL and
-source text. Confirm that an ordinary Raindrop search for that term finds and
+FOS-220: choose a distinctive term absent from the title, tags, note, highlights,
+URL, source text and Raindrop's cached page copy. Record elapsed time from edit
+to search so an indexing delay can be distinguished from a persistent miss.
+Confirm that an ordinary Raindrop search for that term finds and
 opens the same bookmark after the description correction. A successful edit
 readback alone does not pass the search test.
 
