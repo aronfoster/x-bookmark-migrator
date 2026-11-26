@@ -7,9 +7,10 @@ from datetime import datetime
 
 import httpx
 
+from . import large_mp4
 from .archive import batch_receipt
 from .catalog import raindrop_link, read_annotations, read_catalog
-from .core import PilotError, exact_id, validate_page
+from .core import PilotError, Store, exact_id, validate_page
 from .drive import Drive, digest, encode
 from .inventory import Inventory
 from .publication import publication_bytes
@@ -45,36 +46,98 @@ def latest_window(store, owner, folder):
     return receipt, ids
 
 
+def repair_anchor(store, plan, drive_root):
+    receipt = store.read(f"repair-{plan}.receipt.private.json")
+    intent = store.read(f"repair-{plan}.manifest-intent.private.json")
+    if not intent or not receipt or receipt.get("plan_sha256") != plan:
+        raise PilotError("Repair receipt differs from its plan.")
+    manifest, rows = receipt["manifest"], intent["rows"]
+    binding = dict(
+        plan_sha256=plan, max_asset_bytes=intent["max_asset_bytes"], drive_root=drive_root
+    )
+    by_id = {exact_id(row["post_id"]): row for row in rows}
+    if (
+        intent != {**binding, "rows": rows}
+        or receipt != {**batch_receipt(manifest, rows, plan), **binding}
+        or digest(b"".join(map(encode, rows))) != manifest["sha256"]
+        or not 1 <= len(by_id) == len(rows) <= 20
+    ):
+        raise PilotError("Repair completion does not match its frozen manifest.")
+    return receipt, by_id
+
+
+def exact_anchor(store, name, plan, drive_root):
+    completed = store.read(name)
+    inner = completed["plan_sha256"]
+    parent = store.root / "exact-remote-only"
+    journal = parent / plan
+    if (
+        not re.fullmatch("[0-9a-f]{64}", inner)
+        or parent.is_symlink()
+        or journal.is_symlink()
+        or not journal.is_dir()
+    ):
+        raise PilotError("Missing or invalid exact repair journal.")
+    receipt, rows = repair_anchor(Store(journal), inner, drive_root)
+    source = store.read(f"exact-mp4-source-{plan}.private.json")
+    size = receipt["max_asset_bytes"]
+    media_files = completed["restore"]["media_files"]
+    if (
+        not isinstance(source, dict)
+        or source.keys() != {"file_id", "parent_id", "size_bytes", "sha256"}
+        or type(size) is not int
+        or not large_mp4.MAX_BYTES < size <= large_mp4.CEILING
+        or type(source["size_bytes"]) is not int
+        or source["size_bytes"] != size
+        or not re.fullmatch("[0-9a-f]{64}", source["sha256"])
+        or len(rows) != 1
+        or receipt["bytes_verified"] != 1
+        or type(media_files) is not int
+        or media_files < 1
+    ):
+        raise PilotError("Exact completion differs from its repair or local restore.")
+    restore = dict(
+        records=1,
+        bytes_verified=1,
+        blocked=0,
+        deletion_eligible=False,
+        media_files=media_files,
+        x_api_calls=0,
+    )
+    expected = dict(
+        receipt,
+        exact_plan_sha256=plan,
+        local_mp4_sha256=source["sha256"],
+        exact_mp4_local_verified=True,
+        restore=restore,
+    )
+    if encode(completed) != encode(expected):
+        raise PilotError("Exact completion differs from its repair or local restore.")
+    return receipt["manifest"], rows, source
+
+
 def archive_anchors(store, drive_root):
     anchors = defaultdict(list)
     for path in store.root.glob("archive-*.private.json"):
         if re.fullmatch(r"archive-[0-9a-f]{24}\.private\.json", path.name):
             manifest = store.read(path.name)["manifest"]
-            anchors[manifest["sha256"]].append((manifest, path.name, None))
+            anchors[manifest["sha256"]].append((manifest, path.name, None, None))
     # Completed, explicitly published repairs are manual inputs only. Check
     # the frozen rows here; a manifest intent alone is never a completion.
     for path in store.root.glob("repair-*.receipt.private.json"):
         match = re.fullmatch(r"repair-([0-9a-f]{64})\.receipt\.private\.json", path.name)
         if not match:
             continue
-        plan = match[1]
-        receipt = store.read(path.name)
-        intent = store.read(f"repair-{plan}.manifest-intent.private.json")
-        if not intent or receipt.get("plan_sha256") != plan:
-            raise PilotError("Repair receipt differs from its plan.")
-        manifest, rows = receipt["manifest"], intent["rows"]
-        binding = dict(
-            plan_sha256=plan, max_asset_bytes=intent["max_asset_bytes"], drive_root=drive_root
-        )
-        by_id = {exact_id(row["post_id"]): row for row in rows}
-        if (
-            intent != {**binding, "rows": rows}
-            or receipt != {**batch_receipt(manifest, rows, plan), **binding}
-            or digest(b"".join(map(encode, rows))) != manifest["sha256"]
-            or not 1 <= len(by_id) == len(rows) <= 20
-        ):
-            raise PilotError("Repair completion does not match its frozen manifest.")
-        anchors[manifest["sha256"]].append((manifest, path.name, by_id))
+        receipt, rows = repair_anchor(store, match[1], drive_root)
+        if receipt["max_asset_bytes"] > large_mp4.MAX_BYTES:
+            continue  # A remote-only repair cannot stand in for an exact completion.
+        manifest = receipt["manifest"]
+        anchors[manifest["sha256"]].append((manifest, path.name, rows, None))
+    for path in store.root.glob("exact-complete-*.private.json"):
+        match = re.fullmatch(r"exact-complete-([0-9a-f]{64})\.private\.json", path.name)
+        if match:
+            manifest, rows, source = exact_anchor(store, path.name, match[1], drive_root)
+            anchors[manifest["sha256"]].append((manifest, path.name, rows, source))
     return anchors
 
 
@@ -151,8 +214,8 @@ def select_backlog(store, catalog, config, folder, catalog_sha256):
             ):
                 continue
             manifest = version["manifest"]
-            names = []
-            for saved, name, rows in anchors[manifest["sha256"]]:
+            matches = []
+            for saved, name, rows, source in anchors[manifest["sha256"]]:
                 if saved != manifest:
                     continue
                 if rows is not None:
@@ -166,9 +229,20 @@ def select_backlog(store, catalog, config, folder, catalog_sha256):
                         )
                     ):
                         continue
-                names.append(name)
-            if len(names) != 1:
+                if source is not None:
+                    media = [
+                        a
+                        for a in version["media"]
+                        if a["storage"]["size_bytes"] > large_mp4.MAX_BYTES
+                    ]
+                    if len(media) != 1 or any(
+                        media[0]["storage"].get(k) != v for k, v in source.items()
+                    ):
+                        continue
+                matches.append((name, source))
+            if len(matches) != 1:
                 continue
+            name, source = matches[0]
             candidates.append(
                 dict(
                     owner_id=owner,
@@ -179,8 +253,9 @@ def select_backlog(store, catalog, config, folder, catalog_sha256):
                     source_read=receipt["private_file"],
                     source_read_sha256=read_digest,
                     catalog_sha256=catalog_sha256,
-                    archive_receipt=names[0],
-                    archive_receipt_sha256=digest(encode(store.read(names[0]))),
+                    archive_receipt=name,
+                    archive_receipt_sha256=digest(encode(store.read(name))),
+                    **({"exact_source": source} if source is not None else {}),
                     drive_destination=destination,
                     manifest=manifest,
                     payload=version["payload_receipt"],
@@ -223,6 +298,10 @@ def prepare_one(store, catalog, config, folder, catalog_sha, source_sha, selecti
             and items[0]["post_id"] == candidate["post_id"]
             and items[0]["folder"] == candidate["folder"]
             and items[0]["payload"] == candidate["payload"]
+            and (
+                "exact_source" not in candidate
+                or items[0]["media_files"] == receipt["restore"]["media_files"]
+            )
         ):
             raise PilotError("Drive plan differs from the selected binding.")
 
@@ -259,6 +338,7 @@ def prepare_one(store, catalog, config, folder, catalog_sha, source_sha, selecti
                 candidate["owner_id"],
                 acceptance_confirmed=attested,
                 stage_plan=stage,
+                exact_source=candidate.get("exact_source"),
             )
     saved = store.read(name)
     if not (

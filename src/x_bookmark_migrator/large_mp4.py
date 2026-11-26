@@ -149,6 +149,28 @@ def check_space(path, needed):
         raise PilotError("Large profile requires sufficient space on a recognized disk filesystem.")
 
 
+def verify_preparation_mp4(drive, assets, source):
+    """Re-read only the pinned oversized asset under the exact profile."""
+    matches = [asset for asset in assets if asset["storage"]["size_bytes"] > MAX_BYTES]
+    if len(matches) != 1:
+        raise PilotError("Exact preparation requires one oversized MP4.")
+    asset = matches[0]
+    saved = asset["storage"]
+    if (
+        asset["logical_type"] not in ("video", "animated_gif")
+        or asset["container"] != "mp4"
+        or saved["mime_type"] != "video/mp4"
+        or any(saved.get(k) != v for k, v in source.items())
+    ):
+        raise PilotError("Archive media differs from the pinned exact MP4.")
+    exact = ExactDrive(drive.store, drive.http, drive.root, source["size_bytes"])
+    exact.preflight()
+    check_space(drive.store.root, exact.max_bytes)
+    # ExactDrive streams, checks the hash and validates the mapped container.
+    exact.verify(saved).close()
+    return asset
+
+
 def restore_exact(drive, output, manifest_id, manifest_hash):
     raw = drive.download(manifest_id, 8 << 20)
     if digest(raw) != manifest_hash or len(raw.splitlines()) != 1:

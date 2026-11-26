@@ -17,6 +17,7 @@ from .core import API, PilotError, exact_id, validate_page
 from .discovery_gate import verify_discovery_now
 from .drive import digest, encode
 from .inventory import Inventory, now
+from .large_mp4 import verify_preparation_mp4
 from .raindrop import require_distinct_state_dirs
 
 
@@ -44,7 +45,7 @@ def archive_rows(drive, receipt):
     return result
 
 
-def verify_item(inventory, drive, row):
+def verify_item(inventory, drive, row, *, exact_source=None):
     """Reconstruct completeness from source evidence, not a bytes_verified label."""
     pid = exact_id(row["post_id"])
     require(
@@ -89,11 +90,14 @@ def verify_item(inventory, drive, row):
     require(not blockers and posts == payload.get("posts"), "Archive text/context is incomplete.")
     stored = payload.get("media")
     require(isinstance(stored, list) and len(assets) == len(stored), "Archive media missing.")
+    exact = verify_preparation_mp4(drive, stored, exact_source) if exact_source else None
     for expected, actual in zip(assets, stored, strict=True):
         require(
             expected == {k: v for k, v in actual.items() if k not in ("storage", "container")},
             "Archive media mapping differs.",
         )
+        if actual is exact:
+            continue
         data = drive.verify(actual["storage"])
         mime, extension = media_format(data, actual["logical_type"])
         require(
@@ -112,8 +116,17 @@ def verify_item(inventory, drive, row):
 
 
 def make_plan(
-    store, drive, receipt_name, post_ids, owner_id, *, acceptance_confirmed=False, stage_plan=None
+    store,
+    drive,
+    receipt_name,
+    post_ids,
+    owner_id,
+    *,
+    acceptance_confirmed=False,
+    stage_plan=None,
+    exact_source=None,
 ):
+    require(exact_source is None or stage_plan is not None, "Exact preparation must be staged.")
     require(acceptance_confirmed, "Complete the ARCHIVE.md runtime/restore acceptance first.")
     require(
         isinstance(post_ids, list)
@@ -133,7 +146,7 @@ def make_plan(
     for pid in post_ids:
         require(pid in rows, "Selected post is not in the archive receipt.")
         try:
-            item = verify_item(inventory, drive, rows[pid])
+            item = verify_item(inventory, drive, rows[pid], exact_source=exact_source)
             items.append({**item, "state": "verified"})
         except PilotError as exc:
             # Storage/provenance errors stop the plan; known per-item blockers do not.

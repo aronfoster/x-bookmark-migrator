@@ -40,6 +40,11 @@ archive objects and writes private staging evidence; it makes no X or Raindrop
 calls. Drive authentication may refresh the existing grant. Neither mode can
 delete a bookmark or enable a schedule.
 
+For a repaired oversized MP4, the completion receipt from the local restore is
+required. A Drive upload or remote-only repair receipt is insufficient.
+Preparation verifies the selected MP4 against its exact size and digest without
+raising the size limit for ordinary archives.
+
 The staged envelope is not executable. Generic apply rejects it, and exact-plan
 apply requires its own protected pointer and Drive proof. A follow-up must
 revalidate the selected binding and holds before it can hand a staged backlog
@@ -87,7 +92,7 @@ Private JSON configuration fields:
 | `max_items` | 1–50; start at 1 for local acceptance |
 | `max_calls` | 1–100; shared across inventory/enrichment/DELETE and reserved after-reads |
 | `max_batches` | 1–100 existing archive receipts to adopt per invocation |
-| `max_asset_bytes` | Optional integer, 1,024–268,435,456 bytes per file; defaults to 64 MiB. Set it high enough to read back the largest repaired asset. |
+| `max_asset_bytes` | Optional integer, 1,024–268,435,456 bytes per file; defaults to 64 MiB. Applies to ordinary archives. Exact-MP4 backlog preparation uses the size verified for the selected video. |
 | `dialect` | Existing observed `post` or `tweet` profile |
 | `run_cap_usd` | Positive reservation limit, at most 20 |
 | `reservation_usd` | Positive **whole-request** conservative reserves for every operation below; no implicit prices |
