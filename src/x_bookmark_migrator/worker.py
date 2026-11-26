@@ -231,18 +231,22 @@ def snapshot(store, helpers=(), catalog=None):
     }
 
 
+def require_catalog_versions(records, chains):
+    for chain in chains:
+        record = records.get(chain["post_id"], {})
+        if not any(
+            v["manifest"] == chain["manifest"] and v["payload_receipt"] == chain["payload"]
+            for v in record.get("versions", [])
+        ):
+            raise PilotError("Catalog lacks the bound predecessor or donor version.")
+
+
 def merge_publication(output, incoming, *, required_versions=()):
     """State lock -> catalog lock. Keep every old version and owner annotation."""
     with output.locked():
         prior = read_catalog(output) if output.path("catalog.jsonl").exists() else []
         merged = {r["post_id"]: r for r in prior}
-        for chain in required_versions:
-            record = merged.get(chain["post_id"], {})
-            if not any(
-                v["manifest"] == chain["manifest"] and v["payload_receipt"] == chain["payload"]
-                for v in record.get("versions", [])
-            ):
-                raise PilotError("Catalog lacks the bound predecessor or donor version.")
+        require_catalog_versions(merged, required_versions)
         for record in incoming:
             target = merged.setdefault(record["post_id"], copy.deepcopy(record))
             for version in record["versions"]:

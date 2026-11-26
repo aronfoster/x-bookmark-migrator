@@ -7,7 +7,7 @@ import httpx
 
 from .archive import archive_batch, import_pilot, restore_batch
 from .archive_repair import preview_repairs, select_repairs, write_repairs
-from .catalog import build, check_archive_directories
+from .catalog import build, check_archive_directories, read_catalog
 from .core import PilotError, Store
 from .drive import MAX_BYTES, Drive, encode
 from .inventory import Inventory
@@ -148,10 +148,20 @@ def run(args):
                 raise PilotError("Author repair requires the existing pinned Drive destination.")
         context = drive.preflight()
         if args.command == "archive-repair":
+            if catalog is not None:
+                from .worker import merge_publication, require_catalog_versions
+
+                chains = [
+                    p[key]
+                    for _, p in selected
+                    for key in ("repair_source", "retained_author_source")
+                ]
+                with catalog.locked():
+                    require_catalog_versions(
+                        {r["post_id"]: r for r in read_catalog(catalog)}, chains
+                    )
             result = write_repairs(store, drive, media_http, selected, author_restore=output)
             if catalog is not None:
-                from .worker import merge_publication
-
                 # The merge applies curation to the full corpus under the catalog lock.
                 incoming = build(
                     [(output.root, store.path(result["private_receipt"]))],
@@ -165,11 +175,6 @@ def run(args):
                     for a in v["media"]
                 ):
                     raise PilotError("Author successor lacks verified restored media.")
-                chains = [
-                    p[key]
-                    for _, p in selected
-                    for key in ("repair_source", "retained_author_source")
-                ]
                 merge_publication(catalog, incoming, required_versions=chains)
                 result["catalog_merged"] = True
             return result

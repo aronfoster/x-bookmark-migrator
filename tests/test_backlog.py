@@ -81,7 +81,10 @@ def test_manual_backlog_reads_latest_window_and_exact_repaired_version(migration
         select_backlog(store, catalog, cfg, "10", sha)
 
 
-def test_completed_repair_requires_published_exact_payload_and_bound_plan(migration, tmp_path):
+@pytest.mark.parametrize("author_repair", [False, True])
+def test_completed_repair_requires_published_exact_payload_and_bound_plan(
+    migration, tmp_path, author_repair
+):
     store, drive, _, source, client, archived, _, _ = migration
     cfg = dict(config(tmp_path), helper_descriptors=[])
     catalog = source.catalog
@@ -91,6 +94,8 @@ def test_completed_repair_requires_published_exact_payload_and_bound_plan(migrat
     plan = "e" * 64
     name = f"repair-{plan}.receipt.private.json"
     binding = dict(plan_sha256=plan, max_asset_bytes=drive.max_bytes, drive_root=drive.root)
+    if author_repair:
+        binding["reason"] = "retained_author"
     receipt = {**batch_receipt(manifest, [row], plan), **binding}
     store.create(f"repair-{plan}.manifest-intent.private.json", {**binding, "rows": [row]})
     records = read_catalog(catalog)
@@ -109,6 +114,9 @@ def test_completed_repair_requires_published_exact_payload_and_bound_plan(migrat
 
     assert inspect() == []  # Frozen manifest intent is not completion evidence.
     store.create(name, receipt)
+    if author_repair:
+        assert inspect() == []  # The archive is complete but removal needs donor replay.
+        return
     (candidate,) = inspect()
     assert candidate["archive_receipt"] == name and candidate["payload"] == row["payload"]
     assert candidate["manifest"] == manifest and candidate["raindrop_id"] == int(row["post_id"])

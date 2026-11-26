@@ -55,6 +55,8 @@ def repair_anchor(store, plan, drive_root):
     binding = dict(
         plan_sha256=plan, max_asset_bytes=intent["max_asset_bytes"], drive_root=drive_root
     )
+    if receipt.get("reason") == "retained_author":
+        binding["reason"] = "retained_author"
     by_id = {exact_id(row["post_id"]): row for row in rows}
     if (
         intent != {**binding, "rows": rows}
@@ -129,6 +131,8 @@ def archive_anchors(store, drive_root):
         if not match:
             continue
         receipt, rows = repair_anchor(store, match[1], drive_root)
+        if receipt.get("reason") == "retained_author":
+            continue  # Removal verification cannot replay the separate donor evidence yet.
         if receipt["max_asset_bytes"] > large_mp4.MAX_BYTES:
             continue  # A remote-only repair cannot stand in for an exact completion.
         manifest = receipt["manifest"]

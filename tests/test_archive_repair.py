@@ -22,6 +22,7 @@ from test_archive import (
 
 from x_bookmark_migrator import archive_cli, archive_repair
 from x_bookmark_migrator.archive import archive_batch, plan_post, restore_batch
+from x_bookmark_migrator.backlog import archive_anchors
 from x_bookmark_migrator.catalog import build, publish, read_catalog, restored_media_filename
 from x_bookmark_migrator.core import PilotError, Store
 from x_bookmark_migrator.drive import Drive, digest, encode
@@ -386,6 +387,9 @@ def test_author_writer_waits_for_independent_restore(tmp_path, storage, monkeypa
         assert complete["bytes_verified"] == 1 and complete["deletion_eligible"] is False
         assert server.bytes == uploaded
         assert complete["catalog_merged"] is True
+        receipt = store.read(complete["private_receipt"])
+        assert receipt["reason"] == "retained_author"
+        assert receipt["manifest"]["sha256"] not in archive_anchors(store, drive.root)
     items = read_catalog(catalog)
     assert [len(r["versions"]) for r in items] == ([2, 1, 1] if fault == "mixed" else [2, 1])
     if fault == "mixed":

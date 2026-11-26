@@ -118,6 +118,8 @@ def preview_repairs(selected, max_bytes):
 def verify_author_sources(drive, payload):
     chains = (payload["repair_source"], payload["retained_author_source"])
     receipts = [chain[key] for chain in chains for key in ("manifest", "payload")]
+    if any(not isinstance(asset.get("storage"), dict) for asset in payload["media"]):
+        raise PilotError("Missing author repair media receipt.")
     for receipt in receipts + [asset["storage"] for asset in payload["media"]]:
         parents = drive.metadata(receipt["file_id"]).get("parents")
         if parents != [receipt["parent_id"]] or drive.metadata(parents[0]).get("parents") != [
@@ -142,6 +144,8 @@ def write_repairs(store, drive, media_http, selected, *, author_restore=None):
     name = f"repair-{plan}.receipt.private.json"
     pending_name = f"repair-{plan}.manifest-intent.private.json"
     binding = {"plan_sha256": plan, "max_asset_bytes": drive.max_bytes, "drive_root": drive.root}
+    if author_restore is not None:
+        binding["reason"] = "retained_author"
     # Receipts can be copied between state directories. Check the actual remote
     # source batch belongs to this archive root before creating any successors.
     verified = set()

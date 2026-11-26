@@ -238,8 +238,10 @@ restore must be a direct sibling of the catalog.
 
 The successor keeps the original lookup unchanged. It links separately to the
 predecessor and donor manifests and payloads, and pins the donor lookup digest.
-The writer verifies those chains and all restored successor bytes using a fresh
-Drive client before issuing a completion receipt. Catalog merge requires both
+The writer verifies those chains and all restored successor bytes in a second
+Drive session using the same HTTP transport before issuing a completion receipt.
+Removal staging skips these successors until its verifier supports donor evidence.
+Catalog merge requires both
 source versions to be present and preserves earlier versions and annotations.
 An interrupted run can resume the same plan and restore directory. This repair
 does not change the X removal verifier or authorize removal.

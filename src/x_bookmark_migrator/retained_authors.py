@@ -207,7 +207,9 @@ def select_author_repairs(batches):
         ):
             raise PilotError("Captured evidence does not support an author-only repair.")
         for asset in payload["media"]:
-            storage = asset["storage"]
+            storage = asset.get("storage")
+            if not isinstance(storage, dict):
+                raise PilotError("Missing author repair media receipt.")
             data = checked_bytes(root / restored_media_filename(pid, asset), storage)
             if media_format(data, asset["logical_type"]) != (
                 storage["mime_type"],
