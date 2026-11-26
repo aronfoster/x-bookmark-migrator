@@ -1,6 +1,7 @@
 """Create-only Drive storage using a human owner's offline OAuth grant.
 
-Callers hold Store.locked for the entire operation. No Drive PATCH/DELETE exists.
+Callers hold Store.locked for the entire operation. Archive objects are create-only;
+the search publisher separately updates derived text in its pinned folder.
 Pre-generated IDs make interrupted creates recoverable without duplicate files.
 """
 
@@ -32,13 +33,19 @@ def drive_id(value):
     return value
 
 
-def checked(response, allowed=(200, 201)):
-    if response.status_code not in allowed:
-        raise PilotError(
-            f"Drive HTTP {response.status_code}; stopped without automatic retry. "
+class DriveHTTPError(PilotError):
+    def __init__(self, status):
+        self.status = status
+        super().__init__(
+            f"Drive HTTP {status}; stopped without automatic retry. "
             "Check grant, file visibility, quota and access before resuming.",
             code="storage_failed",
         )
+
+
+def checked(response, allowed=(200, 201)):
+    if response.status_code not in allowed:
+        raise DriveHTTPError(response.status_code)
     return response
 
 
@@ -65,7 +72,12 @@ class Drive:
         self.max_bytes = max_bytes
         self.access = None
         self.expires = 0
-        self.journal = store.read("drive-journal.private.json") or {}
+        journal_name = "drive-journal.private.json"
+        self.journal = store.read(journal_name)
+        if self.journal is None and not store.path(journal_name).exists():
+            self.journal = {}
+        if not isinstance(self.journal, dict):
+            raise PilotError("Invalid Drive allocation journal.")
 
     def headers(self):
         if time.time() >= self.expires:
@@ -159,7 +171,7 @@ class Drive:
             raise PilotError("Stored bytes do not match the receipt.", code="hash_mismatch")
         return data
 
-    def _allocate(self, parent, key):
+    def allocate(self, parent, key):
         token = digest(encode([self.root, parent, key]))
         if token not in self.journal:
             # Recover remotely even when the local journal was lost. Never pick arbitrarily.
@@ -196,10 +208,38 @@ class Drive:
             self.store.write("drive-journal.private.json", self.journal)
         return drive_id(self.journal[token]), token
 
+    def create_upload(self, metadata, data, *, before_content=None):
+        mime = metadata["mimeType"]
+        start = self.http.post(
+            UPLOAD,
+            params={"uploadType": "resumable"},
+            json=metadata,
+            headers={
+                **self.headers(),
+                "X-Upload-Content-Type": mime,
+                "X-Upload-Content-Length": str(len(data)),
+            },
+        )
+        checked(start, (200, 201, 409))
+        if start.status_code != 409:
+            location = start.headers.get("location", "")
+            url = urlsplit(location)
+            if (
+                url.scheme != "https"
+                or url.netloc != "www.googleapis.com"
+                or url.path != "/upload/drive/v3/files"
+                or not url.query
+            ):
+                raise PilotError("Unexpected Drive upload session URL.")
+            headers = {**self.headers(), "Content-Type": mime}
+            if before_content is not None:
+                before_content()
+            checked(self.http.put(location, content=data, headers=headers), (200, 201, 409))
+
     def put(self, parent, key, name, data, mime):
         if data is not None and not 0 < len(data) <= self.max_bytes:
             raise PilotError("Upload is empty or exceeds the byte limit.", code="byte_limit")
-        file_id, token = self._allocate(parent, key)
+        file_id, token = self.allocate(parent, key)
         props = {"xm_key": token}
         if data is not None:
             props["sha256"] = digest(data)
@@ -215,33 +255,7 @@ class Drive:
             if data is None:
                 checked(self.request("POST", "/files", json=metadata), (200, 201, 409))
             else:
-                start = self.http.post(
-                    UPLOAD,
-                    params={"uploadType": "resumable"},
-                    json=metadata,
-                    headers={
-                        **self.headers(),
-                        "X-Upload-Content-Type": mime,
-                        "X-Upload-Content-Length": str(len(data)),
-                    },
-                )
-                checked(start, (200, 201, 409))
-                if start.status_code != 409:
-                    location = start.headers.get("location", "")
-                    url = urlsplit(location)
-                    if (
-                        url.scheme != "https"
-                        or url.netloc != "www.googleapis.com"
-                        or url.path != "/upload/drive/v3/files"
-                        or not url.query
-                    ):
-                        raise PilotError("Unexpected Drive upload session URL.")
-                    checked(
-                        self.http.put(
-                            location, content=data, headers={**self.headers(), "Content-Type": mime}
-                        ),
-                        (200, 201, 409),
-                    )
+                self.create_upload(metadata, data)
             existing = self.metadata(file_id)
         if (
             existing.get("mimeType") != mime

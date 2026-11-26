@@ -88,6 +88,17 @@ ID. Verify conflicts, interrupted create/update and digest readback with a fake
 Drive before enabling that writer. [Upload guidelines](https://developers.google.com/workspace/drive/api/guides/manage-uploads)
 and [files.update](https://developers.google.com/workspace/drive/api/reference/rest/v3/files/update).
 
+The [derived publisher](../src/x_bookmark_migrator/search_publisher.py) is exercised
+through an injected fake Drive in [the recovery tests](../tests/test_search_publisher.py).
+It rebuilds the reviewed catalog from the supplied batches, locks the catalog and
+private state through publication, and checks sole-owner access to the derived
+folder and files. A failed connection before sending an edit can be retried.
+After an ambiguous create or PATCH, a missing file or the old bytes leave the
+item on hold: a delayed request may still publish the older text.
+Readback of the intended bytes releases that hold. Back up the private search
+mapping with the existing allocation journal. This packet has no live command;
+desktop/Android indexing and actual-reader checks remain separate acceptance tests.
+
 ## Producing descriptions inside the authorized boundary
 
 Start with available source alt text and existing explicit descriptions. **Select
@@ -195,3 +206,20 @@ report, including provider/time-limit failures. Fix and rerun the same deck.
 Reconcile again after increment/rebuild and at M4 on the expanded corpus. Prior
 publication and the 25 repaired pointers are useful baselines for these checks.
 Independent design review is next; S3 owns implementation and live proof.
+
+### Publisher recovery boundaries
+
+Drive [simple uploads](https://developers.google.com/workspace/drive/api/guides/manage-uploads)
+are for files of 5 MB or less. This publisher checks every UTF-8 body against
+5,000,000 bytes before sending any units, so newly created files also fit its
+update path. An oversized unit stops the generation; do not truncate it.
+
+After a definite content rejection (such as 403, 413 or 429), correct the cause
+and rerun the verified generation. For a timeout or server error, retain the
+mapping and intent. Retry verification: matching pending bytes settle the
+write. If still held, stop publication and retain the private state for
+reconciliation. An unchanged revision, timestamp, old bytes, 404 or elapsed
+wait does not prove a delayed write cannot land. Do not clear the dispatch
+flag or allocate a replacement. Without conclusive evidence, report the unit
+as unresolved. Removed primaries likewise require a separate retirement
+decision; this append-only publisher does not delete files.
