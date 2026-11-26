@@ -266,6 +266,52 @@ def select_backlog(store, catalog, config, folder, catalog_sha256):
     return candidates
 
 
+def staged_one(store, catalog, config, selection_sha, envelope_sha):
+    """Revalidate an explicitly pinned preparation while state and catalog are locked."""
+    if not all(re.fullmatch("[0-9a-f]{64}", value) for value in (selection_sha, envelope_sha)):
+        raise PilotError("Expected two SHA-256 digests for staged removal.")
+    name = f"backlog-plan-{selection_sha}.private.json"
+    saved = store.read(name)
+    if not isinstance(saved, dict) or digest(encode(saved)) != envelope_sha:
+        raise PilotError("Staged plan digest differs.")
+    binding = saved["backlog_binding"]
+    if (
+        saved.get("kind") != "backlog_preparation"
+        or saved.get("schema_version") != 1
+        or digest(encode(binding)) != selection_sha
+        or binding
+        not in select_backlog(
+            store, catalog, config, binding["folder"]["id"], binding["catalog_sha256"]
+        )
+    ):
+        raise PilotError("Staged backlog binding changed or held.")
+    plan = validate_plan(saved["verified_plan"], config["owner_id"])
+    verify_binding(plan, binding, store.read(binding["archive_receipt"]))
+    return name, plan, binding
+
+
+def verify_binding(plan, candidate, receipt):
+    items = plan["items"]
+    if not (
+        plan["owner_id"] == candidate["owner_id"]
+        and plan["drive_destination"] == candidate["drive_destination"]
+        and plan["inventory_checkpoint"] == candidate["inventory_checkpoint"]
+        and plan["archive_receipt"] == receipt
+        and digest(encode(receipt)) == candidate["archive_receipt_sha256"]
+        and receipt["manifest"] == candidate["manifest"]
+        and len(items) == 1
+        and items[0]["state"] == "verified"
+        and items[0]["post_id"] == candidate["post_id"]
+        and items[0]["folder"] == candidate["folder"]
+        and items[0]["payload"] == candidate["payload"]
+        and (
+            "exact_source" not in candidate
+            or items[0]["media_files"] == receipt["restore"]["media_files"]
+        )
+    ):
+        raise PilotError("Drive plan differs from the selected binding.")
+
+
 def prepare_one(store, catalog, config, folder, catalog_sha, source_sha, selection_sha, attested):
     """Under both locks, stage one exact plan; never publish a launcher pointer."""
     if not attested:
@@ -284,29 +330,8 @@ def prepare_one(store, catalog, config, folder, catalog_sha, source_sha, selecti
     gate.check()
     receipt = store.read(candidate["archive_receipt"])
 
-    def verify(plan):
-        items = plan["items"]
-        if not (
-            plan["owner_id"] == candidate["owner_id"]
-            and plan["drive_destination"] == candidate["drive_destination"]
-            and plan["inventory_checkpoint"] == candidate["inventory_checkpoint"]
-            and plan["archive_receipt"] == receipt
-            and digest(encode(receipt)) == candidate["archive_receipt_sha256"]
-            and receipt["manifest"] == candidate["manifest"]
-            and len(items) == 1
-            and items[0]["state"] == "verified"
-            and items[0]["post_id"] == candidate["post_id"]
-            and items[0]["folder"] == candidate["folder"]
-            and items[0]["payload"] == candidate["payload"]
-            and (
-                "exact_source" not in candidate
-                or items[0]["media_files"] == receipt["restore"]["media_files"]
-            )
-        ):
-            raise PilotError("Drive plan differs from the selected binding.")
-
     def stage(plan):
-        verify(plan)
+        verify_binding(plan, candidate, receipt)
         # Helper removal evidence can live outside both locked directories.
         if candidate not in select_backlog(store, catalog, config, folder, catalog_sha):
             raise PilotError("Selected backlog binding changed during Drive verification.")
@@ -348,7 +373,9 @@ def prepare_one(store, catalog, config, folder, catalog_sha, source_sha, selecti
         and saved.get("backlog_binding") == candidate
     ):
         raise PilotError("Existing backlog plan has a conflicting binding.")
-    verify(validate_plan(saved.get("verified_plan"), candidate["owner_id"]))
+    verify_binding(
+        validate_plan(saved.get("verified_plan"), candidate["owner_id"]), candidate, receipt
+    )
     return {
         "mode": "prepare_backlog_one",
         "already_staged": existing,

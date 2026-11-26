@@ -7,8 +7,8 @@ from pathlib import Path
 
 import httpx
 
-from .backlog import prepare_one, require_complete_history, select_backlog
-from .billing import cutoff, settle
+from .backlog import prepare_one, require_complete_history, select_backlog, staged_one
+from .billing import cutoff, ledger, settle, settlement_state
 from .catalog import private_bytes
 from .core import PilotError, Store, exact_id
 from .drive import MAX_BYTES, Drive, digest, encode
@@ -76,6 +76,12 @@ def add_commands(sub):
         "--apply-verified-plan",
         action="store_true",
         help="Apply only the saved one-item Drive-verified plan; no queue selection",
+    )
+    p.add_argument(
+        "--staged-backlog",
+        nargs=3,
+        metavar=("SELECTION_SHA256", "PLAN_SHA256", "RESTORED_BATCH_DIR"),
+        help="Use the exact inspected and prepared backlog item with --apply-verified-plan",
     )
     p.add_argument(
         "--expected-pointer-sha256",
@@ -174,6 +180,9 @@ def run(args):
         raise PilotError("Archive attestation applies only to manual backlog preparation.")
     offline = args.dry_run or args.report_only or backlog is not None
     pointer_sha = getattr(args, "expected_pointer_sha256", None)
+    staged = getattr(args, "staged_backlog", None)
+    if staged and (not args.apply_verified_plan or pointer_sha is not None):
+        raise PilotError("Staged removal requires --apply-verified-plan without a pointer.")
     if pointer_sha is not None and (
         not args.apply_verified_plan or not re.fullmatch("[0-9a-f]{64}", pointer_sha)
     ):
@@ -255,6 +264,8 @@ def run(args):
         bill = store.read("worker-billing.private.json")
         if not isinstance(bill, dict) or not bill.get("observed_at"):
             raise PilotError("Record the reviewed Console billing observation before live work.")
+        if staged:
+            settlement_state(store, ledger(store), bill, required=True)
         budget = CumulativeBudget(
             store,
             config["reservation_usd"],
@@ -320,11 +331,18 @@ def run(args):
                 config,
             )
             if args.apply_verified_plan:
-                result = worker.apply_verified_plan(
-                    expected_pointer=getattr(args, "expected_pointer", None),
-                    expected_pointer_sha256=pointer_sha,
-                    pointer_name=getattr(args, "pointer_name", "verified-one-plan.private.json"),
-                )
+                if staged:
+                    with catalog.locked():
+                        name, plan, binding = staged_one(store, catalog, config, *staged[:2])
+                    result = worker.apply_one(name, plan, binding=binding, restore_dir=staged[2])
+                else:
+                    result = worker.apply_verified_plan(
+                        expected_pointer=getattr(args, "expected_pointer", None),
+                        expected_pointer_sha256=pointer_sha,
+                        pointer_name=getattr(
+                            args, "pointer_name", "verified-one-plan.private.json"
+                        ),
+                    )
                 result.pop("private_report", None)
             else:
                 if not args.scheduled:

@@ -102,6 +102,12 @@ def main():
                     "Worker stopped; inspect protected report before next daily attempt.",
                     file=sys.stderr,
                 )
+            if getattr(args, "apply_verified_plan", False) and (
+                result.get("blocked") or result.get("deferred")
+            ):
+                if result.get("deferred"):
+                    print("Provider retry is deferred.", file=sys.stderr)
+                return 1
             return 1 if result.get("stop_reason") else 0
         if args.command in raindrop_cli.COMMANDS:
             print(json.dumps(raindrop_cli.run(args)))
@@ -207,6 +213,30 @@ def main():
                 if result.get("inventory_status") == "partial":
                     return 1
     except PilotError as exc:
+        if getattr(args, "staged_backlog", None):
+            # Exact static diagnostics only. Provider messages can contain private receipt names.
+            if str(exc) in {
+                "Expected two SHA-256 digests for staged removal.",
+                "Staged plan digest differs.",
+                "Staged backlog binding changed or held.",
+                "Reconcile the historical billing cutoff before staged removal.",
+                "Incomplete settlement or high-water record; no request permitted.",
+                "Staged removal requires --apply-verified-plan without a pointer.",
+                "Verified-plan removal requires manual --once --live --allow-delete.",
+                "Local rollout/owner authorization gates are not satisfied.",
+                "Worker must run as an ordinary non-root account.",
+                "Set X_CLIENT_ID using the existing protected environment.",
+                "Explicit Raindrop environment token is required.",
+            }:
+                print(str(exc), file=sys.stderr)
+                return 1
+            reason = (
+                exc.code
+                if exc.code in {"http_401", "http_403", "http_429", "spend_cap"}
+                else "verification_failed"
+            )
+            print(f"Staged removal stopped: {reason}. No automatic retry.", file=sys.stderr)
+            return 1
         if exc.summary is not None:
             print(json.dumps(exc.summary))
         print(str(exc), file=sys.stderr)

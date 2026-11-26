@@ -296,11 +296,22 @@ class Worker:
             base, _ = latest_attempt(self.store, self.config["owner_id"], pid)
             response = self.store.read(base + ".response.private.json") if base else None
             if response and response.get("status") == 429:
-                self.retry429.add(pid)
+                intent = self.store.read(base + ".intent.private.json")
+                plan_file = intent.get("plan_file") if isinstance(intent, dict) else None
+                if isinstance(plan_file, str) and not plan_file.startswith("backlog-plan-"):
+                    self.retry429.add(pid)
         self.held = set(self.history) - self.retry429
 
     def save(self):
         self.store.write(JOURNAL, self.state)
+
+    def require_manual_removal(self):
+        self.gate.check()
+        if self.config["max_items"] != 1 or not all(
+            self.config["gates"].get(key) is True
+            for key in removal_gates(self.config, exact_plan=True)
+        ):
+            raise PilotError("Verified-plan removal requires every live gate and max_items=1.")
 
     def apply_verified_plan(
         self,
@@ -310,12 +321,7 @@ class Worker:
         expected_pointer_sha256=None,
     ):
         """Manual single-item transaction; never discover, drain or create a link."""
-        self.gate.check()
-        if self.config["max_items"] != 1 or not all(
-            self.config["gates"].get(key) is True
-            for key in removal_gates(self.config, exact_plan=True)
-        ):
-            raise PilotError("Verified-plan removal requires every live gate and max_items=1.")
+        self.require_manual_removal()
         pointer = self.store.read(pointer_name) or {}
         if (expected_pointer is not None and pointer != expected_pointer) or (
             expected_pointer_sha256 is not None
@@ -353,6 +359,12 @@ class Worker:
             == Inventory.load(self.store).name
         ):
             raise PilotError("Saved plan differs from the single verified Drive item.")
+        return self.apply_one(name, plan)
+
+    def apply_one(self, name, plan, *, binding=None, restore_dir=None):
+        self.require_manual_removal()
+        (item,) = plan["items"]
+        pid = item["post_id"]
         queued = self.state["items"].get(pid)
         if (
             pid in self.held
@@ -366,12 +378,15 @@ class Worker:
             self.client,
             self.budget,
             name,
-            owner,
+            self.config["owner_id"],
             confirmed=True,
             catalog_dir=self.catalog.root,
             raindrop=self.raindrop,
             legacy_helper_retired=True,
             require_raindrop=True,
+            staged_plan=plan if binding is not None else None,
+            backlog_binding=binding,
+            restore_dir=restore_dir,
             max_calls=self.config["max_calls"],
         )
 

@@ -45,10 +45,17 @@ required. A Drive upload or remote-only repair receipt is insufficient.
 Preparation verifies the selected MP4 against its exact size and digest without
 raising the size limit for ordinary archives.
 
-The staged envelope is not executable. Generic apply rejects it, and exact-plan
-apply requires its own protected pointer and Drive proof. A follow-up must
-revalidate the selected binding and holds before it can hand a staged backlog
-item to exact-plan apply. Do not rename the envelope or substitute it for a plan.
+Generic apply rejects the staged envelope. For manual exact-plan apply,
+`--staged-backlog SELECTION_SHA256 PLAN_SHA256 RESTORED_BATCH_DIR` selects the two
+digests returned by preparation and the existing local restore directory for
+that archive version. The manifest and payload must match even for text-only
+bookmarks. Under the state and catalog
+locks the worker checks the envelope, current positive folder evidence, inventory,
+archive, catalog, saved Raindrop ID and removal holds. The existing one-item
+transaction then performs fresh provider checks, including a GET of that saved
+Raindrop ID. An uncertain attempt remains held; read-only reconciliation can use
+the original envelope. No executable plan copy or replacement pointer is needed.
+Billing reconciliation and owner authorization still precede any paid run.
 
 ```sh
 x-migrator --state-dir /private/state worker --config /private/worker.json --dry-run
