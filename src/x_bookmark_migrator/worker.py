@@ -297,7 +297,8 @@ class Worker:
             response = self.store.read(base + ".response.private.json") if base else None
             if response and response.get("status") == 429:
                 intent = self.store.read(base + ".intent.private.json")
-                if not intent.get("plan_file", "").startswith("backlog-plan-"):
+                plan_file = intent.get("plan_file") if isinstance(intent, dict) else None
+                if isinstance(plan_file, str) and not plan_file.startswith("backlog-plan-"):
                     self.retry429.add(pid)
         self.held = set(self.history) - self.retry429
 

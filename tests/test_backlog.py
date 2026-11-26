@@ -3,6 +3,7 @@ import copy
 import json
 import sys
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -338,6 +339,9 @@ def test_staged_worker_dispatch(migration, tmp_path, monkeypatch, capsys, fault)
         "--attest-archive-acceptance",
     )
     monkeypatch.setattr(worker_cli, "protected_config", lambda path: None)
+    monkeypatch.setattr(
+        worker_cli, "os", SimpleNamespace(getuid=lambda: 1000, environ=worker_cli.os.environ)
+    )
     monkeypatch.setattr(worker_cli, "require_protected_helper", lambda path: None)
     monkeypatch.setattr(worker_cli, "RaindropAdapter", lambda *a, **kw: source.adapter)
     monkeypatch.setattr(worker_cli, "WorkerClient", lambda *a: client)
@@ -371,6 +375,21 @@ def test_staged_worker_dispatch(migration, tmp_path, monkeypatch, capsys, fault)
         str(tmp_path / "restored"),
     ]
     before = len(server.calls), len(source.calls)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "x-migrator",
+            "--state-dir",
+            str(store.root),
+            "worker",
+            "--config",
+            str(store.path("config.json")),
+            *args,
+        ],
+    )
+    assert cli.main() == 1
+    assert "Reconcile the historical billing cutoff" in capsys.readouterr().err
     with pytest.raises(PilotError, match="billing cutoff"):
         run(*args)
     settle(
@@ -444,6 +463,7 @@ def test_staged_worker_dispatch(migration, tmp_path, monkeypatch, capsys, fault)
             worker.refresh_history()
             assert "102" in worker.held
             assert cli.main() == 1  # Deferred manual run is not a successful removal.
+            assert "Provider retry is deferred" in capsys.readouterr().err
         else:
             with pytest.raises(PilotError, match="binding changed"):
                 run(*args)
