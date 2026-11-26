@@ -279,3 +279,29 @@ def test_invalidated_same_generation_coverage_keeps_mapping(publisher):
         run(current)
     state = store.read(STATE)
     assert state["complete"] is None and state["rows"] == before and len(fake.writes) == 5
+
+
+def test_lost_upload_session_reply_can_publish_newest_text(publisher, monkeypatch):
+    store, catalog, fake, rebuild, run = publisher
+    real = fake.handle
+    with monkeypatch.context() as m:
+
+        def lose_location(req):
+            response = real(req)
+            if req.method == "POST" and req.url.params.get("uploadType") == "resumable":
+                raise httpx.ReadTimeout(
+                    "session opened; client never received the URL", request=req
+                )
+            return response
+
+        m.setattr(fake, "handle", lose_location)
+        with pytest.raises(httpx.ReadTimeout):
+            run(rebuild())
+    row = store.read(STATE)["rows"]["701"]
+    assert not fake.writes and row["dispatched"] is False
+    category_edit(catalog, "edit", "701", "New session text")
+    latest = rebuild()
+    assert run(latest)["verified"] == 5
+    assert store.read(STATE)["complete"] == latest
+    assert [op for op, fid in fake.writes if fid == row["file_id"]] == ["PUT"]
+    assert b"New session text" in fake.server.bytes[row["file_id"]]

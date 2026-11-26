@@ -196,7 +196,7 @@ class Drive:
             self.store.write("drive-journal.private.json", self.journal)
         return drive_id(self.journal[token]), token
 
-    def create_upload(self, metadata, data):
+    def create_upload(self, metadata, data, *, before_content=None):
         mime = metadata["mimeType"]
         start = self.http.post(
             UPLOAD,
@@ -219,12 +219,10 @@ class Drive:
                 or not url.query
             ):
                 raise PilotError("Unexpected Drive upload session URL.")
-            checked(
-                self.http.put(
-                    location, content=data, headers={**self.headers(), "Content-Type": mime}
-                ),
-                (200, 201, 409),
-            )
+            headers = {**self.headers(), "Content-Type": mime}
+            if before_content is not None:
+                before_content()
+            checked(self.http.put(location, content=data, headers=headers), (200, 201, 409))
 
     def put(self, parent, key, name, data, mime):
         if data is not None and not 0 < len(data) <= self.max_bytes:

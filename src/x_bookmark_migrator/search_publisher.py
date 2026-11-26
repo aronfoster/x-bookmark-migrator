@@ -184,10 +184,12 @@ def publish_search(
                 current_generation()
                 row.update(pending=desired, dispatched=False)
                 store.write(STATE, state)
-                headers = {**drive.headers(), "Content-Type": MIME}
-                current_generation()
-                row["dispatched"] = True
-                store.write(STATE, state)
+
+                def before_content(row=row):
+                    current_generation()
+                    row["dispatched"] = True
+                    store.write(STATE, state)
+
                 try:
                     if observed is None:
                         drive.create_upload(
@@ -199,8 +201,11 @@ def publish_search(
                                 "appProperties": {"xm_key": token},
                             },
                             body,
+                            before_content=before_content,
                         )
                     else:
+                        headers = {**drive.headers(), "Content-Type": MIME}
+                        before_content()
                         response = http.patch(
                             f"{UPLOAD}/{file_id}",
                             params={"uploadType": "media"},
