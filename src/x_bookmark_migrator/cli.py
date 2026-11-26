@@ -102,6 +102,10 @@ def main():
                     "Worker stopped; inspect protected report before next daily attempt.",
                     file=sys.stderr,
                 )
+            if getattr(args, "apply_verified_plan", False) and (
+                result.get("blocked") or result.get("deferred")
+            ):
+                return 1
             return 1 if result.get("stop_reason") else 0
         if args.command in raindrop_cli.COMMANDS:
             print(json.dumps(raindrop_cli.run(args)))

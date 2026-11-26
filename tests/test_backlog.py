@@ -2,16 +2,18 @@ import argparse
 import copy
 import json
 import sys
+from datetime import UTC, datetime
 
 import httpx
 import pytest
 from test_unbookmark import migration as migration
 from test_unbookmark import storage as storage
-from test_worker import config
+from test_worker import config, make_worker
 
 from x_bookmark_migrator import cli, worker_cli
 from x_bookmark_migrator.archive import batch_receipt, save_manifest
 from x_bookmark_migrator.backlog import select_backlog
+from x_bookmark_migrator.billing import cutoff, settle
 from x_bookmark_migrator.catalog import publish, read_catalog
 from x_bookmark_migrator.core import PilotError
 from x_bookmark_migrator.drive import digest, encode
@@ -283,3 +285,129 @@ def test_real_cli_requires_complete_sources_and_rejects_staged_artifact_on_gener
     assert (files(), len(server.calls)) == before
     assert len(source.calls) == 1 and not source.provider.calls
     assert not list(store.root.glob("*.intent.private.json"))
+
+
+@pytest.mark.parametrize(
+    "fault", ["none", "hold", "repinned", "missing_link", "missing_restore", "rate_limit"]
+)
+def test_staged_worker_dispatch(migration, tmp_path, monkeypatch, fault):
+    store, _, server, source, client, _, _, _ = migration
+    worker = make_worker(migration, tmp_path, max_items=1, helper_descriptors=[])
+    cfg = dict(
+        worker.config,
+        raindrop_script="fixture",
+        raindrop_script_sha256="1" * 64,
+        raindrop_helper_sha256="2" * 64,
+    )
+    store.write("config.json", cfg)
+    parser = argparse.ArgumentParser()
+    worker_cli.add_commands(parser.add_subparsers(dest="command"))
+
+    def run(*args):
+        parsed = parser.parse_args(["worker", "--config", str(store.path("config.json")), *args])
+        parsed.state_dir = store.root
+        return worker_cli.run(parsed)
+
+    source.ids = ["101", "102", "103", "104"]
+    client.get("/2/users/100/bookmarks/folders/10", {"max_results": "100"}, lambda: None)
+    sha = digest(source.catalog.path("catalog.jsonl").read_bytes())
+    inspected = run("--inspect-backlog", "10", sha)
+    selection = inspected["selection_sha256"][1]
+    real_client = httpx.Client
+    monkeypatch.setattr(
+        httpx,
+        "Client",
+        lambda **kw: real_client(transport=httpx.MockTransport(server.handle), **kw),
+    )
+    staged = run(
+        "--prepare-backlog-one",
+        "10",
+        sha,
+        inspected["source_sha256"],
+        selection,
+        "--attest-archive-acceptance",
+    )
+    monkeypatch.setattr(worker_cli, "protected_config", lambda path: None)
+    monkeypatch.setattr(worker_cli, "require_protected_helper", lambda path: None)
+    monkeypatch.setattr(worker_cli, "RaindropAdapter", lambda *a, **kw: source.adapter)
+    monkeypatch.setattr(worker_cli, "WorkerClient", lambda *a: client)
+    monkeypatch.setattr(worker_cli, "Drive", lambda *a: migration[1])
+    monkeypatch.setenv("X_CLIENT_ID", "fixture")
+    monkeypatch.setenv("RAINDROP_TOKEN", "fixture")
+    store.write(
+        "worker-billing.private.json",
+        {"actual_usd": "0", "observed_at": datetime.now(UTC).isoformat()},
+    )
+    store.write("budget.private.json", {datetime.now(UTC).strftime("%Y-%m"): "1.00"})
+    envelope = staged["plan_sha256"]
+    if fault == "hold":
+        store.write(JOURNAL, {"schema_version": 1, "items": {"102": {"state": "blocked"}}})
+    if fault == "repinned":
+        envelope = "0" * 64
+    if fault == "missing_link":
+        source.provider.active.clear()
+    if fault == "missing_restore":
+        (tmp_path / "restored" / "102.json").unlink()
+    if fault == "rate_limit":
+        source.status = 429
+    args = [
+        "--once",
+        "--live",
+        "--allow-delete",
+        "--apply-verified-plan",
+        "--staged-backlog",
+        selection,
+        envelope,
+        str(tmp_path / "restored"),
+    ]
+    before = len(server.calls), len(source.calls)
+    with pytest.raises(PilotError, match="billing cutoff"):
+        run(*args)
+    settle(
+        store,
+        expected=cutoff(store)["cutoff_sha256"],
+        cumulative="0.50",
+        through=datetime.now(UTC).isoformat(),
+        evidence="3" * 64,
+        attested=True,
+    )
+    if fault in ("hold", "repinned"):
+        with pytest.raises(PilotError, match="held|digest differs"):
+            run(*args)
+        assert before == (len(server.calls), len(source.calls))
+        assert not source.provider.calls and not source.deletes
+    else:
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "x-migrator",
+                "--state-dir",
+                str(store.root),
+                "worker",
+                "--config",
+                str(store.path("config.json")),
+                *args,
+            ],
+        )
+        status = cli.main()
+        targets = [r.url.path.rsplit("/", 1)[-1] for r in source.deletes]
+        intents = len(list(store.root.glob("unbookmark-*.intent.private.json")))
+        print(
+            f"{fault}: exit={status}, Raindrop={source.provider.calls}, "
+            f"intents={intents}, DELETE={targets}"
+        )
+        assert status == int(fault != "none")
+        assert source.provider.calls == (
+            [] if fault == "missing_restore" else [(("get", 102), None)]
+        )
+        assert targets == (["102"] if fault in ("none", "rate_limit") else [])
+        assert intents == len(targets)
+        if fault == "rate_limit":
+            worker.refresh_history()
+            assert "102" in worker.held
+            assert cli.main() == 1  # Deferred manual run is not a successful removal.
+        else:
+            with pytest.raises(PilotError, match="binding changed"):
+                run(*args)
+        assert len(source.deletes) == len(targets)

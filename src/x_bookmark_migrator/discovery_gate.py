@@ -1,7 +1,9 @@
 """Fresh external discovery gate, called only inside the removal transaction."""
 
+import os
 from html.parser import HTMLParser
 from pathlib import Path
+from urllib.parse import quote
 
 from .catalog import (
     asset_key,
@@ -75,11 +77,27 @@ def positive_media_only(payload, classification, payload_sha256):
     )
 
 
-def verify_local_media(output, version, payload, manifest, payload_receipt):
+def verify_local_media(output, version, payload, manifest, payload_receipt, restore_dir=None):
     media = payload["media"]
     projected = version["media"]
     require(len(projected) == len(media), "local_media_count_mismatch")
     restore = None
+    if restore_dir is not None:
+        restore = Path(restore_dir)
+        pid = payload["post_id"]
+        try:
+            require(
+                restore.is_absolute() and restore.resolve(strict=True) == restore,
+                "local_restore_path",
+            )
+            for filename, receipt in (
+                ("manifest.jsonl", manifest),
+                (pid + ".json", payload_receipt),
+            ):
+                link = quote(os.path.relpath(restore / filename, output.root), safe="/")
+                checked_bytes(restored_media_path(output, link, filename), receipt)
+        except (OSError, ValueError, PilotError):
+            require(False, "local_restore_unverified")
     for saved, asset in zip(media, projected, strict=True):
         require(
             asset["asset_id"] == asset_key(asset) == asset_key(saved)
@@ -105,21 +123,40 @@ def verify_local_media(output, version, payload, manifest, payload_receipt):
             require(False, "local_media_unverified")
 
 
-def verify_discovery_now(pid, row, payload, catalog_dir, adapter, *, exact_manifest=None):
+def verify_discovery_now(
+    pid,
+    row,
+    payload,
+    catalog_dir,
+    adapter,
+    *,
+    exact_manifest=None,
+    catalog_sha256=None,
+    restore_dir=None,
+):
     try:
-        return _verify_discovery_now(pid, row, payload, catalog_dir, adapter, exact_manifest)
+        return _verify_discovery_now(
+            pid, row, payload, catalog_dir, adapter, exact_manifest, catalog_sha256, restore_dir
+        )
     except (KeyError, TypeError, AttributeError, UnicodeError):
         raise PilotError(
             "Discovery gate blocked: malformed discovery evidence.", code="blocked_discovery"
         ) from None
 
 
-def _verify_discovery_now(pid, row, payload, catalog_dir, adapter, exact_manifest):
+def _verify_discovery_now(
+    pid, row, payload, catalog_dir, adapter, exact_manifest, catalog_sha256, restore_dir
+):
     require(catalog_dir is not None, "catalog_required")
     output = PublicationStore(Path(catalog_dir))
     # Same lock used by catalog publication/curation: keep the selected snapshot
     # stable through the last provider GET. apply writes proof before DELETE.
     with output.locked():
+        if catalog_sha256 is not None:
+            require(
+                digest(publication_bytes(output.path("catalog.jsonl"))) == catalog_sha256,
+                "staged_catalog_changed",
+            )
         records = read_catalog(output)
         matches = [r for r in records if r.get("post_id") == pid]
         require(len(matches) == 1, "exact_primary_catalog_record_required")
@@ -134,7 +171,10 @@ def _verify_discovery_now(pid, row, payload, catalog_dir, adapter, exact_manifes
         require(len(versions) == 1, "catalog_archive_mismatch")
         version = versions[0]
         if exact_manifest is not None:
-            verify_local_media(output, version, payload, exact_manifest, row["payload"])
+            require(version["manifest"] == exact_manifest, "catalog_manifest_mismatch")
+            verify_local_media(
+                output, version, payload, exact_manifest, row["payload"], restore_dir
+            )
         require(
             [
                 {k: v for k, v in post.items() if k not in ("source_post_id", "source_post_url")}

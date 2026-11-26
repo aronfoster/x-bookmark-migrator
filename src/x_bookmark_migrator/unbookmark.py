@@ -424,6 +424,9 @@ def apply_plan(
     raindrop=None,
     legacy_helper_retired=False,
     require_raindrop=False,
+    staged_plan=None,
+    backlog_binding=None,
+    restore_dir=None,
 ):
     require(confirmed, "Review the private plan and supply --confirm-unbookmark.")
     require_distinct_state_dirs(
@@ -435,7 +438,7 @@ def apply_plan(
         budget.per_call >= Decimal("0.005"),
         "Per-call reservation must cover at least the published $0.005 Bookmark write rate.",
     )
-    plan = load_plan(store, plan_name, owner_id)
+    plan = staged_plan if staged_plan is not None else load_plan(store, plan_name, owner_id)
     require(
         legacy_helper_retired, "Confirm private legacy removal helpers are disabled or gate-only."
     )
@@ -484,7 +487,12 @@ def apply_plan(
                     break
                 continue
         try:
-            verified = verify_item(inventory, drive, rows[pid])
+            verified = verify_item(
+                inventory,
+                drive,
+                rows[pid],
+                exact_source=(backlog_binding or {}).get("exact_source"),
+            )
             require(
                 verified == {k: v for k, v in item.items() if k != "state"},
                 "Verified candidate differs from the reviewed plan.",
@@ -509,6 +517,8 @@ def apply_plan(
                 catalog_dir,
                 raindrop,
                 exact_manifest=plan["archive_receipt"]["manifest"] if require_raindrop else None,
+                catalog_sha256=(backlog_binding or {}).get("catalog_sha256"),
+                restore_dir=restore_dir,
             )
         except PilotError as exc:
             outcomes.append(
@@ -648,7 +658,12 @@ def save_report(store, plan_name, outcomes, reads, stop):
 
 def reconcile_plan(store, client, budget, plan_name, owner_id, *, max_calls=20):
     """Read-only recovery. Absence in a capped listing never resolves a lost DELETE."""
-    plan = load_plan(store, plan_name, owner_id, allow_legacy=True)
+    if re.fullmatch(r"backlog-plan-[0-9a-f]{64}\.private\.json", plan_name):
+        saved = store.read(plan_name)
+        require(saved and saved.get("kind") == "backlog_preparation", "Missing staged plan.")
+        plan = validate_plan(saved["verified_plan"], owner_id)
+    else:
+        plan = load_plan(store, plan_name, owner_id, allow_legacy=True)
     reads = Reads(client, budget, max_calls)
     check_identity(reads, owner_id)
     outcomes = []
