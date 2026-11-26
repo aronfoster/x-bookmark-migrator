@@ -164,6 +164,10 @@ def write_repairs(store, drive, media_http, selected, *, author_restore=None):
             drive.verify(manifest)
             verified.add(identity)
     receipt, intent = store.read(name), store.read(pending_name)
+    if author_restore is not None and intent is not None and "reason" not in intent:
+        # Resume an earlier intent in place. Below we verify the frozen successor
+        # payload against this exact donor-bound plan before accepting its receipt.
+        del binding["reason"]
     new_receipt = receipt is None
     if intent is None:
         if receipt is not None:

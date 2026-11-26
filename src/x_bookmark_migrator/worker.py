@@ -231,6 +231,13 @@ def snapshot(store, helpers=(), catalog=None):
     }
 
 
+def catalog_index(records):
+    indexed = {r["post_id"]: r for r in records}
+    if len(indexed) != len(records):
+        raise PilotError("Duplicate catalog primary.")
+    return indexed
+
+
 def require_catalog_versions(records, chains):
     for chain in chains:
         record = records.get(chain["post_id"], {})
@@ -245,7 +252,7 @@ def merge_publication(output, incoming, *, required_versions=()):
     """State lock -> catalog lock. Keep every old version and owner annotation."""
     with output.locked():
         prior = read_catalog(output) if output.path("catalog.jsonl").exists() else []
-        merged = {r["post_id"]: r for r in prior}
+        merged = catalog_index(prior)
         require_catalog_versions(merged, required_versions)
         for record in incoming:
             target = merged.setdefault(record["post_id"], copy.deepcopy(record))

@@ -326,6 +326,18 @@ def test_author_writer_waits_for_independent_restore(tmp_path, storage, monkeypa
         store.root.glob("repair-*.receipt.private.json")
     )
     args.output_dir = str(output)
+    projections = ("catalog.jsonl", "index.html", "source-links.jsonl")
+    if fault == "mixed":
+        # An unrelated duplicate must not be collapsed by the preflight or merge.
+        records = read_catalog(catalog)
+        duplicate = [*records, records[-1]]
+        publish(catalog, duplicate)
+        duplicate_snapshot = [catalog.path(n).read_bytes() for n in projections]
+        with pytest.raises(PilotError, match="Duplicate catalog primary"):
+            run()
+        assert duplicate_snapshot == [catalog.path(n).read_bytes() for n in projections]
+        assert server.bytes == old_objects
+        publish(catalog, records)
     (unsafe / "private").mkdir(mode=0o700)
     args.output_dir = str(unsafe / "private" / "restore")
     args.catalog_dir = None
@@ -346,7 +358,7 @@ def test_author_writer_waits_for_independent_restore(tmp_path, storage, monkeypa
             with pytest.raises(PilotError, match="direct sibling"):
                 archive_cli.run(args)
         assert catalog.path("catalog.jsonl").read_bytes() == before and not list(nested.iterdir())
-        output.mkdir()
+        output.mkdir(exist_ok=True)
         output.chmod(0o2750)
     args.output_dir = str(output)
     with monkeypatch.context() as m:
@@ -358,6 +370,12 @@ def test_author_writer_waits_for_independent_restore(tmp_path, storage, monkeypa
     assert catalog.path("catalog.jsonl").read_bytes() == before
     uploaded = dict(server.bytes)
     server.corrupt_id = None
+    if fault == "media":
+        # A pre-tag writer stopped after saving its manifest intent.
+        (intent_path,) = store.root.glob("repair-*.manifest-intent.private.json")
+        intent = store.read(intent_path.name)
+        del intent["reason"]
+        store.write(intent_path.name, intent)
     if fault == "mixed":
         name = restored_media_filename("101", payloads[0]["media"][0])
         seeded = output / name
@@ -382,14 +400,30 @@ def test_author_writer_waits_for_independent_restore(tmp_path, storage, monkeypa
         assert snapshot == [catalog.path(n).read_bytes() for n in projections]
         assert server.bytes == uploaded
         publish(catalog, full_catalog)
+    if fault == "mixed":
+        write = archive_cli.write_repairs
+
+        def duplicate_after_restore(*args, **kwargs):
+            result = write(*args, **kwargs)
+            publish(catalog, duplicate)
+            return result
+
+        with patch.object(archive_cli, "write_repairs", duplicate_after_restore):
+            with pytest.raises(PilotError, match="Duplicate catalog primary"):
+                run()
+        assert duplicate_snapshot == [catalog.path(n).read_bytes() for n in projections]
+        publish(catalog, records)
     for _ in range(2):
         complete = run()
         assert complete["bytes_verified"] == 1 and complete["deletion_eligible"] is False
         assert server.bytes == uploaded
         assert complete["catalog_merged"] is True
         receipt = store.read(complete["private_receipt"])
-        assert receipt["reason"] == "retained_author"
-        assert receipt["manifest"]["sha256"] not in archive_anchors(store, drive.root)
+        if fault == "media":
+            assert "reason" not in receipt
+        else:
+            assert receipt["reason"] == "retained_author"
+            assert receipt["manifest"]["sha256"] not in archive_anchors(store, drive.root)
     items = read_catalog(catalog)
     assert [len(r["versions"]) for r in items] == ([2, 1, 1] if fault == "mixed" else [2, 1])
     if fault == "mixed":

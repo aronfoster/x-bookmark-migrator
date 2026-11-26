@@ -149,7 +149,7 @@ def run(args):
         context = drive.preflight()
         if args.command == "archive-repair":
             if catalog is not None:
-                from .worker import merge_publication, require_catalog_versions
+                from .worker import catalog_index, merge_publication, require_catalog_versions
 
                 chains = [
                     p[key]
@@ -157,9 +157,7 @@ def run(args):
                     for key in ("repair_source", "retained_author_source")
                 ]
                 with catalog.locked():
-                    require_catalog_versions(
-                        {r["post_id"]: r for r in read_catalog(catalog)}, chains
-                    )
+                    require_catalog_versions(catalog_index(read_catalog(catalog)), chains)
             result = write_repairs(store, drive, media_http, selected, author_restore=output)
             if catalog is not None:
                 # The merge applies curation to the full corpus under the catalog lock.

@@ -81,9 +81,9 @@ def test_manual_backlog_reads_latest_window_and_exact_repaired_version(migration
         select_backlog(store, catalog, cfg, "10", sha)
 
 
-@pytest.mark.parametrize("author_repair", [False, True])
+@pytest.mark.parametrize("repair", ["media", "tagged_author", "legacy_author"])
 def test_completed_repair_requires_published_exact_payload_and_bound_plan(
-    migration, tmp_path, author_repair
+    migration, tmp_path, repair
 ):
     store, drive, _, source, client, archived, _, _ = migration
     cfg = dict(config(tmp_path), helper_descriptors=[])
@@ -94,7 +94,7 @@ def test_completed_repair_requires_published_exact_payload_and_bound_plan(
     plan = "e" * 64
     name = f"repair-{plan}.receipt.private.json"
     binding = dict(plan_sha256=plan, max_asset_bytes=drive.max_bytes, drive_root=drive.root)
-    if author_repair:
+    if repair == "tagged_author":
         binding["reason"] = "retained_author"
     receipt = {**batch_receipt(manifest, [row], plan), **binding}
     store.create(f"repair-{plan}.manifest-intent.private.json", {**binding, "rows": [row]})
@@ -102,6 +102,14 @@ def test_completed_repair_requires_published_exact_payload_and_bound_plan(
     record = next(r for r in records if r["post_id"] == row["post_id"])
     (predecessor,) = record["versions"]
     successor = dict(predecessor, manifest=manifest)
+    if repair == "legacy_author":
+        # The retained primary response lacks the author in the published successor.
+        from x_bookmark_migrator.inventory import Inventory
+
+        entry = Inventory.load(store).state["posts"][row["post_id"]]
+        envelope = store.read(entry["expansions_ref"])
+        envelope["response"]["includes"]["users"] = []
+        store.write(entry["expansions_ref"], envelope)
     predecessor.update(archive_status="blocked", blockers=["blocked_byte_limit"])
     record["versions"].append(successor)
     source.ids = [row["post_id"]]
@@ -114,7 +122,7 @@ def test_completed_repair_requires_published_exact_payload_and_bound_plan(
 
     assert inspect() == []  # Frozen manifest intent is not completion evidence.
     store.create(name, receipt)
-    if author_repair:
+    if repair != "media":
         assert inspect() == []  # The archive is complete but removal needs donor replay.
         return
     (candidate,) = inspect()

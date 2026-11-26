@@ -8,7 +8,7 @@ from datetime import datetime
 import httpx
 
 from . import large_mp4
-from .archive import batch_receipt
+from .archive import archive_evidence, batch_receipt, plan_post
 from .catalog import raindrop_link, read_annotations, read_catalog
 from .core import PilotError, Store, exact_id, validate_page
 from .drive import Drive, digest, encode
@@ -232,6 +232,21 @@ def select_backlog(store, catalog, config, folder, catalog_sha256):
                             for k in ("category", "folders", "blockers", "archive_status")
                         )
                     ):
+                        continue
+                    # Untagged legacy repairs can include a donor-dependent
+                    # successor. Removal requires replay from the primary alone.
+                    evidence = archive_evidence(inventory, post)
+                    posts, _, blockers = plan_post(
+                        post["post"], evidence["response"].get("includes", {}), evidence
+                    )
+                    if blockers or posts != [
+                        {
+                            k: v
+                            for k, v in archived.items()
+                            if k not in ("source_post_id", "source_post_url")
+                        }
+                        for archived in version["posts"]
+                    ]:
                         continue
                 if source is not None:
                     media = [
