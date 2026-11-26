@@ -328,6 +328,8 @@ content. Native search, retrieval and full-corpus acceptance remain open.
   do not turn full article text into Raindrop notes or require a paid tier silently.
 - Accept the [manual categorization plan](V1_ACCEPTANCE.md#manual-categorization-plan)
   with a concrete rehearsal, state/approval examples and a resumable next batch.
+  FOS-170 implements [single-bookmark description corrections](V1_ACCEPTANCE.md#correct-one-bookmark-description);
+  FOS-220 verifies ordinary Raindrop search finds the corrected item by description alone.
   Scope the later implementation separately; do not require sorting the whole
   corpus or a hosted gallery before v1.
 
