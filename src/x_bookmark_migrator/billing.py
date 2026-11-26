@@ -122,11 +122,9 @@ def verify_months(current, floor):
         raise PilotError("Monthly reservation ledger regressed; no request permitted.")
 
 
-def settlement_state(store, months, bill, *, required=False):
+def settlement_state(store, months, bill):
     receipt, marker = store.read(SETTLEMENT), store.read(HIGH_WATER)
     if not store.path(SETTLEMENT).exists() and not store.path(HIGH_WATER).exists():
-        if required:
-            raise PilotError("Reconcile the historical billing cutoff before staged removal.")
         return {}, None, Decimal(0)
     if (
         not isinstance(receipt, dict)

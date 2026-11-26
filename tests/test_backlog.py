@@ -388,18 +388,15 @@ def test_staged_worker_dispatch(migration, tmp_path, monkeypatch, capsys, fault)
             *args,
         ],
     )
-    assert cli.main() == 1
-    assert "Reconcile the historical billing cutoff" in capsys.readouterr().err
-    with pytest.raises(PilotError, match="billing cutoff"):
-        run(*args)
-    settle(
-        store,
-        expected=cutoff(store)["cutoff_sha256"],
-        cumulative="0.50",
-        through=datetime.now(UTC).isoformat(),
-        evidence="3" * 64,
-        attested=True,
-    )
+    if fault == "half_settled":
+        settle(
+            store,
+            expected=cutoff(store)["cutoff_sha256"],
+            cumulative="0.50",
+            through=datetime.now(UTC).isoformat(),
+            evidence="3" * 64,
+            attested=True,
+        )
     if fault in ("hold", "repinned"):
         with pytest.raises(PilotError, match="held|digest differs"):
             run(*args)

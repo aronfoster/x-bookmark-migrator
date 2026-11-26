@@ -137,6 +137,9 @@ until an owner-attested settlement is explicitly recorded. It never clears/rebas
 ledger or silently renews the allowance. New reservations survive failed requests
 and crashes, and per-operation counts/amounts appear in each private run report.
 
+Staged removal uses the same conservative budget when no settlement exists.
+It does not require an owner-attested historical cutoff to use available headroom.
+
 **Optional one-time offline settlement.** Pause all writers using the billing
 account, including scheduled jobs and other tools. Use the existing private state
 directory, with the updated worker and manual commands. Run

@@ -265,7 +265,7 @@ def run(args):
         if not isinstance(bill, dict) or not bill.get("observed_at"):
             raise PilotError("Record the reviewed Console billing observation before live work.")
         if staged:
-            settlement_state(store, ledger(store), bill, required=True)
+            settlement_state(store, ledger(store), bill)
         budget = CumulativeBudget(
             store,
             config["reservation_usd"],
