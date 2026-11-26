@@ -17,6 +17,7 @@ from .core import API, PilotError, exact_id, validate_page
 from .discovery_gate import verify_discovery_now
 from .drive import digest, encode
 from .inventory import Inventory, now
+from .large_mp4 import verify_preparation_mp4
 from .raindrop import require_distinct_state_dirs
 
 
@@ -44,7 +45,7 @@ def archive_rows(drive, receipt):
     return result
 
 
-def verify_item(inventory, drive, row):
+def verify_item(inventory, drive, row, *, exact_source=None):
     """Reconstruct completeness from source evidence, not a bytes_verified label."""
     pid = exact_id(row["post_id"])
     require(
@@ -83,15 +84,20 @@ def verify_item(inventory, drive, row):
     )
     evidence = archive_evidence(inventory, record)
     require(evidence == payload.get("source_evidence"), "Source evidence changed.")
-    posts, assets, blockers = plan_post(record["post"], evidence["response"].get("includes", {}))
+    posts, assets, blockers = plan_post(
+        record["post"], evidence["response"].get("includes", {}), evidence
+    )
     require(not blockers and posts == payload.get("posts"), "Archive text/context is incomplete.")
     stored = payload.get("media")
     require(isinstance(stored, list) and len(assets) == len(stored), "Archive media missing.")
+    exact = verify_preparation_mp4(drive, stored, exact_source) if exact_source else None
     for expected, actual in zip(assets, stored, strict=True):
         require(
             expected == {k: v for k, v in actual.items() if k not in ("storage", "container")},
             "Archive media mapping differs.",
         )
+        if actual is exact:
+            continue
         data = drive.verify(actual["storage"])
         mime, extension = media_format(data, actual["logical_type"])
         require(
@@ -109,7 +115,18 @@ def verify_item(inventory, drive, row):
     }
 
 
-def make_plan(store, drive, receipt_name, post_ids, owner_id, *, acceptance_confirmed=False):
+def make_plan(
+    store,
+    drive,
+    receipt_name,
+    post_ids,
+    owner_id,
+    *,
+    acceptance_confirmed=False,
+    stage_plan=None,
+    exact_source=None,
+):
+    require(exact_source is None or stage_plan is not None, "Exact preparation must be staged.")
     require(acceptance_confirmed, "Complete the ARCHIVE.md runtime/restore acceptance first.")
     require(
         isinstance(post_ids, list)
@@ -129,7 +146,7 @@ def make_plan(store, drive, receipt_name, post_ids, owner_id, *, acceptance_conf
     for pid in post_ids:
         require(pid in rows, "Selected post is not in the archive receipt.")
         try:
-            item = verify_item(inventory, drive, rows[pid])
+            item = verify_item(inventory, drive, rows[pid], exact_source=exact_source)
             items.append({**item, "state": "verified"})
         except PilotError as exc:
             # Storage/provenance errors stop the plan; known per-item blockers do not.
@@ -150,8 +167,11 @@ def make_plan(store, drive, receipt_name, post_ids, owner_id, *, acceptance_conf
         },
         "items": items,
     }
-    name = "unbookmark-plan-" + secrets.token_hex(12) + ".private.json"
-    store.create(name, plan)
+    if stage_plan is None:
+        name = "unbookmark-plan-" + secrets.token_hex(12) + ".private.json"
+        store.create(name, plan)
+    else:
+        name = stage_plan(plan)
     return {
         "private_plan": name,
         "selected": len(items),
@@ -164,6 +184,16 @@ def make_plan(store, drive, receipt_name, post_ids, owner_id, *, acceptance_conf
 
 def load_plan(store, name, owner_id, *, allow_legacy=False):
     plan = store.read(name)
+    # Also reject earlier staged v2 records carrying the binding inline.
+    require(
+        not isinstance(plan, dict)
+        or ("backlog_binding" not in plan and plan.get("kind") != "backlog_preparation"),
+        "Backlog preparation is not an executable unbookmark plan.",
+    )
+    return validate_plan(plan, owner_id, allow_legacy=allow_legacy)
+
+
+def validate_plan(plan, owner_id, *, allow_legacy=False):
     require(
         isinstance(plan, dict) and plan.get("schema_version") in ((1, 2) if allow_legacy else (2,)),
         "Invalid or legacy unbookmark plan; create a v2 plan.",
@@ -393,6 +423,7 @@ def apply_plan(
     catalog_dir=None,
     raindrop=None,
     legacy_helper_retired=False,
+    require_raindrop=False,
 ):
     require(confirmed, "Review the private plan and supply --confirm-unbookmark.")
     require_distinct_state_dirs(
@@ -471,7 +502,14 @@ def apply_plan(
             reads.reserve("after_window")
             # This is the last external verification before intent and DELETE.
             payload = json.loads(drive.verify(rows[pid]["payload"]))
-            discovery = verify_discovery_now(pid, rows[pid], payload, catalog_dir, raindrop)
+            discovery = verify_discovery_now(
+                pid,
+                rows[pid],
+                payload,
+                catalog_dir,
+                raindrop,
+                exact_manifest=plan["archive_receipt"]["manifest"] if require_raindrop else None,
+            )
         except PilotError as exc:
             outcomes.append(
                 {
@@ -593,6 +631,9 @@ def save_report(store, plan_name, outcomes, reads, stop):
     return {
         "private_report": name,
         "states": counts,
+        "blocked_reasons": dict(
+            Counter(o["reason"] for o in outcomes if o["state"] == "blocked" and o.get("reason"))
+        ),
         "stop_reason": stop,
         "delete_attempts_this_run": sum(o.get("sent_this_run", False) for o in outcomes),
         "new_window_observations": sum(

@@ -7,14 +7,22 @@ from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import pytest
-from test_archive import archive_batch, includes, inventory, media_http, photo, post
+from test_archive import (
+    archive_batch,
+    includes,
+    inventory,
+    media_http,
+    photo,
+    post,
+    source_media_fixture,
+)
 from test_archive import storage as storage
 from test_raindrop import SkillServer, adapter_for
 from test_raindrop import item as raindrop_item
 
 from x_bookmark_migrator import cli
 from x_bookmark_migrator.archive import restore_batch
-from x_bookmark_migrator.catalog import build, publish
+from x_bookmark_migrator.catalog import build, link_raindrop, publish, read_catalog
 from x_bookmark_migrator.core import (
     SCOPES,
     WRITE_SCOPES,
@@ -113,6 +121,9 @@ def migration(storage, tmp_path):
     publish(catalog, build([(restored.root, store.path(archived["private_receipt"]))], catalog))
     provider = SkillServer([raindrop_item(pid, int(pid)) for pid in ("101", "102", "103")])
     adapter = adapter_for(tmp_path, provider)
+    for pid in ("101", "102", "103"):
+        link_raindrop(catalog, read_catalog(catalog), adapter.verify_raindrop_now(pid, int(pid)))
+    provider.calls.clear()
     source = XServer(store)
     source.catalog = catalog
     source.provider = provider
@@ -149,6 +160,27 @@ def migration(storage, tmp_path):
 
     yield store, drive, server, source, client, archived, plan, apply
     http.close()
+
+
+@pytest.mark.parametrize("origin_author_present", [True, False])
+def test_make_plan_replays_source_media_evidence(storage, origin_author_present):
+    store, drive, _, _ = storage
+    primary, inc, _ = source_media_fixture()
+    inc["posts"][0]["author_id"] = "901"
+    if origin_author_present:
+        inc["users"].append({"id": "901", "username": "origin_author"})
+    inv = inventory(store, [primary], inc)
+    with httpx.Client(transport=httpx.MockTransport(media_http)) as media:
+        archived = archive_batch(inv, drive, media)
+    result = make_plan(
+        store, drive, archived["private_receipt"], ["101"], "100", acceptance_confirmed=True
+    )
+    (item,) = store.read(result["private_plan"])["items"]
+    assert result["deleted"] == result["x_api_calls"] == 0
+    if origin_author_present:
+        assert item["state"] == "verified" and item["media_files"] == 2
+    else:
+        assert item == {"post_id": "101", "state": "blocked", "reason": "blocked_archive"}
 
 
 def test_three_real_archives_preserve_categories_delete_and_reveal_new_ids(migration):

@@ -1,6 +1,7 @@
 """Offline fault injection through real archive, catalog, and deletion transactions."""
 
 import copy
+import hashlib
 import json
 import sys
 import time
@@ -99,6 +100,223 @@ def test_archive_only_cannot_create_raindrop_or_delete(migration, tmp_path):
     result = w.run(allow_delete=False)
     assert not result["stop_reason"] and result["remaining_reachable_queued"] == 3
     assert not migration[3].calls
+
+
+def save_drive_proof(store, name):
+    plan = store.read(name)
+    (item,) = plan["items"]
+    proof = dict(
+        schema_version=1,
+        inventory=plan["inventory_checkpoint"],
+        post_id=item["post_id"],
+        manifest_sha256=plan["archive_receipt"]["manifest"]["sha256"],
+        payload_sha256=item["payload"]["sha256"],
+    )
+    key = hashlib.sha256(json.dumps(proof, sort_keys=True).encode()).hexdigest()
+    store.create(f"one-drive-check-{key}.private.json", proof)
+    return key
+
+
+@pytest.mark.parametrize("linked", [True, False])
+def test_verified_plan_removes_only_proved_id_without_raindrop_write(migration, tmp_path, linked):
+    store, _, _, source, _, _, make_plan, _ = migration
+    worker = make_worker(migration, tmp_path, max_items=1)
+    worker.config["gates"]["console_cap_confirmed"] = False
+    with pytest.raises(PilotError, match="live gate"):
+        worker.apply_verified_plan()
+    worker.config["manual_plan_local_budget_only"] = True
+    assert worker_cli.removal_gates(worker.config, exact_plan=False) == GATES
+    worker.config["gates"]["auto_recharge_off"] = False
+    with pytest.raises(PilotError, match="live gate"):
+        worker.apply_verified_plan()
+    worker.config["gates"]["auto_recharge_off"] = True
+    name = make_plan(["102"])
+    key = save_drive_proof(store, name)
+    for ids in (["101"], ["101", "102"]):
+        store.write(
+            "verified-one-plan.private.json", {"drive_check_sha256": key, "plan": make_plan(ids)}
+        )
+        with pytest.raises(PilotError, match="differs"):
+            worker.apply_verified_plan()
+    assert not source.calls and not source.provider.calls
+    store.write("verified-one-plan.private.json", {"drive_check_sha256": key, "plan": name})
+    with pytest.raises(PilotError, match="pointer changed"):
+        worker.apply_verified_plan(expected_pointer={"plan": "different"})
+    worker.held.add("102")
+    with pytest.raises(PilotError, match="worker hold"):
+        worker.apply_verified_plan()
+    assert not source.calls and not source.provider.calls
+    worker.held.clear()
+    if not linked:
+        source.provider.active.clear()
+        assert worker.apply_verified_plan()["states"] == {"blocked": 1}
+        assert not source.deletes and not source.provider.posts
+        return
+    assert worker.apply_verified_plan()["states"] == {"unbookmarked": 1}
+    assert source.provider.calls == [(("get", 102), None)]
+    assert [r.url.path.split("/")[-1] for r in source.deletes] == ["102"]
+    with pytest.raises(PilotError, match="previous attempt"):
+        make_worker(migration, tmp_path, max_items=1).apply_verified_plan()
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        None,
+        "missing",
+        "tampered",
+        "unlinked",
+        "local_missing",
+        "local_tampered",
+        "local_absolute",
+        "local_traversal",
+        "local_symlink",
+        "local_manifest",
+    ],
+)
+def test_verified_plan_rechecks_media_and_link_before_intent(
+    migration, tmp_path, monkeypatch, fault
+):
+    store, _, server, source, _, _, make_plan, _ = migration
+    name = make_plan(["101"])
+    (item,) = store.read(name)["items"]
+    assert item["media_files"] == 1
+    pointer = {"plan": name, "drive_check_sha256": save_drive_proof(store, name)}
+    store.write("verified-one-plan.private.json", pointer)
+    payload = json.loads(server.bytes[item["payload"]["file_id"]])
+    media_id = payload["media"][0]["storage"]["file_id"]
+    if fault == "missing":
+        del server.objects[media_id]
+    elif fault == "tampered":
+        server.corrupt_id = media_id
+    elif fault == "unlinked":
+        source.provider.active.clear()
+        monkeypatch.setattr(
+            "x_bookmark_migrator.discovery_gate.positive_media_only", lambda *_: True
+        )
+    elif fault and fault.startswith("local_"):
+        records = read_catalog(source.catalog)
+        version = next(r for r in records if r["post_id"] == "101")["versions"][0]
+        (asset,) = version["media"]
+        local = (source.catalog.root / asset["local_url"]).resolve()
+        if fault == "local_missing":
+            local.unlink()
+        elif fault == "local_tampered":
+            data = local.read_bytes()
+            local.write_bytes(b"X" + data[1:])
+        elif fault == "local_manifest":
+            (local.parent / "manifest.jsonl").write_bytes(b"{}")
+        else:
+            if fault == "local_absolute":
+                asset["local_url"] = str(local)
+            elif fault == "local_symlink":
+                alias = local.parent.with_name("alias")
+                alias.symlink_to(local.parent, target_is_directory=True)
+                asset["local_url"] = f"../alias/{local.name}"
+            else:
+                asset["local_url"] = f"%2E%2E/../{tmp_path.name}/restored/{local.name}"
+            source.catalog.path("catalog.jsonl").write_bytes(b"".join(encode(r) for r in records))
+
+    worker = make_worker(migration, tmp_path, max_items=1)
+    result = worker.apply_verified_plan(expected_pointer=pointer)
+    if fault:
+        assert result["blocked"] and result["delete_attempts_this_run"] == 0
+        assert not source.deletes and not list(store.root.glob("*.intent.private.json"))
+        if fault.startswith("local_"):
+            assert result["blocked_reasons"] == {"blocked_discovery": 1}
+    else:
+        assert result["states"] == {"unbookmarked": 1}
+        assert result["new_window_observations"] == 1
+        assert [r.url.path.rsplit("/", 1)[-1] for r in source.deletes] == ["101"]
+    assert source.provider.calls == ([(("get", 101), None)] if fault in {None, "unlinked"} else [])
+
+
+def test_cli_pins_entire_verified_pointer(migration, tmp_path, monkeypatch, capsys):
+    store, _, server, source, _, _, make_plan, _ = migration
+    name = make_plan(["102"])
+    key = save_drive_proof(store, name)
+    pointer = {"plan": name, "note": "café", "drive_check_sha256": key}
+    canonical = f'{{"drive_check_sha256": "{key}", "note": "café", "plan": "{name}"}}\n'
+    pin = hashlib.sha256(canonical.encode()).hexdigest()
+    cfg = dict(
+        config(tmp_path),
+        max_items=1,
+        raindrop_script="fixture",
+        raindrop_script_sha256="0" * 64,
+        raindrop_helper_sha256="1" * 64,
+    )
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(cfg))
+    path.chmod(0o600)
+    store.write("worker-billing.private.json", {"observed_at": "fixture", "actual_usd": "0"})
+    monkeypatch.setenv("X_CLIENT_ID", "app")
+    monkeypatch.setenv("RAINDROP_TOKEN", "fixture")
+    monkeypatch.setattr(worker_cli, "protected_config", lambda p: p.read_bytes())
+    monkeypatch.setattr(worker_cli, "require_protected_helper", lambda _: None)
+    monkeypatch.setattr(
+        worker_cli, "os", SimpleNamespace(getuid=lambda: 1000, environ=worker_cli.os.environ)
+    )
+    monkeypatch.setattr(worker_cli, "RaindropAdapter", lambda *a, **kw: source.adapter)
+    client = httpx.Client
+
+    def unexpected_media(request):
+        pytest.fail("Exact-plan application requested media from the network.")
+
+    handlers = iter((source.handle, server.handle, unexpected_media) * 2)
+    monkeypatch.setattr(
+        httpx, "Client", lambda **kw: client(transport=httpx.MockTransport(next(handlers)), **kw)
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "x-migrator",
+            "--state-dir",
+            str(store.root),
+            "worker",
+            "--config",
+            str(path),
+            "--once",
+            "--live",
+            "--allow-delete",
+            "--apply-verified-plan",
+            "--expected-pointer-sha256",
+            pin,
+        ],
+    )
+    store.write("verified-one-plan.private.json", {**pointer, "note": "changed"})
+    server.calls.clear()
+    assert cli.main() == 1
+    assert "pointer changed" in capsys.readouterr().err
+    assert not (server.calls or source.calls or source.provider.calls)
+    assert not list(store.root.glob("*.intent.private.json"))
+    store.write("verified-one-plan.private.json", pointer)
+    assert cli.main() == 0
+    assert json.loads(capsys.readouterr().out)["states"] == {"unbookmarked": 1}
+    assert [r.url.path.rsplit("/", 1)[-1] for r in source.deletes] == ["102"]
+
+
+@pytest.mark.parametrize(
+    ("flags", "pin", "error"),
+    [
+        (["--dry-run"], "0" * 64, "--expected-pointer-sha256"),
+        (["--once", "--live", "--allow-delete"], "0" * 64, "--expected-pointer-sha256"),
+        (["--once", "--live", "--allow-delete", "--apply-verified-plan"], "A" * 64, "lowercase"),
+        (
+            ["--once", "--live", "--allow-delete", "--apply-verified-plan", "--scheduled"],
+            "0" * 64,
+            "manual",
+        ),
+    ],
+)
+def test_cli_rejects_invalid_pointer_pin_before_config(monkeypatch, capsys, flags, pin, error):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["x-migrator", "worker", "--config", "/missing", *flags, "--expected-pointer-sha256", pin],
+    )
+    assert cli.main() == 1
+    assert error in capsys.readouterr().err
 
 
 def test_uncertain_delete_and_resaved_confirmed_id_never_repeat(migration, tmp_path):
@@ -253,6 +471,7 @@ def test_shared_lock_rejects_manual_or_scheduler_overlap(migration, tmp_path):
     cfgpath.write_text(json.dumps(cfg))
     cfgpath.chmod(0o600)
     args = SimpleNamespace(
+        apply_verified_plan=False,
         dry_run=True,
         report_only=False,
         once=False,
@@ -324,7 +543,7 @@ def test_catalog_merge_keeps_all_versions_and_owner_annotations(migration, tmp_p
     w = make_worker(migration, tmp_path)
     assert w.run(allow_delete=True)["stop_reason"] is None
     annotations = catalog.read("annotations.private.json")
-    assert annotations.pop("raindrop_links")
+    assert annotations["raindrop_links"]
     assert annotations == json.loads(before)
 
 
@@ -420,6 +639,7 @@ def test_raindrop_429_saved_reset_stops_all_providers(migration, tmp_path, monke
     from x_bookmark_migrator.raindrop import blocked
 
     w = make_worker(migration, tmp_path)
+    w.catalog.write("annotations.private.json", {})  # Exercise creation for an unlinked archive.
     reset = int(time.time()) + 7200
 
     def rate(*args, **kwargs):
@@ -709,6 +929,7 @@ def test_raindrop_missing_reset_waits_day_and_reset_sets_item_deadline(
     from x_bookmark_migrator.raindrop import blocked
 
     w = make_worker(migration, tmp_path)
+    w.catalog.write("annotations.private.json", {})
     before = time.time()
 
     def fail(*args, **kwargs):

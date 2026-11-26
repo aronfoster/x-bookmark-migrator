@@ -389,22 +389,11 @@ class Budget:
         self.used = Decimal(0)
 
     def reserve(self):
-        month = datetime.now(UTC).strftime("%Y-%m")
-        ledger = self.store.read("budget.private.json")
-        if ledger is None:
-            ledger = {}
-        try:
-            if not isinstance(ledger, dict):
-                raise ValueError
-            used = Decimal(ledger.get(month, "0"))
-        except (InvalidOperation, TypeError, ValueError):
-            raise PilotError("Invalid monthly reservation ledger; inspect private state.") from None
-        if not used.is_finite() or used < 0:
-            raise PilotError("Invalid monthly reservation ledger; inspect private state.")
-        if self.used + self.per_call > self.run_cap or used + self.per_call > self.month_cap:
+        from .billing import reserve
+
+        if self.used + self.per_call > self.run_cap:
             raise PilotError("Estimated spend cap reached; no request sent.", code="spend_cap")
-        ledger[month] = str(used + self.per_call)
-        self.store.write("budget.private.json", ledger)
+        reserve(self.store, self.per_call, month_cap=self.month_cap)
         self.used += self.per_call
 
 

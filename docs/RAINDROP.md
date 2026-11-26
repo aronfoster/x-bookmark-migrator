@@ -1,7 +1,7 @@
 # Mandatory discovery before removal (FOS-166)
 
 The 2026-11-16 contract supersedes optional-Raindrop statements in older runbooks.
-Every non-media saved primary post needs a unique active Raindrop pointer and a
+Every non-media saved primary post needs a saved Raindrop item ID and a
 fresh authenticated GET immediately before removal. This change is code only:
 **no live operations are authorized by a PR, test result, or existing v1 plan.**
 
@@ -24,12 +24,14 @@ backfill receipt format. Review both repository PRs and the source dependency.
 
 ```python
 adapter = RaindropAdapter(ledger_dir=private_path, script=absolute_skill_script)
-snapshot = adapter.enumerate_now()
+# Create/recover an unlinked primary (inventory matching applies here).
 receipt = adapter.ensure_raindrop(pid, source_url, archive_ref, post_text=saved_primary_text)
-proof = adapter.verify_raindrop_now(pid, raindrop_id)
+# Before removing an already-linked primary, fetch only its saved item.
+proof = adapter.verify_raindrop_now(pid, record["raindrop_id"])
 ```
 
-IDs are exact decimal **strings**, never numeric JSON IDs. New primary links are
+X post IDs are exact decimal strings. The catalog's `raindrop_id` is a positive
+JSON integer; pass it to verification without converting it to a string. New primary links are
 exactly `https://x.com/i/status/<pid>`. `source.raindrop_post_id` accepts the
 FOS-216 official aliases, renamed handles, photo/video suffixes and i/web/status.
 Unsupported X links block complete matching; search alone never establishes absence.
@@ -46,8 +48,10 @@ change coordinated with FOS-216, not a second parser in this adapter.
 
 `archive_ref` is either a concise archive URL or a dict containing exactly
 `manifest` and `payload` receipt objects. The structured form is retained privately.
-New pointers use Unsorted, `to-read`, a generic title and the saved primary post's
-first 250 Unicode characters as the note. Archive JSON URLs and numeric category
+New pointers use `to-read` and the saved primary post's first 250 Unicode characters
+as the note. Bounded imports can supply the descriptive title and destination
+collection; callers that omit them still use the generic title and Unsorted.
+Archive JSON URLs and numeric category
 notes were superseded by the owner's 19 November decision. Full text and category
 evidence stay in the archive. Existing entries receive **no PUT or metadata changes**.
 The legacy `category` argument / `--category` option remains accepted for caller
@@ -197,12 +201,17 @@ After existing Drive byte/content/category checks and current X folder membershi
 the transaction checks exactly one catalog record with **record.post_id == pid**,
 the matching archive payload version, source fields and the original X link in
 that record's browser article. Quote/reference matches cannot substitute for the
-saved primary. It then does complete current Raindrop enumeration and a fresh
-single GET. No other external call occurs between that GET and durable intent /
+saved primary. Both the queue and manual exact-plan paths use a fresh authenticated
+GET for the catalog's saved Raindrop ID. They reject a missing, trashed, removed
+or mismatched target. By owner decision they do not scan the library to detect a
+second active copy or establish complete coverage before deleting an already-linked
+X bookmark. Create/recovery inventory checks still apply to unlinked records.
+No other external call occurs between that GET and durable intent /
 DELETE. The exact discovery proof is embedded in the intent before inventory
 invalidation and network mutation. Existing ambiguous-DELETE/no-repeat rules stay.
 
-The narrow media-only exception requires an explicit owner classification in
+The manual exact-plan path requires a verified Raindrop link even for media-only
+posts. Elsewhere the narrow media-only exception requires an explicit owner classification in
 `<catalog-dir>/media-only.private.json`, keyed by primary ID:
 
 ```json

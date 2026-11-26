@@ -67,21 +67,13 @@ def test_catalog_faults_leave_x_untouched(migration, fault):
     assert_no_delete_or_intent(store, source)
 
 
-@pytest.mark.parametrize(
-    "fault", ["trash", "removed", "false", "wrong_id", "partial", "duplicate", "401", "429"]
-)
+@pytest.mark.parametrize("fault", ["trash", "removed", "false", "wrong_id", "401", "429"])
 def test_provider_fault_zero_delete(migration, fault):
     store, _, _, source, _, _, plan, apply = migration
     name = plan(["101", "102"])
     if fault == "trash":
         source.provider.active = []
         source.provider.trash = [item(rid=101, cid=-99)]
-    elif fault == "partial":
-        source.provider.bad_inventory = snapshot([item(rid=101)])
-        source.provider.bad_inventory["active"]["count"] += 1
-    elif fault == "duplicate":
-        source.provider.active += [item(rid=999)]
-        source.provider.active = [i for i in source.provider.active if i["_id"] != 102]
     elif fault in ("401", "429"):
         original = source.adapter._call
 
@@ -105,7 +97,7 @@ def test_provider_fault_zero_delete(migration, fault):
     result = apply(name)
     assert result["blocked"]
     assert_no_delete_or_intent(store, source)
-    if fault in ("401", "429", "partial", "false"):
+    if fault in ("401", "429", "false"):
         report = store.read(result["private_report"])
         assert report["outcomes"][0]["retryable"]
         assert len(report["outcomes"]) == 1  # no requests for next post after provider failure
@@ -114,6 +106,7 @@ def test_provider_fault_zero_delete(migration, fault):
 def test_fresh_get_last_and_evidence_in_intent(migration):
     store, _, _, source, _, _, plan, apply = migration
     name = plan()
+    source.provider.active.append(item(rid=999))
     seen = []
     original_call = source.adapter._call
 
@@ -136,8 +129,27 @@ def test_fresh_get_last_and_evidence_in_intent(migration):
 
     store.create = create
     assert not apply(name)["blocked"]
-    assert seen == ["list-all", "get"]
+    assert seen == ["get"]
     assert source.deletes
+
+
+@pytest.mark.parametrize("invalid_id", [None, "101"])
+def test_invalid_saved_id_blocks_without_library_lookup(migration, invalid_id):
+    store, _, _, source, _, _, plan, apply = migration
+    records = read_catalog(source.catalog)
+    if invalid_id is None:
+        del records[0]["raindrop_id"]
+        publish(source.catalog, records)
+    else:
+        # The normal publisher rejects strings. Simulate a malformed saved catalog.
+        records[0]["raindrop_id"] = invalid_id
+        source.catalog.path("catalog.jsonl").write_text(
+            "".join(json.dumps(r) + "\n" for r in records)
+        )
+    result = apply(plan([records[0]["post_id"]]))
+    assert result["blocked_reasons"] == {"blocked_discovery": 1}
+    assert not source.provider.calls
+    assert_no_delete_or_intent(store, source)
 
 
 def test_media_only_positive_empty_text_end_to_end(migration, tmp_path):

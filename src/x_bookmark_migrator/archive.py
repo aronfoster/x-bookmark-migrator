@@ -237,13 +237,83 @@ def archive_evidence(inventory, record):
     return combined
 
 
-def plan_post(post, includes):
+def plan_post(post, includes, evidence=None):
     """Keep unknown/incomplete shapes blocked, and still retain all returned evidence."""
     blockers, posts, assets = [], [], []
     users = object_map(includes.get("users", []), "id")
     media = object_map(includes.get("media", []), "media_key")
     references = object_map(includes.get("posts", []) + includes.get("tweets", []), "id")
     seen = set()
+
+    def media_origin(attachments):
+        # Only the direct, single-origin shape in an unmerged primary response.
+        # Source IDs are not a positional mapping to individual media keys.
+        response = (evidence or {}).get("response", {})
+        if (
+            not evidence
+            or evidence.get("status") != 200
+            or "original_response" in evidence
+            or evidence.get("reference_evidence")
+            or evidence.get("reference_errors")
+            or response.get("errors")
+            or response.get("includes") != includes
+            or set(attachments) != {"media_keys", "media_source_tweet_id"}
+        ):
+            return None
+        ids, keys = attachments["media_source_tweet_id"], attachments["media_keys"]
+        if (
+            not isinstance(ids, list)
+            or len(ids) != 1
+            or not isinstance(ids[0], str)
+            or not re.fullmatch(r"[0-9]{1,19}", ids[0])
+            or ids[0] == post["id"]
+            or not isinstance(keys, list)
+            or not 1 <= len(keys) <= 20
+            or not all(isinstance(k, str) and k and k in media for k in keys)
+            or len(set(keys)) != len(keys)
+        ):
+            return None
+        origin = references.get(ids[0])
+        if not origin or origin.get("attachments") != {"media_keys": keys}:
+            return None
+        # Keep unfamiliar origin shapes (including nested sources, unavailable
+        # posts, references, articles and long text) on the blocked path.
+        if set(origin) - {
+            "id",
+            "author_id",
+            "created_at",
+            "edit_history_post_ids",
+            "entities",
+            "text",
+            "attachments",
+        } or not isinstance(origin.get("text"), str):
+            return None
+        author_id = origin.get("author_id")
+        if not isinstance(author_id, str) or not re.fullmatch(r"[0-9]{1,19}", author_id):
+            return None
+        author = users.get(author_id, {})
+        if not isinstance(author.get("username"), str) or not author["username"].strip():
+            return None
+        data = object_map(response.get("data", []), "id")
+        if (
+            data.get(post["id"]) != post
+            or references.get(post["id"], post) != post
+            or data.get(ids[0], origin) != origin
+            or "withheld" in author
+            or "withheld" in post
+            or any("withheld" in media[k] for k in keys)
+        ):
+            return None
+        # Apply the ordinary content checks too (e.g. an article URL in entities).
+        try:
+            _, _, origin_blockers = plan_post(origin, includes)
+        except (TypeError, AttributeError, ValueError):
+            # A malformed returned origin (for example, a non-object URL entity)
+            # cannot establish provenance; still archive the primary's own assets.
+            return None
+        if origin_blockers:
+            return None
+        return {"post": origin, "author": author}
 
     def visit(item, depth=0):
         pid = exact_id(item["id"])
@@ -291,21 +361,25 @@ def plan_post(post, includes):
         if not isinstance(attachments, dict):
             blockers.append("blocked_invalid_attachments")
             attachments = {}
+        origin = None
         if "media_source_tweet_id" in attachments:
-            # Source-media expansion is not archived by this implementation, even
-            # if regular media_keys are also present. Never certify its absence.
-            blockers.append("blocked_unsupported_media_source")
+            if depth == 0 and not any(k in item for k in ("referenced_posts", "referenced_tweets")):
+                origin = media_origin(attachments)
+            if origin is None:
+                blockers.append("blocked_unsupported_media_source")
         keys = attachments.get("media_keys", [])
         if not isinstance(keys, list) or any(not isinstance(k, str) for k in keys):
             blockers.append("blocked_invalid_attachments")
             keys = []
-        if len(keys) > 16:
+        if len(keys) > 20:
             blockers.append("blocked_media_count")
-            keys = keys[:16]
+            keys = keys[:20]
         if attachments.get("poll_ids"):
             blockers.append("blocked_unsupported_poll")
         for index, key in enumerate(keys, 1):
             entry = {"post_id": pid, "index": index, "media_key": key, "raw": media.get(key)}
+            if origin is not None:
+                entry["media_origin"] = origin
             if key not in media:
                 blockers.append("blocked_missing_media")
                 entry["blocked"] = "missing_media"
@@ -376,6 +450,28 @@ def import_pilot(drive, store, manifest_id):
     return {"adopted_assets": adopted, "x_api_calls": 0, "uploaded_assets": 0}
 
 
+def partial_source_response(record, posts, evidence):
+    related = {p["id"] for p in posts}
+    for post in posts:
+        raw = post["raw"]
+        refs = raw.get("referenced_posts", raw.get("referenced_tweets", []))
+        if isinstance(refs, list):
+            related.update(r["id"] for r in refs)
+    # Only specifically attributed errors for unrelated tweets may be excluded.
+    return (
+        bool(record.get("errors"))
+        or record.get("hydration_status") != "read"
+        or any(
+            not isinstance(error, dict)
+            or error.get("resource_type") != "tweet"
+            or not isinstance(error.get("resource_id"), str)
+            or not re.fullmatch(r"[0-9]{1,19}", error["resource_id"])
+            or error["resource_id"] in related
+            for error in evidence.get("reference_errors", [])
+        )
+    )
+
+
 def archive_batch(inventory, drive, media_http, *, post_ids=None, limit=5):
     if type(limit) is not int or not 1 <= limit <= 20:
         raise PilotError("Archive batch limit must be 1–20 posts.")
@@ -405,29 +501,11 @@ def archive_batch(inventory, drive, media_http, *, post_ids=None, limit=5):
             evidence = archive_evidence(inventory, record)
             payload["source_evidence"] = evidence
             posts, assets, content_blockers = plan_post(
-                record["post"], evidence["response"].get("includes", {})
+                record["post"], evidence["response"].get("includes", {}), evidence
             )
             payload.update(posts=posts, media=assets)
             blockers.extend(content_blockers)
-            related = {p["id"] for p in posts}
-            for p in posts:
-                raw = p["raw"]
-                refs = raw.get("referenced_posts", raw.get("referenced_tweets", []))
-                if isinstance(refs, list):
-                    related.update(r["id"] for r in refs)
-            # Shared lookups can fail for an unrelated primary's reference. Only
-            # a specifically attributed tweet error can be excluded; unknown or
-            # expansion errors remain fail-closed. All errors stay in evidence.
-            reference_errors = [
-                error
-                for error in evidence.get("reference_errors", [])
-                if not isinstance(error, dict)
-                or error.get("resource_type") != "tweet"
-                or not isinstance(error.get("resource_id"), str)
-                or not re.fullmatch(r"[0-9]{1,19}", error["resource_id"])
-                or error["resource_id"] in related
-            ]
-            if record.get("errors") or record.get("hydration_status") != "read" or reference_errors:
+            if partial_source_response(record, posts, evidence):
                 blockers.append("blocked_partial_api_response")
         except PilotError as exc:
             blockers.append("blocked_" + exc.code)
@@ -470,15 +548,21 @@ def archive_batch(inventory, drive, media_http, *, post_ids=None, limit=5):
                 "deletion_eligible": False,
             }
         )
+    return finish_batch(inventory.store, drive, rows)
+
+
+def save_manifest(drive, rows):
     raw_manifest = b"".join(encode(r) for r in rows)
-    manifest = drive.save(
+    return drive.save(
         "batches", digest(raw_manifest) + ".jsonl", raw_manifest, "application/x-ndjson"
     )
+
+
+def batch_receipt(manifest, rows, receipt_id):
     # Content dedupe may return a manifest written by an older version with a
     # random name. Its batch identity stays tied to that actual stored name.
     batch_id = manifest["name"].removesuffix(".jsonl")
-    receipt_id = secrets.token_hex(12)
-    receipt = {
+    return {
         "schema_version": 1,
         "batch_id": batch_id,
         "receipt_id": receipt_id,
@@ -488,12 +572,21 @@ def archive_batch(inventory, drive, media_http, *, post_ids=None, limit=5):
         "blocked": sum(bool(r["blockers"]) for r in rows),
         "deletion_eligible": False,
     }
+
+
+def finish_batch(store, drive, rows):
+    receipt_id = secrets.token_hex(12)
+    receipt = batch_receipt(save_manifest(drive, rows), rows, receipt_id)
     name = "archive-" + receipt_id + ".private.json"
     # Store.write replaces atomically; a random new name plus explicit existence guard
     # keeps batch receipts immutable under the enclosing state lock.
-    if inventory.store.path(name).exists():
+    if store.path(name).exists():
         raise PilotError("Archive receipt collision.")
-    inventory.store.write(name, receipt)
+    store.write(name, receipt)
+    return batch_summary(name, receipt)
+
+
+def batch_summary(name, receipt):
     return {
         "records": receipt["records"],
         "bytes_verified": receipt["bytes_verified"],

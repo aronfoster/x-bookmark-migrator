@@ -3,11 +3,17 @@
 from html.parser import HTMLParser
 from pathlib import Path
 
-from .catalog import read_catalog
+from .catalog import (
+    asset_key,
+    checked_bytes,
+    read_catalog,
+    restored_media_filename,
+    restored_media_path,
+)
 from .core import PilotError
 from .drive import digest
 from .publication import PublicationStore, publication_bytes
-from .raindrop import inspect_inventory, validate_receipt
+from .raindrop import validate_receipt
 from .source import source_url
 
 
@@ -69,16 +75,46 @@ def positive_media_only(payload, classification, payload_sha256):
     )
 
 
-def verify_discovery_now(pid, row, payload, catalog_dir, adapter):
+def verify_local_media(output, version, payload, manifest, payload_receipt):
+    media = payload["media"]
+    projected = version["media"]
+    require(len(projected) == len(media), "local_media_count_mismatch")
+    restore = None
+    for saved, asset in zip(media, projected, strict=True):
+        require(
+            asset["asset_id"] == asset_key(asset) == asset_key(saved)
+            and asset["container"] == saved["container"]
+            and asset["storage"] == saved["storage"]
+            and asset["availability"] == "local_hash_verified"
+            and version["manifest"] == manifest,
+            "local_media_receipt_mismatch",
+        )
+        try:
+            pid = payload["post_id"]
+            path = restored_media_path(
+                output, asset["local_url"], restored_media_filename(pid, saved)
+            )
+            if restore is None:
+                restore = path.parent
+                checked_bytes(restore / "manifest.jsonl", manifest)
+                checked_bytes(restore / (pid + ".json"), payload_receipt)
+            require(path.parent == restore, "local_media_restore_mismatch")
+            require(path.lstat().st_size == saved["storage"]["size_bytes"], "local_media_size")
+            checked_bytes(path, saved["storage"])
+        except (OSError, ValueError, PilotError):
+            require(False, "local_media_unverified")
+
+
+def verify_discovery_now(pid, row, payload, catalog_dir, adapter, *, exact_manifest=None):
     try:
-        return _verify_discovery_now(pid, row, payload, catalog_dir, adapter)
+        return _verify_discovery_now(pid, row, payload, catalog_dir, adapter, exact_manifest)
     except (KeyError, TypeError, AttributeError, UnicodeError):
         raise PilotError(
             "Discovery gate blocked: malformed discovery evidence.", code="blocked_discovery"
         ) from None
 
 
-def _verify_discovery_now(pid, row, payload, catalog_dir, adapter):
+def _verify_discovery_now(pid, row, payload, catalog_dir, adapter, exact_manifest):
     require(catalog_dir is not None, "catalog_required")
     output = PublicationStore(Path(catalog_dir))
     # Same lock used by catalog publication/curation: keep the selected snapshot
@@ -97,6 +133,8 @@ def _verify_discovery_now(pid, row, payload, catalog_dir, adapter):
         versions = [v for v in record["versions"] if v.get("payload_receipt") == row["payload"]]
         require(len(versions) == 1, "catalog_archive_mismatch")
         version = versions[0]
+        if exact_manifest is not None:
+            verify_local_media(output, version, payload, exact_manifest, row["payload"])
         require(
             [
                 {k: v for k, v in post.items() if k not in ("source_post_id", "source_post_url")}
@@ -119,14 +157,13 @@ def _verify_discovery_now(pid, row, payload, catalog_dir, adapter):
         }
         classifications = output.read("media-only.private.json") or {}
         classification = classifications.get(pid)
-        if positive_media_only(payload, classification, row["payload"]["sha256"]):
+        if exact_manifest is None and positive_media_only(
+            payload, classification, row["payload"]["sha256"]
+        ):
             return {**evidence, "kind": "media_only", "classification": classification}
         require(adapter is not None, "raindrop_required")
-        # Fresh enumeration prevents duplicate/Trash/incomplete coverage from
-        # satisfying the gate. The independent single GET is the final network call.
-        snapshot = adapter.enumerate_now()
-        match = inspect_inventory(snapshot, pid)
-        require(match["state"] == "active", "unique_active_raindrop_required")
-        proof = adapter.verify_raindrop_now(pid, match["raindrop_ids"][0])
+        rid = record.get("raindrop_id")
+        require(type(rid) is int and rid > 0, "saved_raindrop_link_required")
+        proof = adapter.verify_raindrop_now(pid, rid)
         validate_receipt(proof, pid)
-        return {**evidence, "kind": "raindrop", "proof": proof, "coverage": snapshot["coverage"]}
+        return {**evidence, "kind": "raindrop", "proof": proof}
