@@ -11,11 +11,11 @@ import re
 import time
 from collections import Counter
 from contextlib import contextmanager
-from datetime import UTC, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from pathlib import Path
 
 from .archive import archive_batch, enrich_references, restore_batch
+from .billing import ledger, money, reserve
 from .catalog import (
     apply_annotations,
     build,
@@ -63,23 +63,14 @@ GATES = (
 )
 
 
-def money(value):
-    try:
-        amount = Decimal(value)
-        if not amount.is_finite() or amount < 0:
-            raise ValueError
-        return amount
-    except (InvalidOperation, ValueError, TypeError):
-        raise PilotError("Invalid private budget amount.", code="budget_invalid") from None
+def removal_gates(config, *, exact_plan):
+    if exact_plan and config.get("manual_plan_local_budget_only") is True:
+        return tuple(key for key in GATES if key != "console_cap_confirmed")
+    return GATES
 
 
 def reservation_total(store):
-    ledger = store.read("budget.private.json")
-    if ledger is None:
-        ledger = {}
-    if not isinstance(ledger, dict) or any(not re.fullmatch(r"\d{4}-\d{2}", k) for k in ledger):
-        raise PilotError("Invalid reservation ledger.", code="budget_invalid")
-    return sum((money(v) for v in ledger.values()), Decimal(0))
+    return sum(ledger(store).values(), Decimal(0))
 
 
 class CumulativeBudget:
@@ -114,17 +105,9 @@ class CumulativeBudget:
 
     def reserve_operation(self, operation):
         amount = self.rates[operation]
-        if (
-            sum(self.operations.values()) >= self.max_calls
-            or self.used + amount > self.run_cap
-            or (self.actual + reservation_total(self.store)) + amount > self.cap
-        ):
+        if sum(self.operations.values()) >= self.max_calls or self.used + amount > self.run_cap:
             raise PilotError("Cumulative/run reservation or request cap reached.", code="spend_cap")
-        ledger = self.store.read("budget.private.json") or {}
-        month = datetime.now(UTC).strftime("%Y-%m")
-        ledger[month] = str(money(ledger.get(month, "0")) + amount)
-        # Same authoritative ledger as manual commands. Crash can overreserve, not underreserve.
-        self.store.write("budget.private.json", ledger)
+        reserve(self.store, amount, actual=self.actual, cap=self.cap)
         self.used += amount
         self.operations[operation] += 1
         self.amounts[operation] += amount
@@ -319,14 +302,19 @@ class Worker:
     def save(self):
         self.store.write(JOURNAL, self.state)
 
-    def apply_verified_plan(self):
+    def apply_verified_plan(
+        self, *, expected_pointer=None, pointer_name="verified-one-plan.private.json"
+    ):
         """Manual single-item transaction; never discover, drain or create a link."""
         self.gate.check()
         if self.config["max_items"] != 1 or not all(
-            self.config["gates"].get(key) is True for key in GATES
+            self.config["gates"].get(key) is True
+            for key in removal_gates(self.config, exact_plan=True)
         ):
             raise PilotError("Verified-plan removal requires every live gate and max_items=1.")
-        pointer = self.store.read("verified-one-plan.private.json") or {}
+        pointer = self.store.read(pointer_name) or {}
+        if expected_pointer is not None and pointer != expected_pointer:
+            raise PilotError("Saved plan pointer changed after verification.")
         key = pointer.get("drive_check_sha256")
         name = pointer.get("plan")
         if not (
@@ -351,7 +339,6 @@ class Worker:
             and len(items) == 1
             and items[0]["post_id"] == pid
             and items[0]["state"] == "verified"
-            and items[0]["media_files"] == 0
             and items[0]["payload"]["sha256"] == proof["payload_sha256"]
             and plan["archive_receipt"]["manifest"]["sha256"] == proof["manifest_sha256"]
             and plan["inventory_checkpoint"]
@@ -377,6 +364,7 @@ class Worker:
             catalog_dir=self.catalog.root,
             raindrop=self.raindrop,
             legacy_helper_retired=True,
+            require_raindrop=True,
             max_calls=self.config["max_calls"],
         )
 
@@ -589,8 +577,11 @@ class Worker:
                 )
             with self.catalog.locked():
                 classification = (self.catalog.read("media-only.private.json") or {}).get(pid)
+                links = read_annotations(self.catalog).get("raindrop_links", {})
             try:
-                if not positive_media_only(payload, classification, row["payload"]["sha256"]):
+                if pid not in links and not positive_media_only(
+                    payload, classification, row["payload"]["sha256"]
+                ):
                     raindrop_receipt = self.raindrop.ensure_raindrop(
                         pid,
                         source_url(pid),

@@ -7,32 +7,64 @@ from pathlib import Path
 
 import httpx
 
+from .backlog import prepare_one, require_complete_history, select_backlog
+from .billing import cutoff, settle
 from .catalog import private_bytes
 from .core import PilotError, Store, exact_id
-from .drive import Drive
+from .drive import MAX_BYTES, Drive, digest, encode
 from .publication import PublicationStore
 from .raindrop import RaindropAdapter, require_distinct_state_dirs
 from .worker import (
-    GATES,
     CumulativeBudget,
     Deferral,
     GuardedHTTP,
     Worker,
     WorkerClient,
     money,
+    removal_gates,
     snapshot,
 )
 
-COMMANDS = ("worker",)
+COMMANDS = ("worker", "billing-cutoff", "billing-settle")
 
 
 def add_commands(sub):
+    sub.add_parser("billing-cutoff", help="Inspect the complete reservation cutoff offline")
+    billing = sub.add_parser("billing-settle", help="Record one owner-attested cutoff offline")
+    billing.add_argument("--expected-cutoff", required=True)
+    billing.add_argument("--provider-cumulative-usd", required=True)
+    billing.add_argument("--settled-through", required=True)
+    billing.add_argument("--evidence-sha256", required=True)
+    billing.add_argument(
+        "--attest-full-coverage",
+        required=True,
+        action="store_true",
+        help="All lifetime charges settled; no intervening reservations or usage",
+    )
     p = sub.add_parser("worker", help="Offline audit or explicitly authorized bounded migration")
     p.add_argument("--config", type=Path, required=True)
     mode = p.add_mutually_exclusive_group(required=True)
     mode.add_argument("--dry-run", action="store_true", help="Offline counts; no API requests")
     mode.add_argument("--report-only", action="store_true", help="Read existing status offline")
     mode.add_argument("--once", action="store_true")
+    mode.add_argument(
+        "--inspect-backlog",
+        nargs=2,
+        metavar=("FOLDER_ID", "VERIFIED_CATALOG_SHA256"),
+        help="Count linked candidates on the latest saved first window; no plan or API calls",
+    )
+    mode.add_argument(
+        "--prepare-backlog-one",
+        nargs=4,
+        metavar=("FOLDER_ID", "VERIFIED_CATALOG_SHA256", "SOURCE_SHA256", "SELECTION_SHA256"),
+        help="Verify one inspected binding via Drive and stage its private plan; no X calls",
+    )
+    p.add_argument(
+        "--attest-archive-acceptance",
+        action="store_true",
+        help="Owner confirms runtime restore acceptance, content/media review, and independent "
+        "restore-anchor backup for this exact selection",
+    )
     p.add_argument(
         "--live", action="store_true", help="Explicitly permit paid reads and Drive writes"
     )
@@ -76,6 +108,9 @@ def load_config(path):
     if config.get("schema_version") != 1:
         raise PilotError("Unsupported worker configuration.")
     exact_id(config["owner_id"])
+    max_asset_bytes = config.setdefault("max_asset_bytes", 64 * 1024 * 1024)
+    if type(max_asset_bytes) is not int or not 1024 <= max_asset_bytes <= MAX_BYTES:
+        raise PilotError("Invalid worker max_asset_bytes.")
     for key, maximum in (("max_items", 50), ("max_calls", 100), ("max_batches", 100)):
         if type(config.get(key)) is not int or not 1 <= config[key] <= maximum:
             raise PilotError("Invalid worker bounds.")
@@ -94,7 +129,31 @@ def load_config(path):
 
 
 def run(args):
-    offline = args.dry_run or args.report_only
+    if getattr(args, "command", None) in ("billing-cutoff", "billing-settle"):
+        if not args.state_dir.is_dir():
+            raise PilotError("Audited private state directory must already exist.")
+        store = Store(args.state_dir)
+        with store.locked():
+            if args.command == "billing-cutoff":
+                return {**cutoff(store), "api_requests": 0}
+            return settle(
+                store,
+                expected=args.expected_cutoff,
+                cumulative=args.provider_cumulative_usd,
+                through=args.settled_through,
+                evidence=args.evidence_sha256,
+                attested=args.attest_full_coverage,
+            )
+    backlog = getattr(args, "inspect_backlog", None)
+    prepare = getattr(args, "prepare_backlog_one", None)
+    attested = getattr(args, "attest_archive_acceptance", False)
+    if prepare is not None and (
+        not attested or args.live or args.allow_delete or args.scheduled or args.apply_verified_plan
+    ):
+        raise PilotError("Preparation requires manual archive attestation without live flags.")
+    if attested and prepare is None:
+        raise PilotError("Archive attestation applies only to manual backlog preparation.")
+    offline = args.dry_run or args.report_only or backlog is not None
     if args.apply_verified_plan and not (
         args.once and args.live and args.allow_delete and not args.scheduled
     ):
@@ -107,6 +166,8 @@ def run(args):
     ):
         raise PilotError("Choose offline inspection or --once --live explicitly.")
     config = load_config(args.config)
+    if backlog is not None or prepare is not None:
+        require_complete_history(config)  # Before even creating lock files.
     state_path = args.state_dir.expanduser().resolve()
     # Never silently initialize a new state directory in place of the audited one.
     if not state_path.is_dir():
@@ -117,6 +178,22 @@ def run(args):
             raise PilotError("Worker state and output directories must be disjoint.")
     store = Store(args.state_dir)
     with store.locked():
+        if backlog is not None or prepare is not None:
+            path = Path(config["catalog_dir"])
+            if not path.is_dir():
+                raise PilotError("Existing catalog directory required.")
+            catalog = PublicationStore(path)
+            with catalog.locked():
+                if prepare is not None:
+                    return prepare_one(store, catalog, config, *prepare, attested)
+                candidates = select_backlog(store, catalog, config, *backlog)
+            return {
+                "mode": "inspect_backlog",
+                "candidates": len(candidates),
+                "api_requests": 0,
+                "source_sha256": candidates[0]["source_read_sha256"] if candidates else None,
+                "selection_sha256": [digest(encode(c)) for c in candidates],
+            }
         if offline:
             catalog_path = Path(config["catalog_dir"])
             catalog = PublicationStore(catalog_path) if catalog_path.is_dir() else None
@@ -130,7 +207,7 @@ def run(args):
                 "api_requests": 0,
             }
         required = (
-            GATES
+            removal_gates(config, exact_plan=args.apply_verified_plan)
             if args.allow_delete
             else (
                 "live_authorized",
@@ -212,7 +289,10 @@ def run(args):
                 os.environ.get("X_CLIENT_SECRET"),
             )
             drive = Drive(
-                store, GuardedHTTP(storage_http, gate, "drive"), config["drive_folder_id"]
+                store,
+                GuardedHTTP(storage_http, gate, "drive"),
+                config["drive_folder_id"],
+                config["max_asset_bytes"],
             )
             worker = Worker(
                 store,
@@ -226,7 +306,10 @@ def run(args):
                 config,
             )
             if args.apply_verified_plan:
-                result = worker.apply_verified_plan()
+                result = worker.apply_verified_plan(
+                    expected_pointer=getattr(args, "expected_pointer", None),
+                    pointer_name=getattr(args, "pointer_name", "verified-one-plan.private.json"),
+                )
                 result.pop("private_report", None)
             else:
                 if not args.scheduled:

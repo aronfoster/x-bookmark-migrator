@@ -24,6 +24,11 @@ For an owner-approved **specific** bookmark, `max_items=1` alone does not select
 that bookmark. `--apply-verified-plan` requires manual `--once --live
 --allow-delete`, every live gate, and `max_items=1`. It loads the protected
 one-item plan and matches it to the saved Drive proof and active inventory.
+The existing proof format covers text and media: the payload digest binds each
+media receipt. The transaction verifies each archived file from Drive against its
+receipt and checks its media format before writing a removal intent. This mode
+also checks the restored manifest, payload and each local media file against the
+selected receipts before the fresh Raindrop check, even for a media-only post.
 It uses the existing removal transaction without draining the queue or creating
 a Raindrop entry. Check the reported removal state and post-removal window
 separately; a lost response is not permission to resend the request.
@@ -70,6 +75,7 @@ Private JSON configuration fields:
 | `max_items` | 1–50; start at 1 for local acceptance |
 | `max_calls` | 1–100; shared across inventory/enrichment/DELETE and reserved after-reads |
 | `max_batches` | 1–100 existing archive receipts to adopt per invocation |
+| `max_asset_bytes` | Optional integer, 1,024–268,435,456 bytes per file; defaults to 64 MiB. Set it high enough to read back the largest repaired asset. |
 | `dialect` | Existing observed `post` or `tweet` profile |
 | `run_cap_usd` | Positive reservation limit, at most 20 |
 | `reservation_usd` | Positive **whole-request** conservative reserves for every operation below; no implicit prices |
@@ -84,7 +90,12 @@ Reservations must specify `identity`, `main`, `folders`, `folder`, `hydrate`,
 `other`. Enrichment uses the conservative `other` allowance. Account for resource
 counts, expansions and folder over-return, **not just cost per one resource**.
 `delete` cannot be below $0.005. Bounds are local spending policy, not a guarantee
-of provider charges; owner-controlled Console hard limits remain mandatory.
+of provider charges. A Console hard limit is required except for a manual
+`--apply-verified-plan` run with `manual_plan_local_budget_only: true` in
+the protected configuration. In that case leave `console_cap_confirmed` false
+if no cap is set. The same cumulative and per-run reservations, auto-recharge
+check and remaining removal gates still apply. Queue and scheduled runs
+cannot use this exception.
 
 Live gates: `live_authorized`, `console_cap_confirmed`, `auto_recharge_off`,
 `removal_sources_complete`. DELETE additionally requires `archive_restore_accepted`,
@@ -98,9 +109,40 @@ Before live execution, store the latest reviewed Console observation as
 observations and reservations separately. It sums **every month** in the existing
 `budget.private.json` and conservatively adds the actual observation when enforcing
 $20. This intentionally double-counts potentially overlapping historical usage
-until an independently reviewed reconciliation exists. It never clears/rebases a
+until an owner-attested settlement is explicitly recorded. It never clears/rebases a
 ledger or silently renews the allowance. New reservations survive failed requests
 and crashes, and per-operation counts/amounts appear in each private run report.
+
+**Optional one-time offline settlement.** Pause all writers using the billing
+account, including scheduled jobs and other tools. Use the existing private state
+directory, with the updated worker and manual commands. Run
+`x-migrator --state-dir "$STATE" billing-cutoff`. Retain the returned cutoff hash,
+all monthly reservation totals, and the prior observation privately. These totals
+are local estimates, not charges.
+
+The owner must verify the provider's **lifetime cumulative USD charges** for
+the same account, project and spending scope, the timezone-qualified timestamp
+through which charges are final, and the SHA-256 of the retained private evidence.
+Verify that the evidence includes every reservation in the snapshot (including
+requests ultimately charged zero), that no charge is pending, and that there was
+no intervening usage or reservation through application. Do not substitute a
+remaining balance, a top-up, a monthly subtotal, or a balance change. If these
+facts cannot be established, keep the conservative accounting. Once verified:
+
+```
+x-migrator --state-dir "$STATE" billing-settle \
+  --expected-cutoff "$CUTOFF_SHA256" --provider-cumulative-usd "$CUMULATIVE_USD" \
+  --settled-through "$SETTLED_THROUGH" --evidence-sha256 "$EVIDENCE_SHA256" \
+  --attest-full-coverage
+```
+
+Both commands are offline. Settlement accepts the entire reviewed snapshot
+once, without editing the ledger or observation. Future reservations count at
+full value on top of the settled actual (or higher observed actual). The $20
+lifetime limit and narrower run, request, and manual monthly limits still apply.
+Partial or repeated settlement is unsupported. An incomplete checkpoint or
+monthly regression stops reservations: retain all files for inspection rather
+than deleting a checkpoint or resetting a month. Settlement authorizes no live work.
 
 ## Recovery and safety
 
