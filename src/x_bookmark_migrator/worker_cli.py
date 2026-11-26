@@ -77,6 +77,12 @@ def add_commands(sub):
         action="store_true",
         help="Apply only the saved one-item Drive-verified plan; no queue selection",
     )
+    p.add_argument(
+        "--expected-pointer-sha256",
+        help="Manual --apply-verified-plan only: 64 lowercase hex digits for SHA-256 of the "
+        "entire pointer encoded as UTF-8 JSON (sorted keys, non-ASCII unescaped, separators "
+        "comma-space and colon-space) followed by one LF",
+    )
 
 
 def protected_config(path):
@@ -97,6 +103,19 @@ def protected_config(path):
     if any(x.startswith("system.posix_acl") for x in os.listxattr(path)):
         raise PilotError("Live configuration ACLs are not permitted.")
     return path.read_bytes()
+
+
+def require_protected_helper(script):
+    # Protect the complete helper directory, including possible Python imports.
+    for path in (script.parent, *script.parents, *script.parent.rglob("*")):
+        st = path.lstat()
+        if (
+            path.is_symlink()
+            or st.st_uid != 0
+            or st.st_mode & 0o022
+            or any(x.startswith("system.posix_acl") for x in os.listxattr(path))
+        ):
+            raise PilotError("Worker Raindrop code must be root-protected outside agent storage.")
 
 
 def load_config(path):
@@ -154,6 +173,13 @@ def run(args):
     if attested and prepare is None:
         raise PilotError("Archive attestation applies only to manual backlog preparation.")
     offline = args.dry_run or args.report_only or backlog is not None
+    pointer_sha = getattr(args, "expected_pointer_sha256", None)
+    if pointer_sha is not None and (
+        not args.apply_verified_plan or not re.fullmatch("[0-9a-f]{64}", pointer_sha)
+    ):
+        raise PilotError(
+            "--expected-pointer-sha256 requires --apply-verified-plan and 64 lowercase hex digits."
+        )
     if args.apply_verified_plan and not (
         args.once and args.live and args.allow_delete and not args.scheduled
     ):
@@ -252,19 +278,7 @@ def run(args):
         ):
             raise PilotError("Reviewed Raindrop script and list_all.py hashes are required.")
         if args.allow_delete:
-            script = Path(config["raindrop_script"])
-            # Protect the complete helper directory, including possible Python imports.
-            for path in (script.parent, *script.parents, *script.parent.rglob("*")):
-                st = path.lstat()
-                if (
-                    path.is_symlink()
-                    or st.st_uid != 0
-                    or st.st_mode & 0o022
-                    or any(x.startswith("system.posix_acl") for x in os.listxattr(path))
-                ):
-                    raise PilotError(
-                        "Worker Raindrop code must be root-protected outside agent storage."
-                    )
+            require_protected_helper(Path(config["raindrop_script"]))
             if not os.environ.get("RAINDROP_TOKEN"):
                 raise PilotError("Explicit Raindrop environment token is required.")
         adapter = (
@@ -308,6 +322,7 @@ def run(args):
             if args.apply_verified_plan:
                 result = worker.apply_verified_plan(
                     expected_pointer=getattr(args, "expected_pointer", None),
+                    expected_pointer_sha256=pointer_sha,
                     pointer_name=getattr(args, "pointer_name", "verified-one-plan.private.json"),
                 )
                 result.pop("private_report", None)

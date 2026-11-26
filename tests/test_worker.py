@@ -231,6 +231,94 @@ def test_verified_plan_rechecks_media_and_link_before_intent(
     assert source.provider.calls == ([(("get", 101), None)] if fault in {None, "unlinked"} else [])
 
 
+def test_cli_pins_entire_verified_pointer(migration, tmp_path, monkeypatch, capsys):
+    store, _, server, source, _, _, make_plan, _ = migration
+    name = make_plan(["102"])
+    key = save_drive_proof(store, name)
+    pointer = {"plan": name, "note": "café", "drive_check_sha256": key}
+    canonical = f'{{"drive_check_sha256": "{key}", "note": "café", "plan": "{name}"}}\n'
+    pin = hashlib.sha256(canonical.encode()).hexdigest()
+    cfg = dict(
+        config(tmp_path),
+        max_items=1,
+        raindrop_script="fixture",
+        raindrop_script_sha256="0" * 64,
+        raindrop_helper_sha256="1" * 64,
+    )
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(cfg))
+    path.chmod(0o600)
+    store.write("worker-billing.private.json", {"observed_at": "fixture", "actual_usd": "0"})
+    monkeypatch.setenv("X_CLIENT_ID", "app")
+    monkeypatch.setenv("RAINDROP_TOKEN", "fixture")
+    monkeypatch.setattr(worker_cli, "protected_config", lambda p: p.read_bytes())
+    monkeypatch.setattr(worker_cli, "require_protected_helper", lambda _: None)
+    monkeypatch.setattr(
+        worker_cli, "os", SimpleNamespace(getuid=lambda: 1000, environ=worker_cli.os.environ)
+    )
+    monkeypatch.setattr(worker_cli, "RaindropAdapter", lambda *a, **kw: source.adapter)
+    client = httpx.Client
+
+    def unexpected_media(request):
+        pytest.fail("Exact-plan application requested media from the network.")
+
+    handlers = iter((source.handle, server.handle, unexpected_media) * 2)
+    monkeypatch.setattr(
+        httpx, "Client", lambda **kw: client(transport=httpx.MockTransport(next(handlers)), **kw)
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "x-migrator",
+            "--state-dir",
+            str(store.root),
+            "worker",
+            "--config",
+            str(path),
+            "--once",
+            "--live",
+            "--allow-delete",
+            "--apply-verified-plan",
+            "--expected-pointer-sha256",
+            pin,
+        ],
+    )
+    store.write("verified-one-plan.private.json", {**pointer, "note": "changed"})
+    server.calls.clear()
+    assert cli.main() == 1
+    assert "pointer changed" in capsys.readouterr().err
+    assert not (server.calls or source.calls or source.provider.calls)
+    assert not list(store.root.glob("*.intent.private.json"))
+    store.write("verified-one-plan.private.json", pointer)
+    assert cli.main() == 0
+    assert json.loads(capsys.readouterr().out)["states"] == {"unbookmarked": 1}
+    assert [r.url.path.rsplit("/", 1)[-1] for r in source.deletes] == ["102"]
+
+
+@pytest.mark.parametrize(
+    ("flags", "pin", "error"),
+    [
+        (["--dry-run"], "0" * 64, "--expected-pointer-sha256"),
+        (["--once", "--live", "--allow-delete"], "0" * 64, "--expected-pointer-sha256"),
+        (["--once", "--live", "--allow-delete", "--apply-verified-plan"], "A" * 64, "lowercase"),
+        (
+            ["--once", "--live", "--allow-delete", "--apply-verified-plan", "--scheduled"],
+            "0" * 64,
+            "manual",
+        ),
+    ],
+)
+def test_cli_rejects_invalid_pointer_pin_before_config(monkeypatch, capsys, flags, pin, error):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["x-migrator", "worker", "--config", "/missing", *flags, "--expected-pointer-sha256", pin],
+    )
+    assert cli.main() == 1
+    assert error in capsys.readouterr().err
+
+
 def test_uncertain_delete_and_resaved_confirmed_id_never_repeat(migration, tmp_path):
     source = migration[3]
     source.mutate_then_timeout = True

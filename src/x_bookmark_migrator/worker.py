@@ -27,7 +27,7 @@ from .catalog import (
 )
 from .core import TOKEN_ROTATION, Client, PilotError
 from .discovery_gate import positive_media_only
-from .drive import digest
+from .drive import digest, encode
 from .inventory import Inventory
 from .publication import PublicationStore, publication_bytes
 from .repair import scan_helper, scan_native
@@ -303,7 +303,11 @@ class Worker:
         self.store.write(JOURNAL, self.state)
 
     def apply_verified_plan(
-        self, *, expected_pointer=None, pointer_name="verified-one-plan.private.json"
+        self,
+        *,
+        expected_pointer=None,
+        pointer_name="verified-one-plan.private.json",
+        expected_pointer_sha256=None,
     ):
         """Manual single-item transaction; never discover, drain or create a link."""
         self.gate.check()
@@ -313,7 +317,10 @@ class Worker:
         ):
             raise PilotError("Verified-plan removal requires every live gate and max_items=1.")
         pointer = self.store.read(pointer_name) or {}
-        if expected_pointer is not None and pointer != expected_pointer:
+        if (expected_pointer is not None and pointer != expected_pointer) or (
+            expected_pointer_sha256 is not None
+            and digest(encode(pointer)) != expected_pointer_sha256
+        ):
             raise PilotError("Saved plan pointer changed after verification.")
         key = pointer.get("drive_check_sha256")
         name = pointer.get("plan")
