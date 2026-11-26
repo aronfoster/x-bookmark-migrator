@@ -155,6 +155,19 @@ def test_completed_repair_requires_published_exact_payload_and_bound_plan(
     # Confirm the downstream plan constructor accepts the real repair basename.
     result = make_plan(store, drive, name, [row["post_id"]], "100", acceptance_confirmed=True)
     assert result["verified"] == 1 and result["x_api_calls"] == result["deleted"] == 0
+    # A stale media link must withhold just its repair, not abort a folder scan.
+    source.ids = [row["post_id"], donor["post_id"]]
+    client.get("/2/users/100/bookmarks/folders/10", {"max_results": "100"}, lambda: None)
+    restore = tmp_path / "restored"
+    moved = tmp_path / "moved"
+    restore.rename(moved)
+    try:
+        assert worker_cli.run(args)["candidates"] == 1
+        assert [c["post_id"] for c in inspect()] == [donor["post_id"]]
+    finally:
+        moved.rename(restore)
+    source.ids = [row["post_id"]]
+    client.get("/2/users/100/bookmarks/folders/10", {"max_results": "100"}, lambda: None)
     successor["payload_receipt"] = dict(row["payload"], sha256="1" * 64)
     assert inspect() == []
     store.write(name, dict(receipt, plan_sha256="0" * 64))

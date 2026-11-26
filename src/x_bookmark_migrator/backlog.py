@@ -163,8 +163,10 @@ def ordinary_repair_payload(catalog, pid, version):
     for asset in version["media"]:
         if not asset.get("local_url"):
             continue
-        path = restored_media_path(catalog, asset["local_url"], restored_media_filename(pid, asset))
         try:
+            path = restored_media_path(
+                catalog, asset["local_url"], restored_media_filename(pid, asset)
+            )
             data = publication_bytes(path.with_name(pid + ".json"))
         except FileNotFoundError:
             continue
