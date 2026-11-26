@@ -33,6 +33,18 @@ It uses the existing removal transaction without draining the queue or creating
 a Raindrop entry. Check the reported removal state and post-removal window
 separately; a lost response is not permission to resend the request.
 
+`--inspect-backlog` runs offline. `--prepare-backlog-one` deliberately permits
+Drive verification without `--live` or `live_authorized`: it needs explicit archive
+acceptance, complete removal history, and a pinned Drive destination. It reads
+archive objects and writes private staging evidence; it makes no X or Raindrop
+calls. Drive authentication may refresh the existing grant. Neither mode can
+delete a bookmark or enable a schedule.
+
+The staged envelope is not executable. Generic apply rejects it, and exact-plan
+apply requires its own protected pointer and Drive proof. A follow-up must
+revalidate the selected binding and holds before it can hand a staged backlog
+item to exact-plan apply. Do not rename the envelope or substitute it for a plan.
+
 ```sh
 x-migrator --state-dir /private/state worker --config /private/worker.json --dry-run
 x-migrator --state-dir /private/state worker --config /private/worker.json --report-only

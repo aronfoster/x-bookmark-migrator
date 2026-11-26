@@ -283,7 +283,7 @@ def raindrop_link(rid):
 
 
 def link_raindrop(output, records, receipt):
-    """Persist historical GET evidence for navigation, never live-access proof."""
+    """Save the ID for navigation and a future live GET; this receipt cannot authorize removal."""
     from .raindrop import validate_receipt
 
     pid = receipt.get("source_post_id")

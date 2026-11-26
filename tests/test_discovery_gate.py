@@ -133,11 +133,19 @@ def test_fresh_get_last_and_evidence_in_intent(migration):
     assert source.deletes
 
 
-def test_missing_saved_id_blocks_without_library_lookup(migration):
+@pytest.mark.parametrize("invalid_id", [None, "101"])
+def test_invalid_saved_id_blocks_without_library_lookup(migration, invalid_id):
     store, _, _, source, _, _, plan, apply = migration
     records = read_catalog(source.catalog)
-    del records[0]["raindrop_id"]
-    publish(source.catalog, records)
+    if invalid_id is None:
+        del records[0]["raindrop_id"]
+        publish(source.catalog, records)
+    else:
+        # The normal publisher rejects strings. Simulate a malformed saved catalog.
+        records[0]["raindrop_id"] = invalid_id
+        source.catalog.path("catalog.jsonl").write_text(
+            "".join(json.dumps(r) + "\n" for r in records)
+        )
     result = apply(plan([records[0]["post_id"]]))
     assert result["blocked_reasons"] == {"blocked_discovery": 1}
     assert not source.provider.calls
