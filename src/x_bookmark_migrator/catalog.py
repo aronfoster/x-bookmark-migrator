@@ -78,6 +78,36 @@ def asset_key(asset):
     return f"{pid}:{index}:{key}"
 
 
+def restored_media_filename(pid, asset):
+    extension = asset.get("container")
+    if extension not in ("png", "jpg", "webp", "mp4"):
+        raise PilotError("Unsupported archived media container.")
+    return f"{exact_id(pid)}_{exact_id(asset['post_id'])}_{asset['index']:02d}.{extension}"
+
+
+def restored_media_path(output, link, filename):
+    """Accept catalog.build's relative URL inside the catalog's archive tree."""
+    archive = output.root.parent
+    relative = Path(unquote(link))
+    path = Path(os.path.abspath(output.root / relative))
+    if (
+        relative.is_absolute()
+        or not path.is_relative_to(archive)
+        or path.name != filename
+        or link != quote(os.path.relpath(path, output.root), safe="/")
+    ):
+        raise PilotError("Invalid local archive link.")
+    # A canonical sibling link may begin with ../. No symlinks or writable
+    # intermediate directories can redirect the read outside the archive.
+    for directory in (*reversed(path.parent.parents), path.parent):
+        if not directory.is_relative_to(archive):
+            continue
+        st = directory.lstat()
+        if directory.is_symlink() or st.st_uid not in (0, os.getuid()) or st.st_mode & 0o022:
+            raise PilotError("Unsafe local archive directory.")
+    return path
+
+
 def build(batches, output):
     """Consume existing archive-restore directories plus independent batch receipts."""
     records = {}
@@ -128,11 +158,7 @@ def build(batches, output):
                 media = {**asset, "asset_id": key, "availability": "not_archived"}
                 if "storage" in asset:
                     # Derive filenames from verified bytes, never trust a stored path.
-                    extension = asset.get("container")
-                    if extension not in ("png", "jpg", "webp", "mp4"):
-                        raise PilotError("Unsupported archived media container.")
-                    filename = f"{pid}_{asset['post_id']}_{asset['index']:02d}.{extension}"
-                    path = root / filename
+                    path = root / restored_media_filename(pid, asset)
                     media.update(archive_url=drive_link(asset["storage"]))
                     try:
                         data = checked_bytes(path, asset["storage"])
@@ -140,7 +166,7 @@ def build(batches, output):
                         media["availability"] = "missing_local"
                     else:
                         _, detected = media_format(data, asset["logical_type"])
-                        if detected != extension:
+                        if detected != asset["container"]:
                             raise PilotError("Archived media container mismatch.")
                         media.update(
                             availability="local_hash_verified",

@@ -27,7 +27,7 @@ def replay_author_gap(payload, lookup_evidence):
     ):
         return None
     includes = source["response"].get("includes", {})
-    posts, assets, before = plan_post(primary, includes)
+    posts, assets, before = plan_post(primary, includes, source)
     if posts != payload["posts"] or "blocked_missing_author" not in before:
         return None
 
@@ -55,7 +55,8 @@ def replay_author_gap(payload, lookup_evidence):
         return None
 
     supplemented = {**includes, "users": [*includes.get("users", []), *supplied.values()]}
-    after_posts, after_assets, after = plan_post(primary, supplemented)
+    # Donor users are diagnostic context, never part of the primary response.
+    after_posts, after_assets, after = plan_post(primary, supplemented, source)
     if after_assets != assets or set(before) - {"blocked_missing_author"} != set(after):
         return None
     return {
