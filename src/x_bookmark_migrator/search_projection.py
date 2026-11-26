@@ -4,6 +4,8 @@ from .catalog import drive_link, has_bound_description, raindrop_link
 from .drive import digest
 from .source import source_url
 
+RENDERER_VERSION = 2
+
 
 def drive_text(record):
     pid = record["post_id"]
@@ -77,7 +79,7 @@ def drive_text(record):
     body = ("\n".join(lines) + "\n").replace("\r\n", "\n").replace("\r", "\n")
     return {
         "name": f"bookmark-{pid}.txt",
-        "renderer_version": 2,
+        "renderer_version": RENDERER_VERSION,
         "body": body,
         "sha256": digest(body.encode("utf-8")),
     }

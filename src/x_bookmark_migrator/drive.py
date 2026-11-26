@@ -196,6 +196,36 @@ class Drive:
             self.store.write("drive-journal.private.json", self.journal)
         return drive_id(self.journal[token]), token
 
+    def create_upload(self, metadata, data):
+        mime = metadata["mimeType"]
+        start = self.http.post(
+            UPLOAD,
+            params={"uploadType": "resumable"},
+            json=metadata,
+            headers={
+                **self.headers(),
+                "X-Upload-Content-Type": mime,
+                "X-Upload-Content-Length": str(len(data)),
+            },
+        )
+        checked(start, (200, 201, 409))
+        if start.status_code != 409:
+            location = start.headers.get("location", "")
+            url = urlsplit(location)
+            if (
+                url.scheme != "https"
+                or url.netloc != "www.googleapis.com"
+                or url.path != "/upload/drive/v3/files"
+                or not url.query
+            ):
+                raise PilotError("Unexpected Drive upload session URL.")
+            checked(
+                self.http.put(
+                    location, content=data, headers={**self.headers(), "Content-Type": mime}
+                ),
+                (200, 201, 409),
+            )
+
     def put(self, parent, key, name, data, mime):
         if data is not None and not 0 < len(data) <= self.max_bytes:
             raise PilotError("Upload is empty or exceeds the byte limit.", code="byte_limit")
@@ -215,33 +245,7 @@ class Drive:
             if data is None:
                 checked(self.request("POST", "/files", json=metadata), (200, 201, 409))
             else:
-                start = self.http.post(
-                    UPLOAD,
-                    params={"uploadType": "resumable"},
-                    json=metadata,
-                    headers={
-                        **self.headers(),
-                        "X-Upload-Content-Type": mime,
-                        "X-Upload-Content-Length": str(len(data)),
-                    },
-                )
-                checked(start, (200, 201, 409))
-                if start.status_code != 409:
-                    location = start.headers.get("location", "")
-                    url = urlsplit(location)
-                    if (
-                        url.scheme != "https"
-                        or url.netloc != "www.googleapis.com"
-                        or url.path != "/upload/drive/v3/files"
-                        or not url.query
-                    ):
-                        raise PilotError("Unexpected Drive upload session URL.")
-                    checked(
-                        self.http.put(
-                            location, content=data, headers={**self.headers(), "Content-Type": mime}
-                        ),
-                        (200, 201, 409),
-                    )
+                self.create_upload(metadata, data)
             existing = self.metadata(file_id)
         if (
             existing.get("mimeType") != mime

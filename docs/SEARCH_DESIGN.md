@@ -88,6 +88,17 @@ ID. Verify conflicts, interrupted create/update and digest readback with a fake
 Drive before enabling that writer. [Upload guidelines](https://developers.google.com/workspace/drive/api/guides/manage-uploads)
 and [files.update](https://developers.google.com/workspace/drive/api/reference/rest/v3/files/update).
 
+The [derived publisher](../src/x_bookmark_migrator/search_publisher.py) is exercised
+through an injected fake Drive in [the recovery tests](../tests/test_search_publisher.py).
+It rebuilds the reviewed catalog from the supplied batches, locks the catalog and
+private state through publication, and checks sole-owner access to the derived
+folder and files. A failed connection before sending an edit can be retried.
+After an ambiguous PATCH, if Drive still returns the old bytes, it holds the
+item: sending another edit could let a delayed request overwrite newer text.
+Readback of the intended bytes releases that hold. Back up the private search
+mapping with the existing allocation journal. This packet has no live command;
+desktop/Android indexing and actual-reader checks remain separate acceptance tests.
+
 ## Producing descriptions inside the authorized boundary
 
 Start with available source alt text and existing explicit descriptions. **Select
