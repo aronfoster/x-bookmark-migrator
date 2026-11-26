@@ -298,6 +298,7 @@ def test_real_cli_requires_complete_sources_and_rejects_staged_artifact_on_gener
         "missing_restore",
         "rate_limit",
         "half_settled",
+        "spend_cap",
         "identity_denied",
     ],
 )
@@ -352,7 +353,8 @@ def test_staged_worker_dispatch(migration, tmp_path, monkeypatch, capsys, fault)
         "worker-billing.private.json",
         {"actual_usd": "0", "observed_at": datetime.now(UTC).isoformat()},
     )
-    store.write("budget.private.json", {datetime.now(UTC).strftime("%Y-%m"): "1.00"})
+    reserved = "20.00" if fault == "spend_cap" else "1.00"
+    store.write("budget.private.json", {datetime.now(UTC).strftime("%Y-%m"): reserved})
     envelope = staged["plan_sha256"]
     if fault == "hold":
         store.write(JOURNAL, {"schema_version": 1, "items": {"102": {"state": "blocked"}}})
@@ -388,18 +390,21 @@ def test_staged_worker_dispatch(migration, tmp_path, monkeypatch, capsys, fault)
             *args,
         ],
     )
-    assert cli.main() == 1
-    assert "Reconcile the historical billing cutoff" in capsys.readouterr().err
-    with pytest.raises(PilotError, match="billing cutoff"):
-        run(*args)
-    settle(
-        store,
-        expected=cutoff(store)["cutoff_sha256"],
-        cumulative="0.50",
-        through=datetime.now(UTC).isoformat(),
-        evidence="3" * 64,
-        attested=True,
-    )
+    if fault == "half_settled":
+        settle(
+            store,
+            expected=cutoff(store)["cutoff_sha256"],
+            cumulative="0.50",
+            through=datetime.now(UTC).isoformat(),
+            evidence="3" * 64,
+            attested=True,
+        )
+    if fault == "spend_cap":
+        assert cli.main() == 1
+        assert "Staged removal stopped: spend_cap" in capsys.readouterr().err
+        assert before == (len(server.calls), len(source.calls))
+        assert not source.deletes and not list(store.root.glob("unbookmark-*.intent.private.json"))
+        return
     if fault in ("hold", "repinned"):
         with pytest.raises(PilotError, match="held|digest differs"):
             run(*args)

@@ -265,7 +265,8 @@ def run(args):
         if not isinstance(bill, dict) or not bill.get("observed_at"):
             raise PilotError("Record the reviewed Console billing observation before live work.")
         if staged:
-            settlement_state(store, ledger(store), bill, required=True)
+            # Reject incomplete settlement before OAuth, not just at the first reservation.
+            settlement_state(store, ledger(store), bill)
         budget = CumulativeBudget(
             store,
             config["reservation_usd"],

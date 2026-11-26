@@ -55,7 +55,7 @@ archive, catalog, saved Raindrop ID and removal holds. The existing one-item
 transaction then performs fresh provider checks, including a GET of that saved
 Raindrop ID. An uncertain attempt remains held; read-only reconciliation can use
 the original envelope. No executable plan copy or replacement pointer is needed.
-Billing reconciliation and owner authorization still precede any paid run.
+A reviewed billing observation and owner authorization still precede any paid run.
 
 ```sh
 x-migrator --state-dir /private/state worker --config /private/worker.json --dry-run
@@ -136,6 +136,9 @@ $20. This intentionally double-counts potentially overlapping historical usage
 until an owner-attested settlement is explicitly recorded. It never clears/rebases a
 ledger or silently renews the allowance. New reservations survive failed requests
 and crashes, and per-operation counts/amounts appear in each private run report.
+
+Staged removal uses the same conservative budget when no settlement exists.
+It does not require an owner-attested historical cutoff to use available headroom.
 
 **Optional one-time offline settlement.** Pause all writers using the billing
 account, including scheduled jobs and other tools. Use the existing private state
