@@ -219,7 +219,6 @@ def main():
                 "Expected two SHA-256 digests for staged removal.",
                 "Staged plan digest differs.",
                 "Staged backlog binding changed or held.",
-                "Reconcile the historical billing cutoff before staged removal.",
                 "Incomplete settlement or high-water record; no request permitted.",
                 "Staged removal requires --apply-verified-plan without a pointer.",
                 "Verified-plan removal requires manual --once --live --allow-delete.",

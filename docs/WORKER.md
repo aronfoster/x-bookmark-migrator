@@ -55,7 +55,7 @@ archive, catalog, saved Raindrop ID and removal holds. The existing one-item
 transaction then performs fresh provider checks, including a GET of that saved
 Raindrop ID. An uncertain attempt remains held; read-only reconciliation can use
 the original envelope. No executable plan copy or replacement pointer is needed.
-Billing reconciliation and owner authorization still precede any paid run.
+A reviewed billing observation and owner authorization still precede any paid run.
 
 ```sh
 x-migrator --state-dir /private/state worker --config /private/worker.json --dry-run
