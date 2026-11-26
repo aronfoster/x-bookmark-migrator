@@ -5,6 +5,7 @@ import pytest
 from test_archive import storage  # noqa: F401
 from test_search_design import archive, category_edit  # noqa: F401
 
+from x_bookmark_migrator import search_publisher
 from x_bookmark_migrator.catalog import build, publish
 from x_bookmark_migrator.core import PilotError
 from x_bookmark_migrator.drive import FOLDER, digest
@@ -73,6 +74,57 @@ class SearchTransport:
         return response
 
 
+@pytest.mark.parametrize("method", ["PUT", "PATCH"])
+@pytest.mark.parametrize("status", [403, 413, 429, 503])
+def test_rejected_content_vs_unknown_outcome(publisher, monkeypatch, method, status):
+    store, catalog, fake, rebuild, run = publisher
+    if method == "PATCH":
+        run(rebuild())
+    category_edit(catalog, "edit", "701", "Changed")
+    generation = rebuild()
+    handle = fake.handle
+    with monkeypatch.context() as m:
+        m.setattr(
+            fake,
+            "handle",
+            lambda req: httpx.Response(status) if req.method == method else handle(req),
+        )
+        with pytest.raises(PilotError, match=f"Drive HTTP {status}"):
+            run(generation)
+    row = store.read(STATE)["rows"]["701"]
+    assert row["dispatched"] is (status == 503)
+    if status == 503:
+        with pytest.raises(PilotError, match="still pending"):
+            run(generation)
+    else:
+        assert run(generation)["verified"] == 5
+        assert store.read(STATE)["rows"]["701"]["file_id"] == row["file_id"]
+
+
+def test_large_last_unit_prevents_any_content_dispatch(publisher, monkeypatch):
+    store, _, fake, rebuild, run = publisher
+    render = search_publisher.drive_text
+
+    def oversized(record):
+        unit = render(record)
+        if record["post_id"] == "706":
+            unit["body"] = "é" * (search_publisher.SIMPLE_UPLOAD_LIMIT // 2 + 1)
+        return unit
+
+    monkeypatch.setattr(search_publisher, "drive_text", oversized)
+    with pytest.raises(PilotError, match="simple-upload bound"):
+        run(rebuild())
+    assert not fake.writes and store.read(STATE)["rows"] == {}
+
+
+def test_null_state_is_preserved(publisher):
+    store, _, fake, rebuild, run = publisher
+    store.write(STATE, None)
+    with pytest.raises(PilotError, match="Invalid search publication state"):
+        run(rebuild())
+    assert not fake.writes and store.path(STATE).read_text().strip() == "null"
+
+
 @pytest.fixture
 def publisher(storage, archive):  # noqa: F811
     store, _, server, _ = storage
@@ -83,8 +135,10 @@ def publisher(storage, archive):  # noqa: F811
         publish(catalog, build(batches, catalog))
         return digest(catalog.path("catalog.jsonl").read_bytes())
 
-    def run(expected):
-        with httpx.Client(transport=httpx.MockTransport(transport.handle)) as http:
+    def run(expected, *, follow_redirects=False):
+        with httpx.Client(
+            transport=httpx.MockTransport(transport.handle), follow_redirects=follow_redirects
+        ) as http:
             return publish_search(
                 store,
                 catalog,
@@ -97,6 +151,29 @@ def publisher(storage, archive):  # noqa: F811
             )
 
     return store, catalog, transport, rebuild, run
+
+
+@pytest.mark.parametrize("fault", ["redirects", "null_journal", "dangling_link"])
+def test_invalid_prerequisites_before_request_or_state_change(publisher, monkeypatch, fault):
+    store, _, fake, rebuild, run = publisher
+    generation = rebuild()
+    if fault == "null_journal":
+        store.write("drive-journal.private.json", None)
+    path = store.path("drive-journal.private.json")
+    journal = path.read_bytes()
+    if fault == "dangling_link":
+        path.unlink()
+        path.symlink_to("missing")
+    monkeypatch.setattr(fake, "handle", lambda req: pytest.fail("unexpected HTTP request"))
+    with pytest.raises(
+        PilotError, match="redirects disabled|Invalid Drive allocation journal|symlink"
+    ):
+        run(generation, follow_redirects=fault == "redirects")
+    if fault == "dangling_link":
+        assert path.is_symlink() and str(path.readlink()) == "missing" and not path.exists()
+    else:
+        assert path.read_bytes() == journal
+    assert not store.path(STATE).exists()
 
 
 def test_restart_after_create_and_update_then_replay_stale_generation(publisher):

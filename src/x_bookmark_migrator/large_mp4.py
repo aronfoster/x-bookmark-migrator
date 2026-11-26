@@ -245,7 +245,7 @@ def save_exact_asset(state, drive, cdn, row, asset, plan):
         source_hash = digest(data)
         if intent is None:
             parent = drive.folder(row["category"])
-            file_id, _ = drive._allocate(parent, "bytes:" + source_hash)
+            file_id, _ = drive.allocate(parent, "bytes:" + source_hash)
             intent = dict(file_id=file_id, parent_id=parent, size_bytes=size, sha256=source_hash)
             state.create(intent_name, intent)
         if intent["sha256"] != source_hash:

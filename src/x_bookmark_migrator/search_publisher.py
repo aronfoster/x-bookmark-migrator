@@ -4,12 +4,13 @@ import httpx
 
 from .catalog import build, verify_publication
 from .core import PilotError, exact_id
-from .drive import FOLDER, UPLOAD, Drive, checked, digest, drive_id, encode
+from .drive import FOLDER, UPLOAD, Drive, DriveHTTPError, checked, digest, drive_id, encode
 from .publication import publication_bytes
 from .search_projection import RENDERER_VERSION, drive_text
 
 STATE = "drive-search-text.private.json"
 MIME = "text/plain"
+SIMPLE_UPLOAD_LIMIT = 5_000_000
 
 
 def require(condition, reason):
@@ -82,6 +83,7 @@ def publish_search(
     store, catalog, batches, *, expected_records, catalog_sha256, root, parent, http
 ):
     """Caller supplies reviewed inputs and transport. Serialize with archive and catalog writers."""
+    require(not http.follow_redirects, "Search publication requires redirects disabled.")
     parent = drive_id(parent)
     require(store.root != catalog.root and root != parent, "Distinct search destinations required.")
     with store.locked(), catalog.locked():
@@ -117,12 +119,20 @@ def publish_search(
                 "snapshots": {},
                 "complete": None,
             }
+        require(isinstance(state, dict), "Invalid search publication state.")
         require(
             state["destination"] == destination and state["renderer"] <= RENDERER_VERSION,
             "Search destination or renderer changed incompatibly.",
         )
         state["complete"] = None
         store.write(STATE, state)
+        require(
+            all(
+                0 < len(unit["body"].encode("utf-8")) <= SIMPLE_UPLOAD_LIMIT
+                for unit in units.values()
+            ),
+            "Search unit exceeds simple-upload bound.",
+        )
         drive.preflight()
         folder = drive.metadata(parent)
         require(
@@ -151,7 +161,6 @@ def publish_search(
             token = digest(encode([root, parent, key]))
             body = unit["body"].encode("utf-8")
             desired = unit["sha256"]
-            require(0 < len(body) <= drive.max_bytes, "Search unit exceeds upload bound.")
             if pid not in rows:
                 require(
                     token not in drive.journal, "Restore missing search mapping before publication."
@@ -160,7 +169,7 @@ def publish_search(
                 store.write(STATE, state)
             row = rows[pid]
             if row["file_id"] is None:
-                row["file_id"], _ = drive._allocate(parent, key)
+                row["file_id"], _ = drive.allocate(parent, key)
                 store.write(STATE, state)
             file_id = drive_id(row["file_id"])
             require(drive.journal.get(token) == file_id, "Search allocation journal differs.")
@@ -213,6 +222,11 @@ def publish_search(
                             content=body,
                         )
                         checked(response)
+                except DriveHTTPError as error:
+                    if error.status in (400, 401, 403, 404, 405, 410, 411, 412, 413, 415, 422, 429):
+                        row["dispatched"] = False
+                        store.write(STATE, state)
+                    raise
                 except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout):
                     # No content request reached Drive. A later caller may use newer bytes.
                     row["dispatched"] = False
