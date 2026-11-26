@@ -325,6 +325,29 @@ def test_author_writer_waits_for_independent_restore(tmp_path, storage, monkeypa
         store.root.glob("repair-*.receipt.private.json")
     )
     args.output_dir = str(output)
+    (unsafe / "private").mkdir(mode=0o700)
+    args.output_dir = str(unsafe / "private" / "restore")
+    args.catalog_dir = None
+    with patch.object(archive_cli.httpx, "Client", side_effect=AssertionError):
+        with pytest.raises(PilotError, match="Unsafe local archive directory"):
+            archive_cli.run(args)
+    assert not Path(args.output_dir).exists()
+    args.catalog_dir = str(catalog.root)
+    if fault == "mixed":
+        catalog.root.chmod(0o2750)
+        intermediate = tmp_path / "owner-only"
+        intermediate.mkdir(mode=0o700)
+        nested = intermediate / "restore"
+        nested.mkdir()
+        nested.chmod(0o2750)
+        args.output_dir = str(nested)
+        with patch.object(archive_cli.httpx, "Client", side_effect=AssertionError):
+            with pytest.raises(PilotError, match="direct sibling"):
+                archive_cli.run(args)
+        assert catalog.path("catalog.jsonl").read_bytes() == before and not list(nested.iterdir())
+        output.mkdir()
+        output.chmod(0o2750)
+    args.output_dir = str(output)
     with monkeypatch.context() as m:
         m.setattr(Drive, "preflight", fail_fresh_read)
         with pytest.raises(PilotError, match="do not match"):
@@ -354,6 +377,7 @@ def test_author_writer_waits_for_independent_restore(tmp_path, storage, monkeypa
     assert [len(r["versions"]) for r in items] == ([2, 1, 1] if fault == "mixed" else [2, 1])
     if fault == "mixed":
         assert items[2]["versions"][0]["blockers"] == ["blocked_missing_provenance"]
+        assert (output / "101.json").stat().st_mode & 0o777 == 0o640
     assert items[1]["category_override"] == notes["category_overrides"]["102"]
     assert catalog.read("annotations.private.json") == notes
     assert sorted(v["blockers"] for v in items[0]["versions"]) == [[], ["blocked_missing_author"]]

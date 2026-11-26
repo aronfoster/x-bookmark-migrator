@@ -96,6 +96,14 @@ def run(args):
                 path.is_relative_to(other) or other.is_relative_to(path) for other in inputs
             ):
                 raise PilotError("Restore must be disjoint from source batches and state.")
+            # Check from the filesystem root, including ancestors of the archive tree.
+            # A root-owned sticky temporary directory protects existing owned children
+            # against rename; never create the restore directly inside such a directory.
+            for directory in reversed(path.parents):
+                st = directory.lstat()
+                sticky_parent = st.st_uid == 0 and st.st_mode & 0o1000 and directory != path.parent
+                if st.st_uid not in (0, os.getuid()) or (st.st_mode & 0o022 and not sticky_parent):
+                    raise PilotError("Unsafe local archive directory.")
             archive_tree = path.parent
             if getattr(args, "catalog_dir", None):
                 catalog_path = Path(args.catalog_dir).expanduser().absolute()
@@ -111,6 +119,8 @@ def run(args):
                     raise PilotError("Expected an existing separate catalog beside the restore.")
                 catalog = PublicationStore(catalog_path)
                 archive_tree = catalog.root.parent
+                if catalog.reader_gid is not None and path.parent != archive_tree:
+                    raise PilotError("Group restore must be a direct sibling of the catalog.")
             check_archive_directories(archive_tree, path if path.exists() else path.parent)
             output = PublicationStore(path)
             if catalog is not None and catalog.reader_gid != output.reader_gid:

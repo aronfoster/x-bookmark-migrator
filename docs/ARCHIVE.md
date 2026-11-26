@@ -233,7 +233,8 @@ Use `archive-repair --reason retained_author` with the receipt-bound source and
 donor batches to preview an author-only repair. Apply requires the preview digest,
 the pinned Drive destination and a separate `--output-dir`. To promote the
 restored version, supply the existing `--catalog-dir` and a restore directory
-with the same reader permissions inside the catalog's archive tree.
+with the same reader permissions inside the catalog's archive tree. A group-readable
+restore must be a direct sibling of the catalog.
 
 The successor keeps the original lookup unchanged. It links separately to the
 predecessor and donor manifests and payloads, and pins the donor lookup digest.
