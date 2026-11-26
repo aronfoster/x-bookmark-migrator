@@ -22,7 +22,7 @@ from test_archive import (
 
 from x_bookmark_migrator import archive_cli, archive_repair
 from x_bookmark_migrator.archive import archive_batch, plan_post, restore_batch
-from x_bookmark_migrator.catalog import build, publish, read_catalog
+from x_bookmark_migrator.catalog import build, publish, read_catalog, restored_media_filename
 from x_bookmark_migrator.core import PilotError, Store
 from x_bookmark_migrator.drive import Drive, digest, encode
 from x_bookmark_migrator.publication import PublicationStore
@@ -357,6 +357,19 @@ def test_author_writer_waits_for_independent_restore(tmp_path, storage, monkeypa
     assert catalog.path("catalog.jsonl").read_bytes() == before
     uploaded = dict(server.bytes)
     server.corrupt_id = None
+    if fault == "mixed":
+        name = restored_media_filename("101", payloads[0]["media"][0])
+        seeded = output / name
+        seeded.write_bytes((batches[0][0] / name).read_bytes())
+        seeded.chmod(0o600)
+        projections = ("catalog.jsonl", "index.html", "source-links.jsonl")
+        snapshot = [catalog.path(n).read_bytes() for n in projections]
+        with pytest.raises(PilotError, match="reader permissions"):
+            run()
+        assert seeded.stat().st_mode & 0o777 == 0o600
+        assert snapshot == [catalog.path(n).read_bytes() for n in projections]
+        assert not list(store.root.glob("repair-*.receipt.private.json"))
+        seeded.unlink()
     if fault == "donor":
         full_catalog = read_catalog(catalog)
         absent_donor = [dict(r, versions=[]) if r["post_id"] == "102" else r for r in full_catalog]
