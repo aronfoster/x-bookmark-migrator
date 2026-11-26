@@ -1,6 +1,7 @@
 """Offline fault injection through real archive, catalog, and deletion transactions."""
 
 import copy
+import hashlib
 import json
 import sys
 import time
@@ -99,6 +100,46 @@ def test_archive_only_cannot_create_raindrop_or_delete(migration, tmp_path):
     result = w.run(allow_delete=False)
     assert not result["stop_reason"] and result["remaining_reachable_queued"] == 3
     assert not migration[3].calls
+
+
+@pytest.mark.parametrize("linked", [True, False])
+def test_verified_plan_removes_only_proved_id_without_raindrop_write(migration, tmp_path, linked):
+    store, _, _, source, _, _, make_plan, _ = migration
+    worker = make_worker(migration, tmp_path, max_items=1)
+    name = make_plan(["102"])
+    plan = store.read(name)
+    proof = dict(
+        schema_version=1,
+        inventory=plan["inventory_checkpoint"],
+        post_id="102",
+        manifest_sha256=plan["archive_receipt"]["manifest"]["sha256"],
+        payload_sha256=plan["items"][0]["payload"]["sha256"],
+    )
+    key = hashlib.sha256(json.dumps(proof, sort_keys=True).encode()).hexdigest()
+    store.create(f"one-drive-check-{key}.private.json", proof)
+    for ids in (["101"], ["101", "102"]):
+        store.write(
+            "verified-one-plan.private.json", {"drive_check_sha256": key, "plan": make_plan(ids)}
+        )
+        with pytest.raises(PilotError, match="differs"):
+            worker.apply_verified_plan()
+    assert not source.calls and not source.provider.calls
+    store.write("verified-one-plan.private.json", {"drive_check_sha256": key, "plan": name})
+    worker.held.add("102")
+    with pytest.raises(PilotError, match="worker hold"):
+        worker.apply_verified_plan()
+    assert not source.calls and not source.provider.calls
+    worker.held.clear()
+    if not linked:
+        source.provider.active.clear()
+        assert worker.apply_verified_plan()["states"] == {"blocked": 1}
+        assert not source.deletes and not source.provider.posts
+        return
+    assert worker.apply_verified_plan()["states"] == {"unbookmarked": 1}
+    assert source.provider.calls == [(("list-all",), None), (("get", 102), None)]
+    assert [r.url.path.split("/")[-1] for r in source.deletes] == ["102"]
+    with pytest.raises(PilotError, match="previous attempt"):
+        make_worker(migration, tmp_path, max_items=1).apply_verified_plan()
 
 
 def test_uncertain_delete_and_resaved_confirmed_id_never_repeat(migration, tmp_path):
@@ -253,6 +294,7 @@ def test_shared_lock_rejects_manual_or_scheduler_overlap(migration, tmp_path):
     cfgpath.write_text(json.dumps(cfg))
     cfgpath.chmod(0o600)
     args = SimpleNamespace(
+        apply_verified_plan=False,
         dry_run=True,
         report_only=False,
         once=False,

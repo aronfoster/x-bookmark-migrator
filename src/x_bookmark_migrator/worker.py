@@ -5,6 +5,7 @@ never permission to delete. No independent implementation of the deletion gate.
 """
 
 import copy
+import hashlib
 import json
 import re
 import time
@@ -31,7 +32,7 @@ from .inventory import Inventory
 from .publication import PublicationStore, publication_bytes
 from .repair import scan_helper, scan_native
 from .source import source_url
-from .unbookmark import apply_plan, latest_attempt, make_plan
+from .unbookmark import apply_plan, latest_attempt, load_plan, make_plan
 
 JOURNAL = "worker.private.json"
 DEFER = "worker-defer.private.json"
@@ -317,6 +318,67 @@ class Worker:
 
     def save(self):
         self.store.write(JOURNAL, self.state)
+
+    def apply_verified_plan(self):
+        """Manual single-item transaction; never discover, drain or create a link."""
+        self.gate.check()
+        if self.config["max_items"] != 1 or not all(
+            self.config["gates"].get(key) is True for key in GATES
+        ):
+            raise PilotError("Verified-plan removal requires every live gate and max_items=1.")
+        pointer = self.store.read("verified-one-plan.private.json") or {}
+        key = pointer.get("drive_check_sha256")
+        name = pointer.get("plan")
+        if not (
+            isinstance(key, str)
+            and re.fullmatch("[0-9a-f]{64}", key)
+            and isinstance(name, str)
+            and re.fullmatch(r"unbookmark-plan-[0-9a-f]{24}\.private\.json", name)
+        ):
+            raise PilotError("Missing or invalid verified-plan pointer.")
+        proof = self.store.read(f"one-drive-check-{key}.private.json")
+        if (
+            not isinstance(proof, dict)
+            or hashlib.sha256(json.dumps(proof, sort_keys=True).encode()).hexdigest() != key
+        ):
+            raise PilotError("Drive proof digest differs.")
+        owner = self.config["owner_id"]
+        plan = load_plan(self.store, name, owner)
+        items = plan["items"]
+        pid = proof["post_id"]
+        if not (
+            proof["schema_version"] == 1
+            and len(items) == 1
+            and items[0]["post_id"] == pid
+            and items[0]["state"] == "verified"
+            and items[0]["media_files"] == 0
+            and items[0]["payload"]["sha256"] == proof["payload_sha256"]
+            and plan["archive_receipt"]["manifest"]["sha256"] == proof["manifest_sha256"]
+            and plan["inventory_checkpoint"]
+            == proof["inventory"]
+            == Inventory.load(self.store).name
+        ):
+            raise PilotError("Saved plan differs from the single verified Drive item.")
+        queued = self.state["items"].get(pid)
+        if (
+            pid in self.held
+            or pid in self.history
+            or (queued is not None and not self.queued(pid, queued))
+        ):
+            raise PilotError("Saved item has a previous attempt or a worker hold.")
+        return apply_plan(
+            self.store,
+            self.drive,
+            self.client,
+            self.budget,
+            name,
+            owner,
+            confirmed=True,
+            catalog_dir=self.catalog.root,
+            raindrop=self.raindrop,
+            legacy_helper_retired=True,
+            max_calls=self.config["max_calls"],
+        )
 
     def eligible(self, pid):
         if pid in self.held:

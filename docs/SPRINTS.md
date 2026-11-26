@@ -147,7 +147,17 @@ failure evidence retained; no further writes after a stop; full regression check
 Independent review and owner-run protected execution remain distinct evidence.
 
 **Remaining migration work:** the historical 25 passed final reconciliation
-and local-link verification. Complete helper retirement and the existing worker's
+and local-link verification. As of 2026-11-25, a **separate** one-item plan
+was saved by the owner under the migration account. That bookmark's content
+was reverified from Drive and its Raindrop link was created and verified.
+There are 26 distinct links but still only 25 confirmed X removals. The owner
+authorized this one unbookmark within the existing cumulative budget. Resume
+from the protected plan; do not pick another queued item, repeat the link
+creation, or start a batch. The protected installation is offline-only;
+fixture acceptance of the exact-plan worker is not deployment or live removal.
+See FOS-169 for the private operational checkpoint and outstanding dependencies.
+
+For the broader rollout, complete helper retirement and the existing worker's
 current-policy acceptance, then the 32 archived-complete main records and measured
 blocker fixes. Prior blocker counts overlap: missing author 18, missing media 10,
 unsupported media expansion 9, missing reference 7, byte limit 7, partial API

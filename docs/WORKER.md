@@ -20,6 +20,14 @@ provider client. The only local write is acquiring/creating the shared lock.
 create Raindrops or DELETE. Adding `--allow-delete` explicitly permits both and
 requires every local rollout gate. There is no default live mode.
 
+For an owner-approved **specific** bookmark, `max_items=1` alone does not select
+that bookmark. `--apply-verified-plan` requires manual `--once --live
+--allow-delete`, every live gate, and `max_items=1`. It loads the protected
+one-item plan and matches it to the saved Drive proof and active inventory.
+It uses the existing removal transaction without draining the queue or creating
+a Raindrop entry. Check the reported removal state and post-removal window
+separately; a lost response is not permission to resend the request.
+
 ```sh
 x-migrator --state-dir /private/state worker --config /private/worker.json --dry-run
 x-migrator --state-dir /private/state worker --config /private/worker.json --report-only

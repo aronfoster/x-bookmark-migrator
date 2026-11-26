@@ -40,6 +40,11 @@ def add_commands(sub):
         "--allow-delete", action="store_true", help="Also permit Raindrop writes and X DELETE"
     )
     p.add_argument("--scheduled", action="store_true", help="Observe persisted daily due time")
+    p.add_argument(
+        "--apply-verified-plan",
+        action="store_true",
+        help="Apply only the saved one-item Drive-verified plan; no queue selection",
+    )
 
 
 def protected_config(path):
@@ -90,6 +95,10 @@ def load_config(path):
 
 def run(args):
     offline = args.dry_run or args.report_only
+    if args.apply_verified_plan and not (
+        args.once and args.live and args.allow_delete and not args.scheduled
+    ):
+        raise PilotError("Verified-plan removal requires manual --once --live --allow-delete.")
     if (
         offline
         and (args.live or args.allow_delete or args.scheduled)
@@ -216,9 +225,13 @@ def run(args):
                 budget,
                 config,
             )
-            if not args.scheduled:
-                worker.state["next_daily"] = 0
-            result = worker.run(allow_delete=args.allow_delete)
+            if args.apply_verified_plan:
+                result = worker.apply_verified_plan()
+                result.pop("private_report", None)
+            else:
+                if not args.scheduled:
+                    worker.state["next_daily"] = 0
+                result = worker.run(allow_delete=args.allow_delete)
             result.pop("actual_billing", None)
             result["actual_observed_usd"] = str(money(bill["actual_usd"]))
             return result
