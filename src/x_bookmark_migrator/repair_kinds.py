@@ -3,10 +3,12 @@
 import json
 import re
 from collections import defaultdict
+from functools import cached_property
+from pathlib import Path
 
 from . import large_mp4
 from .archive import batch_receipt
-from .catalog import restored_media_filename, restored_media_path
+from .catalog import checked_bytes, restored_media_filename, restored_media_path
 from .core import PilotError, Store, exact_id
 from .drive import digest, encode
 from .publication import publication_bytes
@@ -116,26 +118,66 @@ def archive_anchors(store, drive_root, *, report_only=False):
     return anchors
 
 
-def ordinary_repair_payload(catalog, pid, version):
-    """Old receipts have no kind. Classify only the restored, receipt-bound successor."""
-    receipt = version["payload_receipt"]
-    for asset in version["media"]:
-        if not asset.get("local_url"):
-            continue
-        try:
-            path = restored_media_path(
-                catalog, asset["local_url"], restored_media_filename(pid, asset)
-            )
-            data = publication_bytes(path.with_name(pid + ".json"))
-        except FileNotFoundError:
-            continue
-        if len(data) == receipt["size_bytes"] and digest(data) == receipt["sha256"]:
-            payload = json.loads(data)
-            return payload.get("post_id") == pid and "retained_author_source" not in payload
-    return False
+class RestoredRepairs:
+    """Classify legacy untagged successors from verified bytes; index each restore root once."""
+
+    def __init__(self, catalog, restore_dir=None):
+        self.catalog = catalog
+        self.roots = {catalog.root.parent}
+        if restore_dir is not None:
+            self.roots.add(Path(restore_dir))
+
+    @cached_property
+    def directories(self):
+        by_hash = defaultdict(list)
+        for root in self.roots:
+            if root.resolve() != root or not root.is_dir():
+                continue
+            try:
+                children = list(root.iterdir())
+            except OSError:
+                continue
+            for child in children:
+                if child.is_symlink() or not child.is_dir():
+                    continue
+                try:
+                    raw = publication_bytes(child / "manifest.jsonl")
+                except (OSError, PilotError):
+                    continue
+                by_hash[digest(raw)].append(child)
+        return by_hash
+
+    def paths(self, pid, version):
+        for asset in version["media"]:
+            if asset.get("local_url"):
+                try:
+                    media = restored_media_path(
+                        self.catalog, asset["local_url"], restored_media_filename(pid, asset)
+                    )
+                except (OSError, PilotError):
+                    continue
+                yield media.with_name(pid + ".json")
+        for directory in self.directories.get(version["manifest"]["sha256"], ()):
+            yield directory / (pid + ".json")
+
+    def kind(self, pid, version):
+        seen = set()
+        for path in self.paths(exact_id(pid), version):
+            if path in seen or path.resolve() != path:
+                continue
+            seen.add(path)
+            try:
+                payload = json.loads(checked_bytes(path, version["payload_receipt"]))
+            except (OSError, ValueError, PilotError, TypeError, KeyError):
+                continue
+            if isinstance(payload, dict) and payload.get("post_id") == pid:
+                if "retained_author_source" in payload or "targeted_lookup" in payload:
+                    return "supplemental"
+                return "ordinary"
+        return None
 
 
-def removable_version(catalog, pid, version, anchors):
+def removable_version(restores, pid, version, anchors):
     for manifest, _, rows, source in anchors.get(version["manifest"]["sha256"], ()):
         if manifest != version["manifest"]:
             continue
@@ -143,6 +185,6 @@ def removable_version(catalog, pid, version, anchors):
             return True
         if rows.get(pid, {}).get("payload") != version["payload_receipt"]:
             continue
-        if source is not None or ordinary_repair_payload(catalog, pid, version):
+        if source is not None or restores.kind(pid, version) == "ordinary":
             return True
     return False

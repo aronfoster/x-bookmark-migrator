@@ -17,7 +17,7 @@ from .drive import Drive, digest, encode
 from .inventory import Inventory
 from .publication import publication_bytes
 from .raindrop import validate_receipt
-from .repair_kinds import archive_anchors, ordinary_repair_payload
+from .repair_kinds import RestoredRepairs, archive_anchors
 from .unbookmark import make_plan, validate_plan
 from .worker import JOURNAL, Deferral, GuardedHTTP, removal_history
 
@@ -55,6 +55,11 @@ def require_complete_history(config):
 
 
 def select_backlog(store, catalog, config, folder, catalog_sha256):
+    candidates, _ = inspect_backlog(store, catalog, config, folder, catalog_sha256)
+    return candidates
+
+
+def inspect_backlog(store, catalog, config, folder, catalog_sha256):
     """Caller holds state then catalog lock. Return private bindings in saved page order."""
     require_complete_history(config)
     if digest(publication_bytes(catalog.path("catalog.jsonl"))) != catalog_sha256:
@@ -98,6 +103,8 @@ def select_backlog(store, catalog, config, folder, catalog_sha256):
         raise PilotError("Existing pinned Drive destination required.")
 
     candidates = []
+    withheld = set()
+    restores = RestoredRepairs(catalog, config["restore_dir"])
     read_digest = digest(encode(receipt))
     for pid in ids:
         record = index.get(pid)
@@ -139,8 +146,12 @@ def select_backlog(store, catalog, config, folder, catalog_sha256):
                         continue
                     # Untagged legacy receipts may also name a donor-dependent
                     # successor. Only its original archived bytes distinguish it.
-                    if source is None and not ordinary_repair_payload(catalog, pid, version):
-                        continue
+                    if source is None:
+                        kind = restores.kind(pid, version)
+                        if kind is None:
+                            withheld.add((pid, manifest["sha256"], row["payload"]["sha256"]))
+                        if kind != "ordinary":
+                            continue
                 if source is not None:
                     media = [
                         a
@@ -175,7 +186,7 @@ def select_backlog(store, catalog, config, folder, catalog_sha256):
                 )
             )
             break
-    return candidates
+    return candidates, len(withheld)
 
 
 def staged_one(store, catalog, config, selection_sha, envelope_sha):

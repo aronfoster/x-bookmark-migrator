@@ -31,7 +31,7 @@ from .drive import digest, encode
 from .inventory import Inventory
 from .publication import PublicationStore, publication_bytes
 from .repair import scan_helper, scan_native
-from .repair_kinds import archive_anchors, removable_version
+from .repair_kinds import RestoredRepairs, archive_anchors, removable_version
 from .source import source_url
 from .unbookmark import apply_plan, latest_attempt, load_plan, make_plan
 
@@ -196,7 +196,7 @@ def removal_history(store, helper_descriptors=()):
     return result
 
 
-def snapshot(store, helpers=(), catalog=None):
+def snapshot(store, helpers=(), catalog=None, *, restore_dir=None):
     """Offline counts only. Does not create missing result receipts or disclose IDs."""
     history = removal_history(store, helpers)
     journal = store.read(JOURNAL) or {"items": {}, "batches": {}, "streams": {}}
@@ -207,6 +207,7 @@ def snapshot(store, helpers=(), catalog=None):
         anchors = archive_anchors(store, pin.get("root"), report_only=True)
         with catalog.locked():
             records = read_catalog(catalog)
+            restores = RestoredRepairs(catalog, restore_dir)
             counts_by_archive = Counter()
             for record in records:
                 pid = record["post_id"]
@@ -219,7 +220,7 @@ def snapshot(store, helpers=(), catalog=None):
                 ]
                 if not complete:
                     counts_by_archive["blocked_archives_unattempted"] += 1
-                elif any(removable_version(catalog, pid, v, anchors) for v in complete):
+                elif any(removable_version(restores, pid, v, anchors) for v in complete):
                     counts_by_archive["complete_archives_unattempted"] += 1
                 else:
                     counts_by_archive["complete_archives_not_removable"] += 1

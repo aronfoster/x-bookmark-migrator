@@ -274,3 +274,9 @@ version. The repair journal is separate from removal anchors. The worker snapsho
 counts records whose only complete versions depend on lookup or donor evidence
 under `complete_archives_not_removable`. The removal verifier reconstructs authors
 from the original inventory. This command makes no X, media-CDN or Raindrop requests.
+
+In the read-only backlog listing, `withheld_unclassified_repairs` counts repair
+versions encountered during selection whose restored payload could not be
+verified. For a text-only repair, keep its verified manifest and payload together
+in a catalog sibling or an immediate child of the configured worker restore
+directory. A supplemental-author payload stays held even when its bytes verify.

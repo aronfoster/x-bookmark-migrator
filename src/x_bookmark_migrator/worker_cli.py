@@ -7,7 +7,7 @@ from pathlib import Path
 
 import httpx
 
-from .backlog import prepare_one, require_complete_history, select_backlog, staged_one
+from .backlog import inspect_backlog, prepare_one, require_complete_history, staged_one
 from .billing import cutoff, ledger, settle, settlement_state
 from .catalog import private_bytes
 from .core import PilotError, Store, exact_id
@@ -221,9 +221,10 @@ def run(args):
             with catalog.locked():
                 if prepare is not None:
                     return prepare_one(store, catalog, config, *prepare, attested)
-                candidates = select_backlog(store, catalog, config, *backlog)
+                candidates, withheld = inspect_backlog(store, catalog, config, *backlog)
             return {
                 "mode": "inspect_backlog",
+                "withheld_unclassified_repairs": withheld,
                 "candidates": len(candidates),
                 "api_requests": 0,
                 "source_sha256": candidates[0]["source_read_sha256"] if candidates else None,
@@ -232,7 +233,12 @@ def run(args):
         if offline:
             catalog_path = Path(config["catalog_dir"])
             catalog = PublicationStore(catalog_path) if catalog_path.is_dir() else None
-            result = snapshot(store, config.get("helper_descriptors", []), catalog)
+            result = snapshot(
+                store,
+                config.get("helper_descriptors", []),
+                catalog,
+                restore_dir=config["restore_dir"],
+            )
             # Billing evidence is whitelisted: no arbitrary private notes enter stdout.
             bill = result.pop("actual_billing")
             result["actual_observed_usd"] = str(money(bill["actual_usd"])) if bill else "unverified"
