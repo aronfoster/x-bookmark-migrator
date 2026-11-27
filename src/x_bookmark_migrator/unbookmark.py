@@ -124,6 +124,7 @@ def make_plan(
     *,
     acceptance_confirmed=False,
     stage_plan=None,
+    daily_pass=None,
     exact_source=None,
 ):
     require(exact_source is None or stage_plan is not None, "Exact preparation must be staged.")
@@ -136,10 +137,11 @@ def make_plan(
     )
     for pid in post_ids:
         exact_id(pid)
-    inventory = Inventory.load(store)
+    inventory = Inventory.load(store, daily_pass=daily_pass)
     require(inventory.state["owner_id"] == exact_id(owner_id), "Inventory owner differs.")
     receipt = store.read(receipt_name)
     require(isinstance(receipt, dict), "Archive receipt is missing.")
+    require(receipt.get("daily_pass") == daily_pass, "Archive inventory binding differs.")
     context = drive.preflight()
     rows = archive_rows(drive, receipt)
     items = []
@@ -427,6 +429,7 @@ def apply_plan(
     staged_plan=None,
     backlog_binding=None,
     restore_dir=None,
+    daily_pass=None,
 ):
     require(confirmed, "Review the private plan and supply --confirm-unbookmark.")
     require_distinct_state_dirs(
@@ -451,7 +454,8 @@ def apply_plan(
         plan["drive_destination"] == {k: context[k] for k in ("root", "owner_permission_id")},
         "Drive destination differs from the reviewed plan.",
     )
-    inventory = Inventory.load(store)
+    inventory = Inventory.load(store, daily_pass=daily_pass)
+    baseline = Inventory.load(store) if daily_pass is not None else inventory
     require(
         inventory.name == plan["inventory_checkpoint"] and inventory.state["owner_id"] == owner_id,
         "Active inventory changed; plan again.",
@@ -551,11 +555,13 @@ def apply_plan(
             "discovery_gate": discovery,
             "folder_name_evidence": folder_evidence,
             "before": before,
-            "inventory_post_ids": sorted(inventory.state["posts"]),
+            "inventory_post_ids": sorted(baseline.state["posts"]),
             "operator_attestation": plan["operator_attestation"],
         }
         # Both operations must finish durably before the network call. No exception
         # recovery here can accidentally fall through to DELETE.
+        if baseline is not inventory:
+            invalidate_inventory(baseline)
         invalidate_inventory(inventory)
         store.create(base + ".intent.private.json", intent)
         try:

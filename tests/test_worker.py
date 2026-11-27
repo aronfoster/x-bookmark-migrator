@@ -20,6 +20,7 @@ from x_bookmark_migrator.catalog import annotate, read_catalog
 from x_bookmark_migrator.core import WRITE_SCOPES, PilotError, Store
 from x_bookmark_migrator.drive import digest, encode
 from x_bookmark_migrator.inventory import Inventory
+from x_bookmark_migrator.unbookmark import latest_attempt
 from x_bookmark_migrator.worker import (
     DEFER,
     GATES,
@@ -1062,3 +1063,217 @@ def test_discovery_hydrates_only_the_selected_archive_batch(
     assert inv.state["posts"]["106"]["hydration_status"] == "pending"
     assert worker.state["items"]["101"]["state"] == "blocked"
     assert not source.deletes
+
+
+def scheduled_cli(tmp_path, monkeypatch, store, source, clock):
+    cfg = dict(
+        config(tmp_path),
+        max_items=1,
+        raindrop_script="fixture",
+        raindrop_script_sha256="0" * 64,
+        raindrop_helper_sha256="1" * 64,
+    )
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(cfg))
+    path.chmod(0o600)
+    store.write("worker-billing.private.json", {"observed_at": "fixture", "actual_usd": "0"})
+    monkeypatch.setenv("X_CLIENT_ID", "app")
+    monkeypatch.setenv("RAINDROP_TOKEN", "fixture")
+    monkeypatch.setattr(worker_cli, "protected_config", lambda p: p.read_bytes())
+    monkeypatch.setattr(worker_cli, "require_protected_helper", lambda _: None)
+    monkeypatch.setattr(
+        worker_cli, "os", SimpleNamespace(getuid=lambda: 1000, environ=worker_cli.os.environ)
+    )
+    monkeypatch.setattr(worker_cli, "Worker", lambda *args: Worker(*args, clock=clock))
+    monkeypatch.setattr(worker_cli, "Deferral", lambda s: Deferral(s, clock))
+    monkeypatch.setattr(worker_cli, "RaindropAdapter", lambda *a, **kw: source.adapter)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "x-migrator",
+            "--state-dir",
+            str(store.root),
+            "worker",
+            "--config",
+            str(path),
+            "--once",
+            "--live",
+            "--allow-delete",
+            "--scheduled",
+        ],
+    )
+
+
+@pytest.mark.parametrize(
+    "history",
+    [
+        "eligible",
+        "delayed",
+        "legacy_delayed",
+        "paused",
+        "unknown_category",
+        "no_progress",
+        "recover",
+    ],
+)
+def test_scheduled_service_discovers_later_save(migration, tmp_path, monkeypatch, capsys, history):
+    from test_archive import includes, post
+
+    store, _, server, source, *_ = migration
+    now = [time.time()]
+
+    def clock():
+        return now[0]
+
+    monkeypatch.setattr(time, "time", clock)
+    token = store.read("tokens.private.json")
+    store.write("tokens.private.json", {**token, "expires_at": clock() + 7 * 86400})
+    old = Inventory.load(store)
+    worker = make_worker(migration, tmp_path)
+    worker.bootstrap(old)
+    if history == "no_progress":
+        source.ids = ["101", "102", "103"]
+        assert worker.run(allow_delete=True)["stop_reason"] == "no_new_ids_observed"
+        now[0] += 86401
+        source.calls.clear()
+    if history in {"delayed", "legacy_delayed"}:
+        for item in worker.state["items"].values():
+            item["retry_at"] = clock() + 3 * 86400
+        if history == "legacy_delayed":
+            worker.state["next_daily"] = clock() + 3 * 86400
+    elif history in {"paused", "unknown_category"}:
+        old.state["streams"]["folder:20"] = {
+            **old.state["streams"]["folder:10"],
+            "folder_id": "20",
+            "status": "paused",
+            "next_token": "historical-cursor",
+        }
+        old.save()
+        for item in worker.state["items"].values():
+            item["state"] = "blocked"
+    worker.save()
+    old_items = copy.deepcopy(worker.state["items"])
+    scheduled_cli(tmp_path, monkeypatch, store, source, clock)
+    source.ids = ["110", *source.ids, "111"]
+    main_reads = []
+    folder_reads = []
+    folder_lists = []
+
+    def handle(request):
+        route = request.url.path
+        assert "pagination_token" not in request.url.params
+        if route == "/2/users/100/bookmarks" and request.method == "GET":
+            main_reads.append(request)
+            return httpx.Response(
+                200,
+                json={
+                    "data": [post(pid) for pid in source.ids if pid in {"101", "110"}],
+                    "includes": includes([]),
+                    "meta": {"next_token": "unused"},
+                },
+            )
+        if route.endswith("/folders"):
+            folder_lists.append(request)
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {"id": "10", "name": source.folder_name},
+                        {"id": "20", "name": "Other"},
+                    ]
+                },
+            )
+        if route.endswith(("/folders/10", "/folders/20")):
+            folder_reads.append(route)
+            if history == "unknown_category":
+                return httpx.Response(200, json={"data": [{"id": "199"}]})
+            if history == "no_progress" and route.endswith("/20"):
+                return httpx.Response(200, json={"data": [{"id": i} for i in source.ids[:2]]})
+            if route.endswith("/20"):
+                return httpx.Response(200, json={"data": [{"id": "199"}]})
+        return source.handle(request)
+
+    client = httpx.Client
+    handlers = iter((handle, server.handle, media_http) * 6)
+    monkeypatch.setattr(
+        httpx, "Client", lambda **kw: client(transport=httpx.MockTransport(next(handlers)), **kw)
+    )
+    # A durable provider reset and an overlapping owner operation each exclude the whole run.
+    gate = Deferral(store, clock)
+    gate.save("x", seconds=300)
+    assert cli.main() == 0
+    assert not main_reads
+    now[0] += 301
+    with store.locked():
+        assert cli.main() == 1
+    assert not main_reads
+    if history == "legacy_delayed":
+        # Previous versions used the earliest delayed item as the entire service deadline.
+        assert cli.main() == 0
+        assert not main_reads
+        assert store.read(JOURNAL)["next_intake"] == clock() + 86400
+        now[0] += 86400
+    if history == "recover":
+
+        def interrupt_after_receipt(self, receipt, inventory):
+            assert self.store.read(receipt)["daily_pass"] == inventory.state["pass_id"]
+            raise KeyboardInterrupt
+
+        with monkeypatch.context() as crash:
+            crash.setattr(Worker, "adopt", interrupt_after_receipt)
+            with pytest.raises(KeyboardInterrupt):
+                cli.main()
+        assert not source.deletes and not source.provider.posts
+        receipt_count = len(list(store.root.glob("archive-*.private.json")))
+        now[0] += 86401
+    assert cli.main() == 0, capsys.readouterr()
+    expected_reads = 2 if history == "recover" else 1
+    assert len(main_reads) == expected_reads
+    if history == "recover":
+        assert len(list(store.root.glob("archive-*.private.json"))) == receipt_count
+    if history == "unknown_category":
+        item = store.read(JOURNAL)["items"]["110"]
+        assert item["state"] == "blocked" and "blocked_category_unknown" in item["blockers"]
+        assert not any(route.endswith("/20") for route in folder_reads)
+        assert not source.deletes and not source.provider.posts
+        return
+    assert [r.url.path.split("/")[-1] for r in source.deletes] == ["110"]
+    attempt, _ = latest_attempt(store, "100", "110")
+    assert store.read(attempt + ".intent.private.json")["inventory_post_ids"] == sorted(
+        old.state["posts"]
+    )
+    journal = store.read(JOURNAL)
+    assert {pid: journal["items"][pid] for pid in old_items} == old_items
+    assert Inventory.load(store).name == old.name
+    assert "199" not in journal["items"]
+    assert journal["items"]["110"]["discovery_state"] == "raindrop"
+    if history == "paused":
+        assert not any(route.endswith("/20") for route in folder_reads)
+        assert Inventory.load(store).state["streams"]["folder:20"]["status"] == "paused"
+
+    if history == "no_progress":
+        assert not any(route.endswith("/10") for route in folder_reads)
+    assert (
+        "unbookmark_attempt_requires_fresh_pass" in Inventory.load(store).state["continuity_notes"]
+    )
+    assert len(read_catalog(source.catalog)) == 4
+    assert len(source.provider.posts) == 1
+    calls = len(source.calls), len(server.calls), len(source.provider.calls)
+    now[0] += 300
+    assert cli.main() == 0
+    assert len(main_reads) == expected_reads
+    assert calls == (len(source.calls), len(server.calls), len(source.provider.calls))
+
+    # A later due invocation may drain history. The held save never gets a second create or DELETE.
+    now[0] += 86400
+    old_lists = len(folder_lists)
+    exit_status = cli.main()
+    report = store.read("worker-report.private.json")
+    assert report["stop_reason"] in {None, "no_new_ids_observed", "observed_empty"}
+    assert exit_status == int(report["stop_reason"] is not None)
+    assert len(main_reads) == expected_reads + 1
+    assert sum(r.url.path.endswith("/110") for r in source.deletes) == 1
+    assert len(source.provider.posts) == 1
+    if history in {"delayed", "paused"}:
+        assert len(folder_lists) == old_lists

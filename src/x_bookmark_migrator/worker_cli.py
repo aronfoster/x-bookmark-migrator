@@ -348,7 +348,7 @@ def run(args):
             else:
                 if not args.scheduled:
                     worker.state["next_daily"] = 0
-                result = worker.run(allow_delete=args.allow_delete)
+                result = worker.run(allow_delete=args.allow_delete, scheduled=args.scheduled)
             result.pop("actual_billing", None)
             result["actual_observed_usd"] = str(money(bill["actual_usd"]))
             return result

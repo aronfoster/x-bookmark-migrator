@@ -20,6 +20,23 @@ provider client. The only local write is acquiring/creating the shared lock.
 create Raindrops or DELETE. Adding `--allow-delete` explicitly permits both and
 requires every local rollout gate. There is no default live mode.
 
+The service runs `--once --live --allow-delete --scheduled`. When intake is due,
+the worker checks identity and reads one fresh main bookmark window, even with a
+queued archive or delayed item. Only main-window candidates trigger first-page
+folder reads for category evidence. The worker skips paused folder streams,
+blocked historical windows and folders whose latest removal comparison stopped
+for lack of progress. Folder-only observations never become daily candidates.
+A save without the required positive folder evidence stays on X.
+
+Daily archive receipts identify their own inventory pass under the active
+historical checkpoint. A restart can therefore adopt a completed receipt or
+retry its item without replacing the historical inventory. Both checkpoints
+are invalidated for cursor resume before a daily removal. Intake and queue
+retries share the lock, global provider reset and request/spending bounds.
+The scheduled worker prioritizes due daily archives within the existing removal
+limit and uses remaining slots for eligible history. The initial intake deadline
+honors up to one day of a legacy queue delay.
+
 For an owner-approved **specific** bookmark, `max_items=1` alone does not select
 that bookmark. `--apply-verified-plan` requires manual `--once --live
 --allow-delete`, every live gate, and `max_items=1`. It loads the protected
@@ -218,8 +235,7 @@ than deleting a checkpoint or resetting a month. Settlement authorizes no live w
   or inability to write a later error report cannot erase the prewritten deadline.
   Retryable Raindrop errors without provider reset evidence also wait a day.
   Per-item retry deadlines survive shared-batch adoption and govern queue selection;
-  an entirely delayed queue retains its inventory instead of invalidating queued
-  receipts with a new discovery pass. Fixed failure text goes to stderr/journald;
+  a scheduled item retry before the next intake deadline does not repeat the main-window read. Fixed failure text goes to stderr/journald;
   detailed evidence stays in the protected report.
 * OAuth rotation writes an intent before refresh and stores the new token atomically
   before other work. All normal CLI clients respect it. An interruption with the

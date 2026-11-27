@@ -423,6 +423,13 @@ class Worker:
                 else ("queued" if not row["blockers"] and matches else "blocked")
             )
             previous = self.state["items"].get(pid)
+            if (
+                previous
+                and receipt_name in self.state["batches"]
+                and previous["receipt"] != receipt_name
+            ):
+                # Refreshing a sibling in an old batch cannot supersede a later retry's receipt.
+                continue
             if previous and previous["checkpoint"] == inventory.name:
                 if not matches:
                     continue
@@ -470,21 +477,53 @@ class Worker:
                 raise PilotError("Archived receipt missing or changed.")
         pending = [name for name in names if name not in self.state["batches"]]
         for name in pending[: self.config["max_batches"]]:
-            self.adopt(name, inventory)
+            daily_pass = self.store.read(name).get("daily_pass")
+            self.adopt(
+                name, Inventory.load(self.store, daily_pass=daily_pass) if daily_pass else inventory
+            )
         return len(pending) <= self.config["max_batches"]
 
-    def discover(self):
+    def paused_folder_streams(self, baseline):
+        paused = {
+            k for k, stream in baseline.state["streams"].items() if stream["status"] == "paused"
+        }
+        paused.update(
+            k
+            for k, stream in self.state["streams"].items()
+            if stream.get("window_exposure_status") == "stalled_on_blocked_window"
+        )
+        # Older transactions recorded the stop in their comparison, outside the worker journal.
+        latest = {}
+        for path in self.store.root.glob("unbookmark-*.window.private.json"):
+            comparison = self.store.read(path.name)
+            base = path.name.removesuffix(".window.private.json")
+            intent = self.store.read(base + ".intent.private.json")
+            stream = "folder:" + intent["verified"]["folder"]["id"]
+            observation = (intent["created_at"], comparison["window_status"] != "new_ids_observed")
+            latest[stream] = max(latest.get(stream, observation), observation)
+        paused.update(stream for stream, (_, stopped) in latest.items() if stopped)
+        return paused
+
+    def discover(self, *, scheduled=False, baseline=None):
         # Never resume a positional cursor across a run or DELETE.
         inv = Inventory(
             self.store,
             self.config["owner_id"],
             self.config.get("dialect", "post"),
+            daily=scheduled,
             page_size=100,
             max_records=200,
             max_folders=20,
             max_pages=1,
         )
         skipped = self.held | {pid for pid in self.state["items"] if not self.eligible(pid)}
+        paused = set()
+        if scheduled and baseline:
+            if "daily_parent" not in baseline.state:
+                skipped.update(
+                    pid for pid in baseline.state["posts"] if pid not in self.state["items"]
+                )
+            paused = self.paused_folder_streams(baseline)
         report = inv.run(
             self.client,
             self.budget,
@@ -492,9 +531,13 @@ class Worker:
             hydrate_batch_size=20,
             skip_hydration=skipped,
             primary_limit=self.config["max_items"],
+            paused_streams=paused,
         )
-        self.counts["discovered"] += len(set(inv.state["posts"]) - set(self.state["items"]))
-        self.coverage(inv)
+        if not scheduled:
+            self.coverage(inv)
+        self.counts["discovered"] += len(
+            inv.primary_candidates(skipped | self.state["items"].keys(), None)
+        )
         if report["stop_reason"]:
             raise PilotError("Inventory stopped.", code=report["stop_reason"])
         ids = inv.primary_candidates(skipped, self.config["max_items"])
@@ -575,17 +618,30 @@ class Worker:
             and item.get("retry_at", 0) <= self.clock()
         )
 
-    def drain(self, inventory):
-        selected = [pid for pid, item in self.state["items"].items() if self.queued(pid, item)][
-            : self.config["max_items"]
+    def pending_retries(self):
+        return [
+            item["retry_at"]
+            for pid, item in self.state["items"].items()
+            if item["state"] == "queued"
+            and pid not in self.held
+            and item.get("retry_at", 0) > self.clock()
         ]
-        for pid in selected:
+
+    def drain(self, inventory, *, scheduled=False):
+        items = self.state["items"]
+        selected = [pid for pid, item in items.items() if self.queued(pid, item)]
+        if scheduled and inventory:
+            # A pending daily receipt keeps its priority after an interrupted run or provider reset.
+            selected.sort(key=lambda pid: items[pid]["checkpoint"] == inventory.name)
+        for pid in selected[: self.config["max_items"]]:
             self.gate.check()
             item = self.state["items"][pid]
-            if item["checkpoint"] != inventory.name:
+            daily_pass = self.store.read(item["receipt"]).get("daily_pass")
+            bound = Inventory.load(self.store, daily_pass=daily_pass) if daily_pass else inventory
+            if item["checkpoint"] != bound.name:
                 raise PilotError("Queued archive belongs to another inventory.")
             # Refresh the independent restore and published projection before each transaction.
-            self.adopt(item["receipt"], inventory)
+            self.adopt(item["receipt"], bound)
             item = self.state["items"][pid]
             root = Path(item["restore_dir"])
             payload = json.loads(publication_bytes(root / (pid + ".json")))
@@ -641,6 +697,7 @@ class Worker:
                 [pid],
                 self.config["owner_id"],
                 acceptance_confirmed=True,
+                daily_pass=daily_pass,
             )
             result = apply_plan(
                 self.store,
@@ -651,6 +708,7 @@ class Worker:
                 self.config["owner_id"],
                 confirmed=True,
                 retry_rejected=pid in self.retry429,
+                daily_pass=daily_pass,
                 catalog_dir=self.catalog.root,
                 raindrop=self.raindrop,
                 legacy_helper_retired=True,
@@ -690,32 +748,44 @@ class Worker:
                     summary=contexts[-1] if contexts else None,
                 )
 
-    def run(self, *, allow_delete=False):
+    def run(self, *, allow_delete=False, scheduled=False):
         if self.gate.remaining():
             return {"quiet": True, "deferred": True}
-        if self.clock() < self.state["next_daily"]:
+        now = self.clock()
+        if scheduled and "next_intake" not in self.state:
+            # Legacy next_daily may be a single item's distant retry. Honor at most one paid day.
+            self.state["next_intake"] = min(self.state["next_daily"], now + 86400)
+            self.save()
+        intake_pending = scheduled and now >= self.state["next_intake"]
+        if not intake_pending and now < self.state["next_daily"]:
             return {"quiet": True, "not_due": True}
         stop = None
-        self.state["next_daily"] = self.clock() + 86400
+        self.state["next_daily"] = now + 86400
+        if intake_pending:
+            self.state["next_intake"] = self.state["next_daily"]
         self.save()  # Must succeed before any provider call, including bootstrap.
         try:
             if self.store.read("inventory-active.private.json"):
                 inventory = Inventory.load(self.store)
+                if inventory.state["owner_id"] != self.config["owner_id"]:
+                    raise PilotError("Active inventory owner differs.")
                 if not self.bootstrap(inventory):
                     raise PilotError(
                         "More existing receipts await adoption.", code="bootstrap_pending"
                     )
             else:
                 inventory = None
-            queued = any(self.queued(pid, i) for pid, i in self.state["items"].items())
-            if not queued:
-                delayed = [
-                    i.get("retry_at", 0)
-                    for pid, i in self.state["items"].items()
-                    if i["state"] == "queued"
-                    and pid not in self.held
-                    and i.get("retry_at", 0) > self.clock()
-                ]
+            if intake_pending:
+                daily = self.discover(scheduled=True, baseline=inventory)
+                intake_pending = (
+                    False  # A later transaction reset must not repeat this paid window.
+                )
+                if inventory is None:
+                    inventory = daily
+            elif not scheduled and not any(
+                self.queued(pid, i) for pid, i in self.state["items"].items()
+            ):
+                delayed = self.pending_retries()
                 if delayed:
                     # Keep the inventory bound to queued receipts; a new pass would invalidate it.
                     self.state["next_daily"] = min(delayed)
@@ -723,10 +793,12 @@ class Worker:
                     return {"quiet": True, "not_due": True}
                 inventory = self.discover()
             if allow_delete:
-                self.drain(inventory)
-            if inventory:
+                self.drain(inventory, scheduled=scheduled)
+            if inventory and not scheduled:
                 self.coverage(inventory)
-            self.state["next_daily"] = self.clock() + 86400
+            deadline = self.clock() + 86400
+            retries = self.pending_retries() if scheduled and allow_delete else []
+            self.state["next_daily"] = min([deadline, *retries])
         except Exception as exc:
             # Never serialize exception text (paths, tokens and provider bodies may be present).
             stop = exc.code if isinstance(exc, PilotError) else "worker_failure"
@@ -745,6 +817,8 @@ class Worker:
                 and self.gate.remaining()
             ):
                 self.state["next_daily"] = saved["until"]
+                if intake_pending:
+                    self.state["next_intake"] = saved["until"]
             else:
                 self.gate.save("worker", seconds=86400)
         self.save()
