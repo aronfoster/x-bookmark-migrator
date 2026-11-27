@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from time import monotonic
 
 import httpx
 
@@ -21,6 +22,7 @@ from .search_projection import RENDERER_VERSION, drive_text
 STATE = "drive-search-text.private.json"
 MIME = "text/plain"
 SIMPLE_UPLOAD_LIMIT = 5_000_000
+SEARCH_RETRY_SECONDS = 86400
 
 
 def require(condition, reason):
@@ -142,9 +144,20 @@ def _worker_batches(worker, lines):
     return inputs.values(), len(primaries)
 
 
+def _record_search(worker, outcome):
+    # The checkpoint survives the next migration report. Preserve the migration's own outcome.
+    worker.state["drive_search"] = outcome
+    worker.save()
+    report = worker.store.read("worker-report.private.json") or {}
+    report["drive_search"] = outcome
+    worker.store.write("worker-report.private.json", report)
+    return outcome
+
+
 def publish_current(worker, parent):
     """Called after migration while the normal live worker still owns the state lock."""
     store, catalog, drive = worker.store, worker.catalog, worker.drive
+    started = monotonic()
     with catalog.locked():
         state = store.read(STATE)
         path = catalog.path("catalog.jsonl")
@@ -153,6 +166,9 @@ def publish_current(worker, parent):
         raw = publication_bytes(path)
         generation = digest(raw)
         pin = store.read("drive-destination.private.json")
+        # A destination or renderer change can make the same catalog bytes new work.
+        target = digest(encode([generation, RENDERER_VERSION, pin, drive.root, parent]))
+        prior = worker.state.get("drive_search", {})
         if (
             state
             and pin
@@ -161,11 +177,34 @@ def publish_current(worker, parent):
             and state["renderer"] == RENDERER_VERSION
             and state["complete"] == generation
         ):
+            if prior.get("status") == "pending":
+                return _record_search(
+                    worker,
+                    {
+                        "status": "verified",
+                        "catalog_sha256": generation,
+                        "renderer": RENDERER_VERSION,
+                        "verified": len(state["rows"]),
+                    },
+                )
             return None
 
+        if prior.get("target") == target and worker.clock() < prior.get("retry_at", 0):
+            return None
+        # Arm before hashing or dispatch. A killed process also leaves a bounded retry.
+        _record_search(
+            worker,
+            {
+                "status": "pending",
+                "target": target,
+                "catalog_sha256": generation,
+                "retry_at": worker.clock() + SEARCH_RETRY_SECONDS,
+            },
+        )
+        requests_before = drive.http.requests
         batches, population = _worker_batches(worker, raw.splitlines())
     # An annotation can land between locks. The publisher fences the pinned generation.
-    return _publish_under_state_lock(
+    published = _publish_under_state_lock(
         store,
         catalog,
         batches,
@@ -175,6 +214,12 @@ def publish_current(worker, parent):
         parent=parent,
         http=drive.http,
     )
+    published.update(
+        status="verified",
+        elapsed_seconds=round(monotonic() - started, 3),
+        drive_requests=drive.http.requests - requests_before,
+    )
+    return _record_search(worker, published)
 
 
 def _publish_under_state_lock(
@@ -193,8 +238,10 @@ def _publish_under_state_lock(
             )
 
         current_generation()
+        rebuild_started = monotonic()
         records = build(batches, catalog)
         verify_publication(catalog, records, expected_records)
+        rebuild_seconds = round(monotonic() - rebuild_started, 3)
         units = {exact_id(r["post_id"]): drive_text(r) for r in records}
         snapshots = {
             r["post_id"]: [
@@ -347,6 +394,7 @@ def _publish_under_state_lock(
         store.write(STATE, state)
         return {
             "verified": len(rows),
+            "rebuild_verify_seconds": rebuild_seconds,
             "catalog_sha256": catalog_sha256,
             "renderer": RENDERER_VERSION,
         }

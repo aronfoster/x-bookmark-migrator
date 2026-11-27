@@ -157,6 +157,7 @@ class GuardedHTTP:
 
     def __init__(self, http, gate, provider):
         self.http, self.gate, self.provider = http, gate, provider
+        self.requests = 0
 
     @property
     def follow_redirects(self):
@@ -164,6 +165,7 @@ class GuardedHTTP:
 
     def request(self, method, url, **kwargs):
         self.gate.check()
+        self.requests += 1
         response = self.http.request(method, url, **kwargs)
         self.gate.observe(response, self.provider)
         return response
@@ -186,6 +188,7 @@ class GuardedHTTP:
     @contextmanager
     def stream(self, method, url, **kwargs):
         self.gate.check()
+        self.requests += 1
         with self.http.stream(method, url, **kwargs) as response:
             self.gate.observe(response, self.provider)
             yield response
@@ -243,6 +246,7 @@ def snapshot(store, helpers=(), catalog=None, *, restore_dir=None):
             }
     return {
         **archival,
+        **({"drive_search": journal["drive_search"]} if "drive_search" in journal else {}),
         "known_records": len(journal["items"]),
         "states": dict(counts),
         "confirmed_removed": sum("confirmed_removed" in h for h in history.values()),

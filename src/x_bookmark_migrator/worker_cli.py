@@ -367,7 +367,7 @@ def run(args):
                     except (httpx.HTTPError, OSError) as exc:
                         raise PilotError(
                             "Drive search publication pending. Check the restore inputs and "
-                            "reconcile the existing search journal on the next live worker pass."
+                            "see the worker report for the search retry deadline."
                         ) from exc
                     if published:
                         result.update(drive_search=published, quiet=False)

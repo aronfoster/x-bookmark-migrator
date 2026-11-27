@@ -11,11 +11,12 @@ from test_unbookmark import migration as migration
 from test_unbookmark import storage as storage
 from test_worker import make_worker, scheduled_cli
 
-from x_bookmark_migrator import cli
+from x_bookmark_migrator import cli, search_publisher
 from x_bookmark_migrator.catalog import BATCH_INPUTS, read_catalog
 from x_bookmark_migrator.drive import digest
 from x_bookmark_migrator.inventory import Inventory
 from x_bookmark_migrator.search_publisher import STATE
+from x_bookmark_migrator.worker import JOURNAL
 
 
 def test_timer_publishes_new_save_and_reconciles_approved_edit(
@@ -82,7 +83,19 @@ def test_timer_publishes_new_save_and_reconciles_approved_edit(
     assert tick() == 1  # The search create landed; its acknowledgement did not.
     assert [r.url.path.split("/")[-1] for r in source.deletes] == ["110"]
     assert store.read(STATE)["complete"] is None
-    assert tick() == 0, capsys.readouterr()
+    pending = store.read("worker-report.private.json")
+    assert pending["stop_reason"] is None and pending["confirmed_removed"] == 1
+    hold = pending["drive_search"]
+    assert hold["status"] == "pending" and hold["retry_at"] == now[0] + 86400
+    calls = len(server.calls), len(x_calls)
+    with monkeypatch.context() as m:
+
+        def unexpected(*args):
+            raise AssertionError("held generation reopened its rebuild inputs")
+
+        m.setattr(search_publisher, "_worker_batches", unexpected)
+        assert tick() == 0, capsys.readouterr()
+    assert calls == (len(server.calls), len(x_calls))
     rows = store.read(STATE)["rows"]
     assert rows == {**old_rows, "110": rows["110"]}
     fid = rows["110"]["file_id"]
@@ -121,7 +134,24 @@ def test_timer_publishes_new_save_and_reconciles_approved_edit(
     fake.acks_lost.add("PATCH")
     assert tick() == 1
     assert store.read(STATE)["complete"] is None
+    # The new generation bypassed the create hold and reconciled the same ID before PATCH.
+    patch_hold = store.read("worker-report.private.json")["drive_search"]
+    assert patch_hold["target"] != hold["target"] and fake.writes[-1] == ("PATCH", fid)
+    # Isolate the search deadline from the separate daily X deadline in this fake-clock run.
+    checkpoint = store.read(JOURNAL)
+    checkpoint.update(next_daily=now[0] + 2 * 86400, next_intake=now[0] + 2 * 86400)
+    store.write(JOURNAL, checkpoint)
+    now[0] = patch_hold["retry_at"] - 1
+    calls = len(server.calls)
+    assert tick() == 0 and len(server.calls) == calls
+    now[0] += 1
     assert tick() == 0, capsys.readouterr()
+    verified = store.read("worker-report.private.json")["drive_search"]
+    assert verified["status"] == "verified" and verified["verified"] == 4
+    assert (
+        verified["drive_requests"] > 0
+        and verified["elapsed_seconds"] >= verified["rebuild_verify_seconds"]
+    )
     monkeypatch.setattr(sys, "argv", edit)
     assert cli.main() == 0
     calls = len(server.calls)
@@ -189,3 +219,23 @@ def test_timer_uses_full_build_inputs_and_requires_every_restore(
     rebuild([first, manual])
     assert cli.main() == 0, capsys.readouterr()
     assert store.read(STATE)["rows"] == rows
+
+    # Persistent foreign bytes hold a changed generation. Even a restarted service must
+    # leave them alone and skip the entire corpus on its next idle tick.
+    fid = rows["402"]["file_id"]
+    server.bytes[fid] = b"outside change"
+    worker.adopt(archived["private_receipt"], Inventory.load(store))
+    assert cli.main() == 1
+    assert "Unexpected search file bytes" in capsys.readouterr().err
+    stale = store.read("worker-report.private.json")["drive_search"]
+    assert stale["status"] == "pending"
+    with monkeypatch.context() as m:
+
+        def forbidden(*args, **kwargs):
+            raise AssertionError("idle hold attempted a rebuild or provider request")
+
+        m.setattr(search_publisher, "_worker_batches", forbidden)
+        m.setattr(fake, "handle", forbidden)
+        assert cli.main() == 0
+    assert store.read("worker-report.private.json")["drive_search"] == stale
+    assert server.bytes[fid] == b"outside change" and len(fake.writes) == 4

@@ -210,11 +210,22 @@ After an ordinary live worker pass, the configured worker picks up the latest
 catalog generation under the state and catalog locks. The same service command
 also picks up an offline approved edit on a tick when paid intake is not due.
 A completed, unchanged generation and renderer need no further requests.
-Offline and exact-plan modes retain their existing scope. Provider deferrals
-continue to apply. Search publication follows the migration transaction. A
-failure can leave search pending after an item was successfully archived or
-removed. Retry the ordinary service path and inspect the search journal and
-the existing migration report separately.
+Both ordinary live modes publish when configured, including `--once --live`
+without `--allow-delete`. Offline and exact-plan modes retain their existing scope.
+
+Search runs after migration. The private worker report keeps the migration
+outcome and a separate `drive_search` status. An interrupted or failed search
+attempt leaves a pending status and a retry time 24 hours from its start. The
+same generation skips the rebuild and Drive calls until then. A changed catalog,
+renderer or destination can be checked earlier. The existing destination pin,
+uncertain-write holds and shared provider deferrals still apply. A search-only
+hold leaves daily migration on its own schedule.
+
+Each changed generation rebuilds from local receipts and reads back Drive units.
+For the first publication and the first single-bookmark change, record the report's
+verified unit count, elapsed seconds, local rebuild/verification seconds and
+Drive request count (including OAuth and streamed downloads). Keep these measurements
+with the private indexing observations.
 
 Use the existing owner grant and archive root. Start with an empty, sole-owner
 child folder reserved for this writer, or the previously pinned folder with its
@@ -228,7 +239,9 @@ owner-only `catalog-batches.private.json`; include it with the protected catalog
 backup. Legacy worker receipts use their existing hash-named restores. For a
 pre-upgrade catalog containing additional operator-named restores or repair
 versions, repeat the existing full offline `catalog-build` with its original
-batch pairs and verify it before enabling search. A missing input or different
+batch pairs and verify it before enabling search. Every subsequent full build also
+replaces the recorded input list. Include every retained repair restore and its
+receipt along with the ordinary batches. A missing input or different
 projection stops publication. Use the existing [client probes](SEARCH_DESIGN.md#three-ways-to-find-the-same-saved-item)
 to measure indexing after byte readback.
 
