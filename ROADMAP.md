@@ -1,6 +1,22 @@
 # Bookmark project roadmap
 
-Updated 24 November 2026 (America/Denver). Owner-directed v1/v2 scope.
+Updated 27 November 2026 (America/Denver). Owner-directed v1/v2 scope.
+
+## Start here
+
+| Outcome | Next deliverable | Owner |
+| --- | --- | --- |
+| Get existing bookmarks off X | Continue the active desktop drain. Verify and remove eligible items, repair recoverable archives, and capture newly exposed IDs. The ticket holds the single live count and protected-session handoff. | [FOS-169](https://linear.app/fosterstech/issue/FOS-169) |
+| Process tomorrow's save automatically | Trace the installed timer's normal worker path with history pending. Deliver a real later save through archive, catalog, Drive, Raindrop and confirmed unbookmark on a scheduled run. Verify duplicate-free restart and continuing backup coverage. | [FOS-168](https://linear.app/fosterstech/issue/FOS-168) |
+| Find and update that bookmark | Ask the actual Mnemosyne agent for remembered text or media. Open the item in Drive and Raindrop. Preview and approve one description correction, rebuild, and find the same bookmark again. Rehearse on the published catalog. The integrated exit requires the same later save captured by the FOS-168 timer. | [FOS-220](https://linear.app/fosterstech/issue/FOS-220) for retrieval and [FOS-170](https://linear.app/fosterstech/issue/FOS-170) for edits |
+
+Historical migration has first priority. Daily intake and retrieval can progress
+alongside the live drain. The local catalog gives Mnemosyne access to saved
+content and owner-approved annotations. Drive holds restorable originals and
+browseable media. Raindrop keeps off-site source pointers and useful metadata.
+Use the existing worker for provider operations and the existing curation path
+for approved edits. The full [v1 acceptance matrix](docs/V1_ACCEPTANCE.md)
+still applies after the one-bookmark demonstration.
 
 ## Planning home and working rules
 
@@ -37,7 +53,7 @@ through manual categorization. A hosted gallery is not required for v1.
 | Required outcome | What acceptance means | Tracking |
 | --- | --- | --- |
 | Complete X migration | Preserve complete obtainable text/media, exact original source and category evidence; safely unbookmark only verified items. Triage and resolve fixable blockers, measure post-removal window progress and cost before scaling, and account for all known streams and exceptions. A sample or an empty observed API page is not completion. | [FOS-169](https://linear.app/fosterstech/issue/FOS-169), FOS-164 |
-| Recovery and sustained operation | Prove independent off-host restore, one complete live transaction, scheduled non-root operation, later new-save processing and continuing backup coverage. | FOS-169; existing FOS-168 worker contract |
+| Recovery and sustained operation | Prove independent off-host restore, one complete live transaction, scheduled non-root operation, later new-save processing and continuing backup coverage. | [FOS-168](https://linear.app/fosterstech/issue/FOS-168) for recurring intake and backups; FOS-169 for historical receipts |
 | Full-corpus OpenClaw search | Find text and vaguely remembered media using ordinary language without knowing IDs or filenames; open the real saved content and original context. | [FOS-220](https://linear.app/fosterstech/issue/FOS-220) |
 | Google Drive search and access | Search meaningful text/category/media-description terms in ordinary Drive on desktop and Android, then open the matching preserved content without OpenClaw. Raw JSONL upload alone is not evidence. | FOS-220 |
 | Raindrop discovery | Find required original-source pointers by useful descriptions, including owner corrections, or by existing categories/tags. Preserve archive access, existing entries and annotations. The existing affirmative media-only exception remains. | [FOS-166](https://linear.app/fosterstech/issue/FOS-166), [FOS-216](https://linear.app/fosterstech/issue/FOS-216), FOS-220 |
@@ -84,16 +100,13 @@ incidental-media hiding supports browsing/curation without blocking migration.
 
 ## Milestones and sprint schedule
 
-One-week planning timeboxes, starting 18 November; these are planning targets,
-not promises of owner availability or automatic deployment dates. Only S1 is
-current. Later dates are provisional; failed exits carry named work forward and
-shift subsequent windows. S4 repeats as needed rather than inventing a drain ETA.
+The original timeboxes are planning estimates. Follow the current assignments above.
 
 | Sprint | Target window | Milestone / demo | Status |
 | --- | --- | --- | --- |
 | S1 | 18–24 Nov 2026 | **M1 Recoverable:** existing bundle restored off-host and completely verified; S3 search/curation designs ready for focused review. | Recovery/restore/cleanup passed; [search design](docs/SEARCH_DESIGN.md) merged; curation tracked separately |
-| S2 | 25 Nov–1 Dec 2026 | **M2 Operational:** complete catalog visible, historical repair and prospective gate accepted, one live worker pass and scheduled run proven; blocker triage, exposure evidence and budget checkpoint recorded before scaling. | Planned; requires M1 for live rollout |
-| S3 | 2–8 Dec 2026 | **M3 Findable and organizable:** OpenClaw/Drive/Raindrop search acceptance and categorization plan/rehearsal pass. | Planned; design can proceed during S1 |
+| S2 | 25 Nov–1 Dec 2026 | **M2 Operational:** complete catalog visible, historical repair and prospective gate accepted, one live worker pass and scheduled run proven; blocker triage, exposure evidence and budget checkpoint recorded before scaling. | Live backlog drain under way; unattended new-save acceptance open |
+| S3 | 2–8 Dec 2026 | **M3 Findable and organizable:** OpenClaw/Drive/Raindrop search acceptance and categorization plan/rehearsal pass. | Catalog and offline publisher merged; live search and editing open |
 | S4 | 9–15 Dec 2026, then repeat if needed | **M4 V1 accepted:** all-history reconciliation, continuing intake/recovery and v1 acceptance matrix pass; owner dispositions for any irrecoverable remainder. | Planned; no fixed release date |
 | S5 | After v1 acceptance | **M5 Gallery:** private direct-Drive media browsing on desktop and Android. | V2 backlog |
 | S6 | After v1 acceptance; sequence after S5 by default | **M6 Multi-source:** one additional source works through preservation/search/curation without breaking X. | V2 backlog |
@@ -106,110 +119,10 @@ S2 identifies fixable content/category blocks and records policy-limited cases
 early, including Articles; it does not defer all blocked work to a final waiver.
 No-progress streams pause paid historical probes until diagnosis and a bounded
 next step are recorded; authorized new-save checks keep their separate cadence.
-Existing receipts are the starting evidence, not proof of today's
-full coverage. Budget projections separate reservations from observed charges and
-leave unknown population/cost explicit; no automatic ceiling increase or reduced
-release scope follows from a failed checkpoint. See S2/S4 for the stopping rule.
-
-## Current checkpoint and next actions
-
-### 26 November — repair and remove the captured backlog first
-
-All 103 captured records have distinct Raindrop links. Of those, 58 have complete
-archives and 27 have confirmed X removals. Prioritize the 31 verified archives
-pending removal and the 45 incomplete archives. Two IDs observed outside the
-catalog and unreliable folder paging leave historical coverage open. A new-save
-worker demonstration is a separate automation milestone, not a prerequisite
-for backlog repair. See the [backlog exit criteria](docs/SPRINTS.md#captured-backlog-exit-criteria--26-november).
-
-### 24 November — resume from the owner receipts
-
-The owner verified the off-host recovery and cleanup, publication of 103 records
-and 117 media files, and retrieval from OpenClaw. The protected installation of
-`0d5c1e9` and all 25 historical Raindrop repairs passed, including final GETs and
-persisted local links. The subsequent title/collection update stopped before
-its first PUT. Resume from the protected diagnostic and [S2 handoff](docs/SPRINTS.md#desktop-resume-checkpoint--24-november).
-The 32 archived main records await fresh gates, 43 main records and two earlier
-pilots have archive blockers, and the unseen population remains unknown.
-Current-policy worker, scheduled intake and continuing backup acceptance remain open.
-
-### Historical checkpoint — 21 November before the final repair batches
-
-Recovery, independent restore and temporary-material cleanup passed. The complete
-captured catalog is published: 103 records and 117 media files, with owner-attested
-OpenClaw/Mnemosyne retrieval. Do not repeat those completed demonstrations.
-
-Historical Raindrop repair has 19 completed records of the 25 known removals.
-One additional pointer was created and identity-verified, but its local link was
-not published. Five remain unprocessed. Saved create evidence shows only an
-edge-whitespace note difference (250 submitted characters, 249 returned, equal
-after trimming). The failed later GET body was not retained. Original receipts
-and the stopped run remain evidence, not a reason to repeat POSTs.
-
-The owner directed an efficient, resumable shared repair path before more live
-work: one validated inventory per bounded run, targeted item readback, tolerant
-note-edge comparison, per-item local checkpoints and useful progress/failure
-reports. This replaces repeated pilot-style whole-library checks in historical
-repair. Implementation and synthetic checks are not protected installation or
-live completion. [S2](docs/SPRINTS.md#s2--publish-reconcile-and-operate) owns the
-exit tests and remaining work.
-
-**At that checkpoint**, the plan was to finish the historical 25, retire or gate the audited removal
-helpers; accept the existing worker under current policy; process the 32 known
-archived-but-not-removed main records and resolve measured blockers among the
-43 blocked main records (plus two blocked earlier pilots). These populations
-are not all X history. Continue to measure window exposure, spending and explicit
-exceptions, and complete the existing search/categorization acceptance. No new
-X removal, scheduling or spending authority follows from this checkpoint.
-
-### 19 November Raindrop formatting decision
-
-The owner accepted the revised one-bookmark preview and directed subsequent
-migration work to use the same format: the saved primary post's first 250
-characters as the note, with a direct Raindrop link in its local catalog record
-and index. This replaces the rejected JSON-link/numeric-category note; original
-archive and category evidence remain local. See the S2 formatting checkpoint.
-The preview update and link persistence passed owner-run checks across the
-103-record, 117-media catalog. On 20 November, the owner attested that only the
-two audited helpers performed automated removals of these captured bookmarks;
-this is owner confirmation, not independent verification.
-Next is a separately authorized bounded Raindrop-only backfill; helper retirement and X-operation
-acceptance remain separate.
-
-The following 18 November checkpoint is historical; do not repeat completed
-recovery or publication work solely from this earlier snapshot.
-
-Baseline: main `9b3ce5e`, merged worker #10, readiness #11 and recovery preparation
-#13. Local evidence is owner-reported, not a new remote audit. Effective Raindrop
-skill, dedicated runtime/protected build, staged complete catalog and initial
-encrypted capture exist. On 18 November, owner-run full local signature,
-decryption, exact member/directory/size/hash verification passed. A separate
-symmetric recovery-key backup also passed local encryption/readback verification,
-using the existing independently accessible GPG passphrase. The owner added only
-the ciphertext publication directory to existing Déjà Dup coverage; the agent
-verified the settings delta. Quota and local disk headroom passed the bounded
-check. Completed remote backup, independent off-host key recovery, full restored
-bundle verification and protected staging cleanup remain outstanding.
-Publication, live Raindrop acceptance/repair and the current-policy scheduled run
-are not established. Complete search acceptance is also not established.
-
-**Paused at owner request; S1 is not complete.** The final settings check still
-showed the earlier successful backup. A new backup was requested but its start or
-completion was not established. On resumption, inspect existing backup activity
-and completion first; do not start a duplicate job. Then complete the existing
-backup and restore the pinned generation and separate encrypted recovery-key
-file from a completed remote snapshot into a distinct destination. Reverify with
-fresh recovery material and resolve protected staging cleanup. See the
-[S1 checkpoint](docs/SPRINTS.md#s1--recover-existing-state).
-
-**Owner decision:** the existing independently accessible password database is
-accepted and must not be accessed, modified, copied or used for attachment work.
-The withdrawn vault helper was never executed and was removed. Back up the GPG
-recovery material separately; no new password, repeated capture, key transfer or
-retired-host dependency.
-**Next remote action (S1 preparation for S3 / FOS-220 and FOS-223):** review the
-query/coverage contract and categorization plan, then resolve only demonstrated
-implementation gaps. Keep the existing local recovery path moving independently.
+Use FOS-169 for current counts, operator ownership, spending direction and the
+latest live receipts. Earlier snapshots remain in Git history and the ticket
+journal. See [S2](docs/SPRINTS.md#s2--publish-reconcile-and-operate) for the
+worker exit and S4 for the historical stopping rule.
 
 ## Boundaries preserved across releases
 
@@ -219,9 +132,9 @@ implementation gaps. Keep the existing local recovery path moving independently.
 - Before X DELETE: complete archive/content/category/readback proof, actual external
   retrieval, fresh authenticated exact-primary Raindrop proof unless affirmatively
   exempt, historical repair and helper retirement, and explicit owner authorization.
-- Preserve the existing cumulative spending ceiling and all reservations; verify
-  actual billing separately. New budgets/providers/content uploads need their own
-  authorized scope. No broad grants or new infrastructure merely to finish planning.
+- Use [the owner's authorized prepaid X credits](https://linear.app/fosterstech/issue/FOS-169) with auto-reload off. Follow the [worker billing preflight and cumulative limit](docs/WORKER.md). Record actual
+  calls and outcomes and reconcile against provider billing afterward. Preserve
+  historical accounting. New spending or content uploads require their own scope.
 - Owner personally runs reviewed privileged commands; no agent unrestricted sudo
   or Docker-equivalent access. Preserve ordinary rclone and existing backups.
 - Reuse the existing worker, catalog, adapter and ledgers. No second migration
