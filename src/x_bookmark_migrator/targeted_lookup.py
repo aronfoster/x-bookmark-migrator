@@ -228,11 +228,8 @@ def run(args):
                             raise PilotError(
                                 "Restored files must be readable by the catalog reader."
                             )
-                incoming = build(
-                    [(restore, journal.path(result["private_receipt"]))],
-                    catalog,
-                    apply_curation=False,
-                )
+                batches = [(restore, journal.path(result["private_receipt"]))]
+                incoming = build(batches, catalog, apply_curation=False)
                 if restored["bytes_verified"] != 1 or any(
                     a["availability"] != "local_hash_verified"
                     for a in incoming[0]["versions"][0]["media"]
@@ -241,6 +238,7 @@ def run(args):
                 merge_publication(
                     catalog,
                     incoming,
+                    batches=batches,
                     required_versions=[chain],
                 )
         return {**restored, "catalog_promoted": True}

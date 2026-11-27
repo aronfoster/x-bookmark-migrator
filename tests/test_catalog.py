@@ -257,6 +257,32 @@ def test_association_mismatch_is_rejected_even_with_valid_hashes(corpus):
         build([batch], output)
 
 
+@pytest.mark.parametrize(
+    ("author", "label"), [({"username": "example"}, "@example"), ({"name": "Writer"}, "Writer")]
+)
+def test_render_retained_and_repaired_author(corpus, author, label):
+    batch, output, _, _ = corpus
+    record = build([batch], output)[0]
+    record["category_override"] = "Reading"
+    repaired = record["versions"][0]
+    original = copy.deepcopy(repaired)
+    original["posts"][0].pop("author")
+    original["folders"][0]["names"] = []
+    original.update(archive_status="blocked", blockers=["blocked_missing_author"])
+    repaired["posts"][0]["author"] = author
+    record["versions"] = [original, repaired]
+
+    page = render([record])
+    before, versions = page.split("<h3>Saved version 1 (blocked)</h3>")
+    blocked, verified = versions.split("<h3>Saved version 2 (bytes_verified)</h3>")
+    override = "<dt>Effective category (owner-approved override)</dt><dd>Reading</dd>"
+    assert override in before and page.count(override) == 1
+    assert "<dt>Saved primary author</dt><dd>Account ID 900</dd>" in blocked
+    assert "<dt>Original folder</dt><dd>Unnamed folder (10)</dd>" in blocked
+    assert f"<dt>Saved primary author</dt><dd>{label}</dd>" in verified
+    assert "<dt>Original folder</dt><dd>Synthetic category (10)</dd>" in verified
+
+
 def test_html_escapes_source_and_annotation_text(corpus):
     batch, output, _, _ = corpus
     records = build([batch], output)
