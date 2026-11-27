@@ -18,10 +18,12 @@ observed outside the catalog and which ones actually reach the archive.
 
 [FOS-168](https://linear.app/fosterstech/issue/FOS-168) owns daily intake.
 Its next exit is one later save discovered by the scheduled worker with history
-pending. When new-save discovery is due, the timer checks a bounded first window. Keep
-historical pagination, paused-stream probes and their restart decisions with
-the FOS-169 drain. The timer can process eligible queued items within the
-worker limits. Daily intake alone does not authorize a deep historical scan.
+pending. When new-save discovery is due, the timer checks a bounded first window. FOS-169
+owns historical coverage and probe stops. Verify the timer's empty-queue behavior
+separately: moving its eligible historical discovery pass to manual-only operation
+is a scheduling change for FOS-168 review. A later-save receipt establishes
+daily intake only; it cannot establish continued historical discovery or
+authorize restarting a paused stream.
 
 ### Working rules
 
