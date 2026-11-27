@@ -22,6 +22,7 @@ from x_bookmark_migrator.catalog import (
     read_catalog,
     render,
 )
+from x_bookmark_migrator.catalog_search import search
 from x_bookmark_migrator.core import Store
 from x_bookmark_migrator.discovery_gate import positive_media_only
 from x_bookmark_migrator.raindrop import inspect_inventory
@@ -281,6 +282,12 @@ def test_shared_quote_and_replaced_media(archive, storage, tmp_path):  # noqa: F
         sha256=replacement["storage"]["sha256"],
     )
     rebuilt = build([newer, *reversed(batches)], output)
+    # Search keeps both byte variants and each saved context when coalescing repeated captures.
+    candidates = search(rebuilt, [IMAGE, "Green replacement"])["matches"]
+    assert {(h["source_post_id"], *h["snapshot"]) for h in candidates} == {
+        (a["source_post_id"], a["manifest_sha256"], a["payload_sha256"])
+        for a in lookup(rebuilt, "704", PHOTO_ID)
+    }
     # Reproduce reversed arrival through the worker, then compare with the complete build.
     expected = next(r for r in rebuilt if r["post_id"] == "701")
     low, high = expected["versions"]
