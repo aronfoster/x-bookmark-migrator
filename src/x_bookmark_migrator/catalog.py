@@ -235,6 +235,9 @@ def apply_annotations(records, annotations):
         validate_receipt(receipt, pid)
     if len({r["raindrop_id"] for r in links.values()}) != len(links):
         raise PilotError("Raindrop bookmark is associated with multiple saved primaries.")
+    descriptions_by_post = annotations.get("bookmark_descriptions", {})
+    if not isinstance(descriptions_by_post, dict):
+        raise PilotError("Bookmark descriptions must be an object.")
     overrides = annotations.get("category_overrides", {})
     if not isinstance(overrides, dict):
         raise PilotError("Category overrides must be an object.")
@@ -249,6 +252,11 @@ def apply_annotations(records, annotations):
         if record["post_id"] in links:
             rid = links[record["post_id"]]["raindrop_id"]
             record.update(raindrop_id=rid, raindrop_url=raindrop_link(rid))
+        record.pop("approved_description", None)
+        description = descriptions_by_post.get(record["post_id"])
+        if description is not None:
+            validate_description(description)
+            record["approved_description"] = description
         record.pop("category_override", None)
         override = overrides.get(record["post_id"])
         if override is not None:
@@ -453,6 +461,8 @@ def render(records):
             f'<p><a href="{esc(source_url(record["post_id"]))}" rel="noreferrer">'
             "Open original saved X post</a></p>"
         )
+        if "approved_description" in record:
+            parts.append(f"<p>Approved description: {esc(record['approved_description'])}</p>")
         if "raindrop_id" in record:
             url = raindrop_link(record["raindrop_id"])
             if record.get("raindrop_url") != url:
@@ -759,6 +769,10 @@ def annotate(
             raise PilotError("Invalid browse visibility.")
         note["browse_visibility"] = visibility
     note["interpretation_status"] = "explicit_annotation"
+    save_annotations(output, records, notes)
+
+
+def save_annotations(output, records, notes):
     projected = apply_annotations(records, notes)
     output.write("annotations.private.json", notes)
     publish(output, projected)
