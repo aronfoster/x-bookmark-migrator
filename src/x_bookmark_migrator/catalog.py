@@ -391,6 +391,26 @@ def lookup(records, value, asset_id=None):
     return matches
 
 
+def primary_author_label(version, pid):
+    primary = next((post for post in version["posts"] if post["id"] == pid), {})
+    author = primary.get("author") or {}
+    name = author.get("name")
+    username = author.get("username")
+    if username:
+        return f"{name} (@{username})" if name else f"@{username}"
+    if name:
+        return name
+    author_id = author.get("id") or (primary.get("raw") or {}).get("author_id")
+    return f"Account ID {author_id}" if author_id else "Not recorded"
+
+
+def original_folder_labels(version):
+    return [
+        f"{' / '.join(folder.get('names') or []) or 'Unnamed folder'} ({folder['id']})"
+        for folder in version.get("folders") or []
+    ]
+
+
 def render(records):
     esc = lambda value: html.escape(str(value), quote=True)  # noqa: E731
     parts = [
@@ -408,14 +428,15 @@ def render(records):
     categories = {}
     for record in records:
         if record.get("category_override"):
-            categories.setdefault(record["category_override"], set()).add(record["post_id"])
+            label = f"Owner-approved category: {record['category_override']}"
+            categories.setdefault(label, set()).add(record["post_id"])
         for version in record["versions"]:
-            labels = [f"{' / '.join(f['names'])} ({f['id']})" for f in version["folders"]] or [
-                version["category"]
-            ]
+            labels = [f"Original folder: {folder}" for folder in original_folder_labels(version)]
+            if not labels:
+                labels = [f"Original category: {version.get('category') or 'Not recorded'}"]
             for label in labels:
                 categories.setdefault(label, set()).add(record["post_id"])
-    parts.append('<nav aria-label="Original categories"><h2>Original categories</h2>')
+    parts.append('<nav aria-label="Folders and categories"><h2>Folders and categories</h2>')
     for label, ids in sorted(categories.items()):
         links = " · ".join(f'<a href="#post-{esc(pid)}">{esc(pid)}</a>' for pid in sorted(ids))
         parts.append(f"<details><summary>{esc(label)}</summary>{links}</details>")
@@ -435,11 +456,24 @@ def render(records):
             parts.append(
                 f'<p><a href="{esc(url)}" rel="noreferrer">Open bookmark in Raindrop</a></p>'
             )
-        if record.get("category_override"):
-            parts.append(f"<p>Category override: {esc(record['category_override'])}</p>")
-        for v in record["versions"]:
-            categories = ", ".join(f"{' / '.join(f['names'])} ({f['id']})" for f in v["folders"])
-            parts.append(f"<h3>{esc(categories or v['category'])}</h3>")
+        override = record.get("category_override")
+        if override:
+            parts.append(
+                "<dl><dt>Effective category (owner-approved override)</dt>"
+                f"<dd>{esc(override)}</dd></dl>"
+            )
+        category_label = "Original category" if override else "Original and effective category"
+        for index, v in enumerate(record["versions"], start=1):
+            if len(record["versions"]) > 1:
+                parts.append(f"<h3>Saved version {index} ({esc(v['archive_status'])})</h3>")
+            folders = ", ".join(original_folder_labels(v)) or "Not recorded"
+            category = v.get("category") or "Not recorded"
+            parts.append(
+                f"<dl><dt>Saved primary author</dt>"
+                f"<dd>{esc(primary_author_label(v, record['post_id']))}</dd>"
+                f"<dt>Original folder</dt><dd>{esc(folders)}</dd>"
+                f"<dt>{category_label}</dt><dd>{esc(category)}</dd></dl>"
+            )
             parts.append(f"<p>Archive status: {esc(v['archive_status'])}; {esc(v['blockers'])}</p>")
             parts.append(
                 f'<a href="{esc(v["payload_url"])}" rel="noreferrer">Archived JSON on Drive</a>'
