@@ -43,7 +43,7 @@ def scan_native(directory):
         raise PilotError("Removal evidence directory must exist and not be a symlink.")
     intents = sorted(root.glob("unbookmark-*.intent.private.json"))
     bases = {p.name.removesuffix(".intent.private.json") for p in intents}
-    for suffix in ("response", "result"):
+    for suffix in ("response", "result", "window"):
         for path in root.glob(f"unbookmark-*.{suffix}.private.json"):
             if path.name.removesuffix(f".{suffix}.private.json") not in bases:
                 raise PilotError("Orphan removal receipt: supply its original intent.")

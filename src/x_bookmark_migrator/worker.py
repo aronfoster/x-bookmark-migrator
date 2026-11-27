@@ -430,7 +430,7 @@ class Worker:
         item = self.state["items"].get(pid)
         return item is None or (item["state"] == "retryable" and item["retry_at"] <= self.clock())
 
-    def adopt(self, receipt_name, inventory):
+    def adopt(self, receipt_name, inventory, *, superseded=False):
         receipt = self.store.read(receipt_name)
         manifest = receipt["manifest"]
         child = self.restore_root / manifest["sha256"]
@@ -457,6 +457,13 @@ class Worker:
                 else ("queued" if not row["blockers"] and matches else "blocked")
             )
             previous = self.state["items"].get(pid)
+            if (
+                previous
+                and (superseded or receipt_name in self.state["batches"])
+                and previous["receipt"] != receipt_name
+            ):
+                # Refreshing a sibling in an old batch cannot supersede a later retry's receipt.
+                continue
             if previous and previous["checkpoint"] == inventory.name:
                 if not matches:
                     continue
@@ -474,6 +481,8 @@ class Worker:
                 b in ("blocked_media_transport", "blocked_http_429", "blocked_http_503")
                 for b in row["blockers"]
             )
+            if superseded and state == "queued":
+                state = "retryable"  # Only fresh discovery can authorize another plan.
             if state == "blocked" and retryable:
                 state = "retryable"
             self.state["items"][pid] = {
@@ -503,35 +512,150 @@ class Worker:
             if not receipt or receipt["manifest"]["sha256"] != self.state["batches"][name]:
                 raise PilotError("Archived receipt missing or changed.")
         pending = [name for name in names if name not in self.state["batches"]]
+        daily_parents = {}
         for name in pending[: self.config["max_batches"]]:
-            self.adopt(name, inventory)
+            daily_pass = self.store.read(name).get("daily_pass")
+            if daily_pass is None:
+                self.adopt(name, inventory)
+                continue
+            bound = Inventory.read_pass(self.store, daily_pass)
+            if bound.state["owner_id"] != inventory.state["owner_id"]:
+                raise PilotError("Daily archive owner differs.")
+            parent = bound.state["daily_parent"]
+            daily_parents[daily_pass] = parent
+            self.adopt(name, bound, superseded=(parent != inventory.state["pass_id"]))
+
+        # The desktop can advance the baseline under the same lock between timer runs.
+        # Keep receipts and retry deadlines. Never execute the plan bound to the old pass.
+        for pid, item in self.state["items"].items():
+            if (
+                item["state"] != "queued"
+                or pid in self.held
+                or item["checkpoint"] == inventory.name
+            ):
+                continue
+            daily_pass = self.store.read(item["receipt"]).get("daily_pass")
+            if daily_pass is not None:
+                if item["checkpoint"] != Inventory.checkpoint_name(daily_pass):
+                    raise PilotError("Queued daily receipt and checkpoint differ.")
+                if daily_pass not in daily_parents:
+                    daily_parents[daily_pass] = Inventory.read_pass(self.store, daily_pass).state[
+                        "daily_parent"
+                    ]
+                if daily_parents[daily_pass] == inventory.state["pass_id"]:
+                    continue
+            item.update(
+                state="retryable",
+                retry_at=item.get("retry_at", 0),
+                failure_reason="superseded_inventory",
+            )
+            self.counts["superseded_queued"] += 1
+        if self.counts["superseded_queued"]:
+            self.save()
         return len(pending) <= self.config["max_batches"]
 
-    def discover(self):
+    def historical_stops(self, baseline):
+        items = self.state["items"]
+        blocked = {pid for pid, item in items.items() if item["state"] == "blocked"}
+        settled = blocked | {
+            pid for pid, states in self.history.items() if "confirmed_removed" in states
+        }
+        stopped = set()
+        if baseline:
+            for key, stream in baseline.state["streams"].items():
+                visible = set(stream["pages"][0]["ids"]) if stream["pages"] else set()
+                if stream["status"] == "paused" or (
+                    key != "folders" and visible and visible <= blocked
+                ):
+                    stopped.add(key)
+        for key, coverage in self.state["streams"].items():
+            visible = set(coverage.get("observed_ids", []))
+            if coverage.get("window_exposure_status") == "stalled_on_blocked_window" or (
+                visible and visible <= blocked
+            ):
+                stopped.add(key)
+
+        # A category check for a daily save cannot release a historical stop.
+        # A later successful desktop comparison can record a changed condition.
+        comparisons = {}
+        for path in self.store.root.glob("unbookmark-*.intent.private.json"):
+            intent = self.store.read(path.name)
+            if intent["owner_id"] != self.config["owner_id"]:
+                continue
+            verified = intent.get("verified") or {}
+            folder = (verified.get("folder") or {}).get("id")
+            if not folder:
+                self.counts["historical_stops_unattributed"] += 1
+                stopped.add("folders")
+                continue
+            window = self.store.read(path.name.replace(".intent.", ".window.")) or {}
+            stop = window.get("window_status") != "new_ids_observed"
+            if not stop:
+                visible = set(window["after"]["ids"])
+                stop = bool(visible and visible <= blocked)
+            plan = self.store.read(intent["plan_file"]) if intent.get("plan_file") else None
+            if not stop and not window.get("not_previously_inventoried_ids"):
+                members = intent.get("inventory_folder_post_ids")
+                if (
+                    members is None
+                    and baseline
+                    and plan
+                    and plan.get("inventory_checkpoint") == baseline.name
+                ):
+                    members = [
+                        pid
+                        for pid in intent.get("inventory_post_ids", [])
+                        if folder in baseline.state["posts"].get(pid, {}).get("folder_ids", [])
+                    ]
+                stop = members is None or not (set(members) - settled)
+            if stop or (plan and not plan.get("archive_receipt", {}).get("daily_pass")):
+                key = "folder:" + folder
+                observation = (intent.get("created_at", ""), stop)
+                comparisons[key] = max(comparisons.get(key, observation), observation)
+        stopped.update(key for key, (_, stop) in comparisons.items() if stop)
+        if baseline:
+            known_folders = {"folder:" + fid for fid in baseline.state["folders"]}
+            if known_folders and known_folders <= stopped:
+                stopped.add("folders")
+        return stopped
+
+    def discover(self, *, scheduled=False, baseline=None):
         # Never resume a positional cursor across a run or DELETE.
         inv = Inventory(
             self.store,
             self.config["owner_id"],
             self.config.get("dialect", "post"),
+            daily=scheduled,
             page_size=100,
             max_records=200,
             max_folders=20,
             max_pages=1,
         )
         skipped = self.held | {pid for pid in self.state["items"] if not self.eligible(pid)}
+        known_history = set()
+        if scheduled and baseline and "daily_parent" not in baseline.state:
+            known_history = baseline.state["posts"].keys() - self.state["items"].keys()
+        empty_queue = not any(item["state"] == "queued" for item in self.state["items"].values())
         report = inv.run(
             self.client,
             self.budget,
             max_calls=self.config["max_calls"],
             hydrate_batch_size=20,
             skip_hydration=skipped,
+            known_history=known_history,
+            historical_stops=(lambda: self.historical_stops(baseline))
+            if scheduled and empty_queue
+            else None,
             primary_limit=self.config["max_items"],
         )
-        self.counts["discovered"] += len(set(inv.state["posts"]) - set(self.state["items"]))
-        self.coverage(inv)
+        if not scheduled:
+            self.coverage(inv)
+        self.counts["discovered"] += len(
+            inv.primary_candidates(skipped | self.state["items"].keys(), None, known_history)
+        )
         if report["stop_reason"]:
             raise PilotError("Inventory stopped.", code=report["stop_reason"])
-        ids = inv.primary_candidates(skipped, self.config["max_items"])
+        ids = inv.primary_candidates(skipped, self.config["max_items"], known_history)
         for offset in range(0, len(ids), 20):
             batch = ids[offset : offset + 20]
             enriched = [pid for pid in batch if inv.state["posts"][pid].get("post")]
@@ -541,11 +665,18 @@ class Worker:
                 )
             archived = archive_batch(inv, self.drive, self.media, post_ids=batch, limit=20)
             self.adopt(archived["private_receipt"], inv)
+            if scheduled:
+                self.counts["daily_category_unknown"] += sum(
+                    "blocked_category_unknown" in self.state["items"][pid]["blockers"]
+                    for pid in batch
+                )
         return inv
 
     def coverage(self, inv):
         for key, stream in inv.state["streams"].items():
             if key == "folders":
+                continue
+            if inv.state.get("historical_fallback") and (key == "main" or not stream["pages"]):
                 continue
             ids = {pid for page in stream["pages"] for pid in page["ids"]}
             previous = self.state["streams"].get(key, {})
@@ -609,17 +740,30 @@ class Worker:
             and item.get("retry_at", 0) <= self.clock()
         )
 
-    def drain(self, inventory):
-        selected = [pid for pid, item in self.state["items"].items() if self.queued(pid, item)][
-            : self.config["max_items"]
+    def pending_retries(self):
+        return [
+            item["retry_at"]
+            for pid, item in self.state["items"].items()
+            if item["state"] == "queued"
+            and pid not in self.held
+            and item.get("retry_at", 0) > self.clock()
         ]
-        for pid in selected:
+
+    def drain(self, inventory, *, scheduled=False):
+        items = self.state["items"]
+        selected = [pid for pid, item in items.items() if self.queued(pid, item)]
+        if scheduled and inventory:
+            # A pending daily receipt keeps its priority after an interrupted run or provider reset.
+            selected.sort(key=lambda pid: items[pid]["checkpoint"] == inventory.name)
+        for pid in selected[: self.config["max_items"]]:
             self.gate.check()
             item = self.state["items"][pid]
-            if item["checkpoint"] != inventory.name:
+            daily_pass = self.store.read(item["receipt"]).get("daily_pass")
+            bound = Inventory.load(self.store, daily_pass=daily_pass) if daily_pass else inventory
+            if item["checkpoint"] != bound.name:
                 raise PilotError("Queued archive belongs to another inventory.")
             # Refresh the independent restore and published projection before each transaction.
-            self.adopt(item["receipt"], inventory)
+            self.adopt(item["receipt"], bound)
             item = self.state["items"][pid]
             root = Path(item["restore_dir"])
             payload = json.loads(publication_bytes(root / (pid + ".json")))
@@ -675,6 +819,7 @@ class Worker:
                 [pid],
                 self.config["owner_id"],
                 acceptance_confirmed=True,
+                daily_pass=daily_pass,
             )
             result = apply_plan(
                 self.store,
@@ -685,6 +830,7 @@ class Worker:
                 self.config["owner_id"],
                 confirmed=True,
                 retry_rejected=pid in self.retry429,
+                daily_pass=daily_pass,
                 catalog_dir=self.catalog.root,
                 raindrop=self.raindrop,
                 legacy_helper_retired=True,
@@ -724,32 +870,45 @@ class Worker:
                     summary=contexts[-1] if contexts else None,
                 )
 
-    def run(self, *, allow_delete=False):
+    def run(self, *, allow_delete=False, scheduled=False):
         if self.gate.remaining():
             return {"quiet": True, "deferred": True}
-        if self.clock() < self.state["next_daily"]:
+        now = self.clock()
+        if scheduled and "next_intake" not in self.state:
+            # Legacy next_daily may be a single item's distant retry. Honor at most one paid day.
+            self.state["next_intake"] = min(self.state["next_daily"], now + 86400)
+            self.save()
+        intake_pending = scheduled and now >= self.state["next_intake"]
+        if not intake_pending and now < self.state["next_daily"]:
             return {"quiet": True, "not_due": True}
         stop = None
-        self.state["next_daily"] = self.clock() + 86400
+        self.state["next_daily"] = now + 86400
+        if intake_pending:
+            self.state["next_intake"] = self.state["next_daily"]
         self.save()  # Must succeed before any provider call, including bootstrap.
+        daily = None
         try:
             if self.store.read("inventory-active.private.json"):
                 inventory = Inventory.load(self.store)
+                if inventory.state["owner_id"] != self.config["owner_id"]:
+                    raise PilotError("Active inventory owner differs.")
                 if not self.bootstrap(inventory):
                     raise PilotError(
                         "More existing receipts await adoption.", code="bootstrap_pending"
                     )
             else:
                 inventory = None
-            queued = any(self.queued(pid, i) for pid, i in self.state["items"].items())
-            if not queued:
-                delayed = [
-                    i.get("retry_at", 0)
-                    for pid, i in self.state["items"].items()
-                    if i["state"] == "queued"
-                    and pid not in self.held
-                    and i.get("retry_at", 0) > self.clock()
-                ]
+            if intake_pending:
+                daily = self.discover(scheduled=True, baseline=inventory)
+                intake_pending = (
+                    False  # A later transaction reset must not repeat this paid window.
+                )
+                if inventory is None:
+                    inventory = daily
+            elif not scheduled and not any(
+                self.queued(pid, i) for pid, i in self.state["items"].items()
+            ):
+                delayed = self.pending_retries()
                 if delayed:
                     # Keep the inventory bound to queued receipts; a new pass would invalidate it.
                     self.state["next_daily"] = min(delayed)
@@ -757,10 +916,12 @@ class Worker:
                     return {"quiet": True, "not_due": True}
                 inventory = self.discover()
             if allow_delete:
-                self.drain(inventory)
-            if inventory:
+                self.drain(inventory, scheduled=scheduled)
+            if inventory and not scheduled:
                 self.coverage(inventory)
-            self.state["next_daily"] = self.clock() + 86400
+            deadline = self.clock() + 86400
+            retries = self.pending_retries() if scheduled and allow_delete else []
+            self.state["next_daily"] = min([deadline, *retries])
         except Exception as exc:
             # Never serialize exception text (paths, tokens and provider bodies may be present).
             stop = exc.code if isinstance(exc, PilotError) else "worker_failure"
@@ -779,8 +940,12 @@ class Worker:
                 and self.gate.remaining()
             ):
                 self.state["next_daily"] = saved["until"]
+                if intake_pending:
+                    self.state["next_intake"] = saved["until"]
             else:
                 self.gate.save("worker", seconds=86400)
+        if daily and daily.state.get("historical_fallback"):
+            self.coverage(daily)
         self.save()
         report = {
             **snapshot(self.store, self.config.get("helper_descriptors", [])),

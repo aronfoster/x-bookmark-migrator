@@ -122,6 +122,7 @@ class Inventory:
         resume=False,
         source_unchanged=False,
         retry_unavailable=False,
+        daily=False,
         page_size=None,
         max_records=None,
         max_folders=None,
@@ -214,18 +215,31 @@ class Inventory:
                 hydration_batches=[],
                 unavailable_cache=unavailable_cache,
             )
+            if daily:
+                self.state["daily_parent"] = active["pass_id"] if active else None
             self.save()
-            store.write("inventory-active.private.json", {"pass_id": pass_id})
+            if not daily or not active:
+                store.write("inventory-active.private.json", {"pass_id": pass_id})
 
     @classmethod
-    def load(cls, store):
+    def load(cls, store, *, daily_pass=None):
         active = store.read("inventory-active.private.json")
         if not active:
             raise PilotError("No inventory to export.")
+        result = cls.read_pass(store, active["pass_id"] if daily_pass is None else daily_pass)
+        if daily_pass is not None and result.state.get("daily_parent") != active["pass_id"]:
+            raise PilotError("Daily archive belongs to another active inventory.")
+        return result
+
+    @classmethod
+    def read_pass(cls, store, pass_id):
+        """Read retained evidence. Removal callers use load() to verify the active binding."""
         result = cls.__new__(cls)
         result.store = store
-        result.name = cls.checkpoint_name(active["pass_id"])
+        result.name = cls.checkpoint_name(pass_id)
         result.state = load_checkpoint(store, result.name)
+        if result.state["pass_id"] != pass_id:
+            raise PilotError("Inventory pass identity differs from its checkpoint.")
         return result
 
     @staticmethod
@@ -555,9 +569,19 @@ class Inventory:
             raise
         return name
 
-    def primary_candidates(self, excluded, limit):
-        """Select in inventory order, counting posts already returned by the main stream."""
-        return [pid for pid in self.state["posts"] if pid not in excluded][:limit]
+    def primary_candidates(self, excluded, limit, known_history=()):
+        """Use positive folder membership for history and fresh main IDs for daily intake."""
+        candidates = (pid for pid in self.state["posts"] if pid not in excluded)
+        if "daily_parent" in self.state:
+            if self.state.get("historical_fallback"):
+                candidates = (pid for pid in candidates if self.state["posts"][pid]["folder_ids"])
+            else:
+                candidates = (
+                    pid
+                    for pid in candidates
+                    if self.state["posts"][pid]["seen_in_main"] and pid not in known_history
+                )
+        return list(candidates)[:limit]
 
     def run(
         self,
@@ -567,6 +591,8 @@ class Inventory:
         max_calls=10,
         hydrate_batch_size=100,
         skip_hydration=(),
+        known_history=(),
+        historical_stops=None,
         primary_limit=None,
     ):
         validate_run_limits(max_calls, hydrate_batch_size)
@@ -576,6 +602,8 @@ class Inventory:
         reservations = Counter()
         amounts = Counter()
         state = self.state
+        daily = "daily_parent" in state
+        paused = set()
         state["stop_reason"] = None
 
         def get(path, params):
@@ -622,15 +650,31 @@ class Inventory:
                 )
             state["in_flight"] = False
             self.save()
-            # Folder list first: discovered folders remain independently runnable if main fails.
+            # Decide whether history is needed after the single fresh main read.
+            first_streams = ["main", "folders"] if daily else ["folders", "main"]
             while True:
-                keys = ["folders", "main"] + [
-                    k for k in state["streams"] if k.startswith("folder:")
-                ]
+                keys = first_streams + [k for k in state["streams"] if k.startswith("folder:")]
                 active = next((k for k in keys if state["streams"][k]["status"] == "pending"), None)
                 if active is None:
                     break
                 item = state["streams"][active]
+                if daily and active == "folders" and not item["pages"]:
+                    if not self.primary_candidates(skip_hydration, 1, known_history):
+                        main = state["streams"]["main"]
+                        if (
+                            historical_stops is None
+                            or not main["pages"]
+                            or main["pages"][0]["errors"]
+                        ):
+                            item.update(status="blocked", reason="no_daily_candidates")
+                            self.save()
+                            continue
+                        paused = historical_stops()
+                        state["historical_fallback"] = True
+                if active in paused:
+                    item.update(status="paused", reason="historical_probe_stop")
+                    self.save()
+                    continue
                 if len(item["pages"]) >= state["limits"]["max_pages"]:
                     item.update(status="blocked", reason="page_limit")
                     self.save()
@@ -661,7 +705,7 @@ class Inventory:
             active = None
             pending_ids = [
                 pid
-                for pid in self.primary_candidates(skip_hydration, primary_limit)
+                for pid in self.primary_candidates(skip_hydration, primary_limit, known_history)
                 if state["posts"][pid]["hydration_status"] == "pending"
             ]
             for offset in range(0, len(pending_ids), hydrate_batch_size):

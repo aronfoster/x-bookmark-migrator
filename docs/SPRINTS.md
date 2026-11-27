@@ -19,9 +19,9 @@ observed outside the catalog and which ones actually reach the archive.
 [FOS-168](https://linear.app/fosterstech/issue/FOS-168) owns daily intake.
 Its next exit is one later save discovered by the scheduled worker with history
 pending. When new-save discovery is due, the timer checks a bounded first window. FOS-169
-owns historical coverage and probe stops. Verify the timer's empty-queue behavior
-separately: moving its eligible historical discovery pass to manual-only operation
-is a scheduling change for FOS-168 review. A later-save receipt establishes
+owns historical coverage and probe stops. The timer retains eligible historical
+discovery when its queue is empty and its main window has no eligible new save.
+The same pass enforces historical probe stops and the existing caps. A later-save receipt establishes
 daily intake only; it cannot establish continued historical discovery or
 authorize restarting a paused stream.
 
@@ -203,7 +203,12 @@ Live reads/writes or model processing stay within explicitly authorized scope.
 
 **M4. FOS-169/FOS-113.**
 
-The M2 worker may already drain during S3; S4 owns measured historical closeout.
+FOS-168's timer discovers candidates from one fresh main window and may drain
+already-queued archives. Its bounded folder reads establish category evidence
+for those main-window candidates. With an empty queue and no eligible new
+main-window save, the same scheduled pass can discover eligible folder-only
+history within its existing limits. FOS-169 owns the historical probe stops,
+per-stream coverage and active desktop drain. S4 owns measured closeout.
 
 - Process bounded main/folder windows, starting small and increasing only from
   observed safe results and spend. Reconcile billing without resetting reservations.

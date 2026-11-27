@@ -548,7 +548,12 @@ def archive_batch(inventory, drive, media_http, *, post_ids=None, limit=5):
                 "deletion_eligible": False,
             }
         )
-    return finish_batch(inventory.store, drive, rows)
+    return finish_batch(
+        inventory.store,
+        drive,
+        rows,
+        daily_pass=(inventory.state["pass_id"] if inventory.state.get("daily_parent") else None),
+    )
 
 
 def save_manifest(drive, rows):
@@ -574,9 +579,11 @@ def batch_receipt(manifest, rows, receipt_id):
     }
 
 
-def finish_batch(store, drive, rows):
+def finish_batch(store, drive, rows, *, daily_pass=None):
     receipt_id = secrets.token_hex(12)
     receipt = batch_receipt(save_manifest(drive, rows), rows, receipt_id)
+    if daily_pass is not None:
+        receipt["daily_pass"] = daily_pass
     name = "archive-" + receipt_id + ".private.json"
     # Store.write replaces atomically; a random new name plus explicit existence guard
     # keeps batch receipts immutable under the enclosing state lock.

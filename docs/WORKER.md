@@ -20,6 +20,38 @@ provider client. The only local write is acquiring/creating the shared lock.
 create Raindrops or DELETE. Adding `--allow-delete` explicitly permits both and
 requires every local rollout gate. There is no default live mode.
 
+The service runs `--once --live --allow-delete --scheduled`. When intake is due,
+the worker checks identity and reads one fresh main bookmark window, even with a
+queued archive or delayed item. An eligible main-window save takes priority.
+First-page folder reads can establish its category even in a previously
+drained folder. Other IDs observed during those category reads stay unselected.
+When the queue is empty and the main window has no eligible new save, the same
+pass can select folder-only history from eligible first pages. It shares the
+original request, item and spend limits. Stalled streams keep their historical
+stops and cursors. A delayed queued item prevents the historical fallback.
+A save without positive category evidence stays on X. The private run report
+counts these holds under `daily_category_unknown`. During historical fallback,
+`run_counts.historical_stops_unattributed` counts this owner's removal intents
+with missing folder identity. Any such intent holds the historical folder scan.
+Daily main-window intake can still obtain category evidence.
+
+Daily archive receipts identify their original inventory. If FOS-169 advances
+the historical baseline while a daily item is queued or its receipt awaits
+adoption, the worker retains the archive and the item's retry deadline. Removal
+then requires fresh discovery, archive verification and a plan against the
+current baseline. The private report counts demoted queue entries under
+`run_counts.superseded_queued`. Rediscovery can incur additional X reads and
+Drive uploads. On a daily removal both checkpoints are invalidated for
+cursor resume. The worker retains checkpoints as evidence for recovery and
+audit, including after removal.
+
+Intake and queue retries share the lock, provider resets and spending limits.
+The timer prioritizes eligible daily archives and can drain already-queued
+history within the same item limit. The worker updates historical coverage for
+the folder windows it actually reads during fallback. Each scheduled
+transaction records its own before/after folder comparison. The initial intake deadline
+honors up to one day of a legacy queue delay.
+
 For an owner-approved **specific** bookmark, `max_items=1` alone does not select
 that bookmark. `--apply-verified-plan` requires manual `--once --live
 --allow-delete`, every live gate, and `max_items=1`. It loads the protected
@@ -218,8 +250,7 @@ than deleting a checkpoint or resetting a month. Settlement authorizes no live w
   or inability to write a later error report cannot erase the prewritten deadline.
   Retryable Raindrop errors without provider reset evidence also wait a day.
   Per-item retry deadlines survive shared-batch adoption and govern queue selection;
-  an entirely delayed queue retains its inventory instead of invalidating queued
-  receipts with a new discovery pass. Fixed failure text goes to stderr/journald;
+  a scheduled item retry before the next intake deadline does not repeat the main-window read. Fixed failure text goes to stderr/journald;
   detailed evidence stays in the protected report.
 * OAuth rotation writes an intent before refresh and stores the new token atomically
   before other work. All normal CLI clients respect it. An interruption with the
