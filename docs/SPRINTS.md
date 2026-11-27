@@ -18,7 +18,10 @@ observed outside the catalog and which ones actually reach the archive.
 
 [FOS-168](https://linear.app/fosterstech/issue/FOS-168) owns daily intake.
 Its next exit is one later save discovered by the scheduled worker with history
-pending. The two workstreams can proceed independently.
+pending. When new-save discovery is due, the timer checks a bounded first window. Keep
+historical pagination, paused-stream probes and their restart decisions with
+the FOS-169 drain. The timer can process eligible queued items within the
+worker limits. Daily intake alone does not authorize a deep historical scan.
 
 ### Working rules
 
@@ -71,10 +74,10 @@ existing [worker contract](WORKER.md) and [repair procedure](READINESS.md).
 ### Scheduled new-save acceptance (FOS-168)
 
 1. Trace the normal systemd invocation, mode, installed revision and discovery
-   path. Compare the deployed worker with source. On main a due queued archive
-   bypasses discovery, and a delayed retry can defer it. Exercise the normal
-   path with pending history, including a paused historical stream. Fix the
-   smallest demonstrated cause while preserving historical probe stops.
+   path. Verify that a due new-save check discovers the later save with an
+   eligible historical item queued, an item waiting for retry, or a historical
+   stream paused. Preserve provider reset times, historical cursors and per-item
+   holds. Record the installed revision with the result.
 2. Under the existing host and provider authorizations, observe the timer pick
    up a genuinely later save with history still pending. Follow that same
    primary through durable local and Drive archive, catalog publication,
@@ -124,9 +127,31 @@ Group incomplete records by recoverable cause, try retained evidence first and
 measure changes to the visible window after each bounded batch. Follow the S4
 stop rule for stalled history while daily new-save checks keep their own cadence.
 
-Use the owner's authorized prepaid X balance. Record requests and outcomes and
-use provider billing to measure cost afterward. Keep historical reservations as
-evidence. Preserve the existing per-run operational limits and auto-reload setting.
+Count distinct saved primaries per primary reason and retain every overlapping
+blocker on the record. FOS-169 holds the current counts and protected evidence.
+Keep newly observed, captured, archive-complete and confirmed removed totals separate.
+
+| Primary reason | Evidence required to advance |
+| --- | --- |
+| Missing author or reference | Bind the exact missing identity to retained or targeted official evidence. Preserve the predecessor and independently restore the successor before promotion. A diagnostic replay alone leaves the record incomplete. |
+| Media origin | Establish the relationship between the attachment and its containing post. Media bytes alone cannot establish origin. |
+| Media byte or count limit | Preserve every declared attachment within the reviewed limits. Verify the complete content, Drive readback and independent restore for each one. A CDN size check or partial set leaves the record blocked. |
+| Article or missing media | Account for the obtainable Article body and each referenced cover or attachment key. Require matching media evidence and verified stored bytes before clearing the corresponding blocker. |
+| Unknown folder | Require positive placement evidence. Absence from a capped folder page cannot establish unfiled status. |
+| Archive verified, removal pending or uncertain | Recheck exact primary membership, archive, retrieval and the applicable Raindrop gate. Reconcile an uncertain prior attempt before retry. Count a removal only with confirmation. Preserve repair-specific removal holds. |
+
+The [owner's prepaid-X direction](https://linear.app/fosterstech/issue/FOS-169)
+authorizes migration and testing with auto-reload off. Record calls and outcomes
+and measure effective rates from provider billing afterward. Before any live
+worker pass, follow the [worker billing procedure](WORKER.md#modes-and-configuration):
+record the reviewed Console observation and check cumulative and per-run headroom.
+The worker enforces a $20 lifetime ceiling across the retained reservation ledger.
+At a local spend-cap stop, preserve the ledger. Use the optional offline
+`billing-cutoff` / `billing-settle` procedure only with the required owner-attested
+provider evidence. Settlement reconciles overlap and retains the ceiling. If
+the next batch still exceeds headroom, the worker needs a reviewed change to
+use more of the authorized balance; topping up or resetting the ledger cannot
+release that stop.
 
 ## S3 — search and categorization readiness
 
@@ -204,7 +229,7 @@ The M2 worker may already drain during S3; S4 owns measured historical closeout.
   cannot enforce that distinction, keep the affected job paused pending the S2
   correction, rather than claiming both stop and continuing intake are proven.
 - Retain permanent blockers without repeatedly paying to hydrate them; back off
-  transient failures and record next retry. Revisit S2's reason table as new
+  transient failures and record next retry. Revisit the [S2 reason table](#historical-migration-fos-169) as new
   classes appear and complete justified fixes; never roll fixable work into an
   unexplained owner waiver. Report known discovered/archived/
   searchable/removed/blocked counts, with globally deduplicated totals by stream.

@@ -8,7 +8,7 @@ Updated 27 November 2026 (America/Denver). Owner-directed v1/v2 scope.
 | --- | --- | --- |
 | Get existing bookmarks off X | Continue the active desktop drain. Verify and remove eligible items, repair recoverable archives, and capture newly exposed IDs. The ticket holds the single live count and protected-session handoff. | [FOS-169](https://linear.app/fosterstech/issue/FOS-169) |
 | Process tomorrow's save automatically | Trace the installed timer's normal worker path with history pending. Deliver a real later save through archive, catalog, Drive, Raindrop and confirmed unbookmark on a scheduled run. Verify duplicate-free restart and continuing backup coverage. | [FOS-168](https://linear.app/fosterstech/issue/FOS-168) |
-| Find and update that bookmark | Ask the actual Mnemosyne agent for remembered text or media. Open the item in Drive and Raindrop. Preview and approve one description correction, rebuild, and find the same bookmark again. Use the new save for the integrated demonstration. Work on retrieval and editing can start with the published catalog today. | [FOS-220](https://linear.app/fosterstech/issue/FOS-220) for retrieval and [FOS-170](https://linear.app/fosterstech/issue/FOS-170) for edits |
+| Find and update that bookmark | Ask the actual Mnemosyne agent for remembered text or media. Open the item in Drive and Raindrop. Preview and approve one description correction, rebuild, and find the same bookmark again. Rehearse on the published catalog. The integrated exit requires the same later save captured by the FOS-168 timer. | [FOS-220](https://linear.app/fosterstech/issue/FOS-220) for retrieval and [FOS-170](https://linear.app/fosterstech/issue/FOS-170) for edits |
 
 Historical migration has first priority. Daily intake and retrieval can progress
 alongside the live drain. The local catalog gives Mnemosyne access to saved
@@ -132,7 +132,7 @@ worker exit and S4 for the historical stopping rule.
 - Before X DELETE: complete archive/content/category/readback proof, actual external
   retrieval, fresh authenticated exact-primary Raindrop proof unless affirmatively
   exempt, historical repair and helper retirement, and explicit owner authorization.
-- Use the owner's authorized prepaid X credits with auto-reload off. Record actual
+- Use [the owner's authorized prepaid X credits](https://linear.app/fosterstech/issue/FOS-169) with auto-reload off. Follow the [worker billing preflight and cumulative limit](docs/WORKER.md). Record actual
   calls and outcomes and reconcile against provider billing afterward. Preserve
   historical accounting. New spending or content uploads require their own scope.
 - Owner personally runs reviewed privileged commands; no agent unrestricted sudo
