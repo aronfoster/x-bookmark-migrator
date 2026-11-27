@@ -85,6 +85,26 @@ used in tests. Read by exact string ID; URL spellings on x.com/twitter.com and
 renamed handles normalize to that ID. Do not use substring matching or coerce
 IDs through JavaScript numbers. No authenticated runtime invocation was tested.
 
+## Remembered clues and selected-result opening
+
+The Mnemosyne reader can run `catalog-search --catalog-dir DIR --query CLUE`
+with repeated `--query` arguments for its own reformulations. Each alternative
+matches whole words within one published field, independent of word order.
+The original clue has priority, then adjacent words. The response gives the
+total number of matching occurrences and up to three candidates. Match evidence
+is a typed field and quoted snippet. Shared quotes retain each saved context.
+Search includes source alt text, byte-bound descriptions and hidden attachments.
+
+Pass a candidate's saved primary and ordered manifest/payload SHA-256 pair to
+`catalog-lookup --catalog-dir DIR --post PRIMARY --snapshot MANIFEST PAYLOAD
+--restore-root ROOT`. Add its exact `--asset-id ID` for media. ROOT is the
+reader's mounted restore tree or the selected restored batch. Lookup reads the
+receipt-matched manifest and payload, returns full post context, and for media
+rechecks the selected file before returning a local display path. Worker
+hash-named batches resolve directly. Legacy batch names resolve by their
+manifest contents. A missing restore, changed bytes, or stale selection fails
+the open. Ordinary exact-ID lookup retains its existing behavior.
+
 ## Hide, describe and restore visibility
 
 ```sh

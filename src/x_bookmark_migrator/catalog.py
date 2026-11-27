@@ -702,6 +702,7 @@ COMMANDS = (
     "catalog-build",
     "catalog-verify",
     "catalog-lookup",
+    "catalog-search",
     "catalog-check",
     "catalog-annotate",
     "catalog-description-audit",
@@ -735,9 +736,13 @@ def add_commands(sub):
             p.add_argument("--annotations-file", type=Path)
         elif command == "catalog-drive-text":
             p.add_argument("--post", required=True)
+        elif command == "catalog-search":
+            p.add_argument("--query", action="append", required=True)
         elif command == "catalog-lookup":
             p.add_argument("--post", required=True)
             p.add_argument("--asset-id")
+            p.add_argument("--snapshot", nargs=2, metavar=("MANIFEST_SHA256", "PAYLOAD_SHA256"))
+            p.add_argument("--restore-root", type=Path)
         elif command == "catalog-raindrop-link":
             p.add_argument("--receipt-file", type=Path, required=True)
         elif command == "catalog-annotate":
@@ -773,7 +778,7 @@ def run(args):
                 raise PilotError("Invalid legacy description binding.")
             validate_description(note.get("descriptions", {}).get(binding))
         return {"legacy_descriptions": len(legacy), "awaiting_confirmation": pending}
-    if args.command in ("catalog-lookup", "catalog-check", "catalog-drive-text"):
+    if args.command in ("catalog-lookup", "catalog-search", "catalog-check", "catalog-drive-text"):
         output = PublicationReader(args.catalog_dir)
         if args.command == "catalog-drive-text":
             from .search_projection import drive_text
@@ -783,7 +788,19 @@ def run(args):
                 if record["post_id"] == pid:
                     return drive_text(record)
             raise PilotError("No exact saved primary for the Drive projection.")
+        if args.command == "catalog-search":
+            from .catalog_search import search
+
+            return search(read_catalog(output), args.query)
         if args.command == "catalog-lookup":
+            if args.snapshot or args.restore_root:
+                from .catalog_search import open_selection
+
+                if not (args.snapshot and args.restore_root):
+                    raise PilotError("Selected lookup requires both --snapshot and --restore-root.")
+                return open_selection(
+                    read_catalog(output), args.post, args.snapshot, args.restore_root, args.asset_id
+                )
             return {
                 "matches": lookup(read_catalog(output), args.post, args.asset_id),
                 "network_calls": 0,
