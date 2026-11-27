@@ -396,7 +396,7 @@ class Worker:
         item = self.state["items"].get(pid)
         return item is None or (item["state"] == "retryable" and item["retry_at"] <= self.clock())
 
-    def adopt(self, receipt_name, inventory):
+    def adopt(self, receipt_name, inventory, *, superseded=False):
         receipt = self.store.read(receipt_name)
         manifest = receipt["manifest"]
         child = self.restore_root / manifest["sha256"]
@@ -425,7 +425,7 @@ class Worker:
             previous = self.state["items"].get(pid)
             if (
                 previous
-                and receipt_name in self.state["batches"]
+                and (superseded or receipt_name in self.state["batches"])
                 and previous["receipt"] != receipt_name
             ):
                 # Refreshing a sibling in an old batch cannot supersede a later retry's receipt.
@@ -447,6 +447,8 @@ class Worker:
                 b in ("blocked_media_transport", "blocked_http_429", "blocked_http_503")
                 for b in row["blockers"]
             )
+            if superseded and state == "queued":
+                state = "retryable"  # Only fresh discovery can authorize another plan.
             if state == "blocked" and retryable:
                 state = "retryable"
             self.state["items"][pid] = {
@@ -476,33 +478,47 @@ class Worker:
             if not receipt or receipt["manifest"]["sha256"] != self.state["batches"][name]:
                 raise PilotError("Archived receipt missing or changed.")
         pending = [name for name in names if name not in self.state["batches"]]
+        daily_parents = {}
         for name in pending[: self.config["max_batches"]]:
             daily_pass = self.store.read(name).get("daily_pass")
-            self.adopt(
-                name, Inventory.load(self.store, daily_pass=daily_pass) if daily_pass else inventory
-            )
-        return len(pending) <= self.config["max_batches"]
+            if daily_pass is None:
+                self.adopt(name, inventory)
+                continue
+            bound = Inventory.read_pass(self.store, daily_pass)
+            if bound.state["owner_id"] != inventory.state["owner_id"]:
+                raise PilotError("Daily archive owner differs.")
+            parent = bound.state["daily_parent"]
+            daily_parents[daily_pass] = parent
+            self.adopt(name, bound, superseded=(parent != inventory.state["pass_id"]))
 
-    def paused_folder_streams(self, baseline):
-        paused = {
-            k for k, stream in baseline.state["streams"].items() if stream["status"] == "paused"
-        }
-        paused.update(
-            k
-            for k, stream in self.state["streams"].items()
-            if stream.get("window_exposure_status") == "stalled_on_blocked_window"
-        )
-        # Older transactions recorded the stop in their comparison, outside the worker journal.
-        latest = {}
-        for path in self.store.root.glob("unbookmark-*.window.private.json"):
-            comparison = self.store.read(path.name)
-            base = path.name.removesuffix(".window.private.json")
-            intent = self.store.read(base + ".intent.private.json")
-            stream = "folder:" + intent["verified"]["folder"]["id"]
-            observation = (intent["created_at"], comparison["window_status"] != "new_ids_observed")
-            latest[stream] = max(latest.get(stream, observation), observation)
-        paused.update(stream for stream, (_, stopped) in latest.items() if stopped)
-        return paused
+        # The desktop can advance the baseline under the same lock between timer runs.
+        # Keep receipts and retry deadlines. Never execute the plan bound to the old pass.
+        for pid, item in self.state["items"].items():
+            if (
+                item["state"] != "queued"
+                or pid in self.held
+                or item["checkpoint"] == inventory.name
+            ):
+                continue
+            daily_pass = self.store.read(item["receipt"]).get("daily_pass")
+            if daily_pass is not None:
+                if item["checkpoint"] != Inventory.checkpoint_name(daily_pass):
+                    raise PilotError("Queued daily receipt and checkpoint differ.")
+                if daily_pass not in daily_parents:
+                    daily_parents[daily_pass] = Inventory.read_pass(self.store, daily_pass).state[
+                        "daily_parent"
+                    ]
+                if daily_parents[daily_pass] == inventory.state["pass_id"]:
+                    continue
+            item.update(
+                state="retryable",
+                retry_at=item.get("retry_at", 0),
+                failure_reason="superseded_inventory",
+            )
+            self.counts["superseded_queued"] += 1
+        if self.counts["superseded_queued"]:
+            self.save()
+        return len(pending) <= self.config["max_batches"]
 
     def discover(self, *, scheduled=False, baseline=None):
         # Never resume a positional cursor across a run or DELETE.
@@ -517,13 +533,8 @@ class Worker:
             max_pages=1,
         )
         skipped = self.held | {pid for pid in self.state["items"] if not self.eligible(pid)}
-        paused = set()
-        if scheduled and baseline:
-            if "daily_parent" not in baseline.state:
-                skipped.update(
-                    pid for pid in baseline.state["posts"] if pid not in self.state["items"]
-                )
-            paused = self.paused_folder_streams(baseline)
+        if scheduled and baseline and "daily_parent" not in baseline.state:
+            skipped.update(pid for pid in baseline.state["posts"] if pid not in self.state["items"])
         report = inv.run(
             self.client,
             self.budget,
@@ -531,7 +542,6 @@ class Worker:
             hydrate_batch_size=20,
             skip_hydration=skipped,
             primary_limit=self.config["max_items"],
-            paused_streams=paused,
         )
         if not scheduled:
             self.coverage(inv)
@@ -550,6 +560,11 @@ class Worker:
                 )
             archived = archive_batch(inv, self.drive, self.media, post_ids=batch, limit=20)
             self.adopt(archived["private_receipt"], inv)
+            if scheduled:
+                self.counts["daily_category_unknown"] += sum(
+                    "blocked_category_unknown" in self.state["items"][pid]["blockers"]
+                    for pid in batch
+                )
         return inv
 
     def coverage(self, inv):

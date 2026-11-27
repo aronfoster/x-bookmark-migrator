@@ -119,6 +119,13 @@ def test_tampered_response_and_orphan_receipt(tmp_path):
         scan_native(store.root)
 
 
+def test_window_without_its_native_intent_stops_before_discovery(tmp_path):
+    store = Store(tmp_path / "evidence")
+    store.write("unbookmark-orphan.window.private.json", {"window_status": "observed_empty"})
+    with pytest.raises(PilotError, match="Orphan removal receipt"):
+        scan_native(store.root)
+
+
 def test_helper_mapping_retains_every_intent_and_private_provenance(tmp_path):
     store = Store(tmp_path / "helper")
     spec = helper(

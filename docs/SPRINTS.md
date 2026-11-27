@@ -343,7 +343,10 @@ Live reads/writes or model processing stay within explicitly authorized scope.
 
 **M4. FOS-169/FOS-113.**
 
-The M2 worker may already drain during S3; S4 owns measured historical closeout.
+FOS-168's timer discovers candidates from one fresh main window and may drain
+already-queued archives. Its bounded folder reads establish category evidence
+for those main-window candidates. FOS-169 owns folder-only discovery, historical
+probe stops and per-stream coverage on the desktop. S4 owns measured closeout.
 
 - Process bounded main/folder windows, starting small and increasing only from
   observed safe results and spend. Reconcile billing without resetting reservations.

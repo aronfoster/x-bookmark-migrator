@@ -1114,7 +1114,10 @@ def scheduled_cli(tmp_path, monkeypatch, store, source, clock):
         "paused",
         "unknown_category",
         "no_progress",
+        "observed_empty",
         "recover",
+        "orphan_parent",
+        "retry_parent",
     ],
 )
 def test_scheduled_service_discovers_later_save(migration, tmp_path, monkeypatch, capsys, history):
@@ -1132,9 +1135,10 @@ def test_scheduled_service_discovers_later_save(migration, tmp_path, monkeypatch
     old = Inventory.load(store)
     worker = make_worker(migration, tmp_path)
     worker.bootstrap(old)
-    if history == "no_progress":
-        source.ids = ["101", "102", "103"]
-        assert worker.run(allow_delete=True)["stop_reason"] == "no_new_ids_observed"
+    if history in {"no_progress", "observed_empty"}:
+        source.ids = ["101", "102", "103"] if history == "no_progress" else ["101"]
+        expected_stop = "no_new_ids_observed" if history == "no_progress" else "observed_empty"
+        assert worker.run(allow_delete=True)["stop_reason"] == expected_stop
         now[0] += 86401
         source.calls.clear()
     if history in {"delayed", "legacy_delayed"}:
@@ -1152,10 +1156,20 @@ def test_scheduled_service_discovers_later_save(migration, tmp_path, monkeypatch
         old.save()
         for item in worker.state["items"].values():
             item["state"] = "blocked"
+    if history in {"orphan_parent", "retry_parent"}:
+        for item in worker.state["items"].values():
+            item["state"] = "blocked"
     worker.save()
     old_items = copy.deepcopy(worker.state["items"])
     scheduled_cli(tmp_path, monkeypatch, store, source, clock)
-    source.ids = ["110", *source.ids, "111"]
+    if history == "paused":
+        # A legacy removal with a valid identity can lack modern verified-folder metadata.
+        from test_repair import native
+
+        prior = native(store, "199", 200, {"data": {"bookmarked": False}})
+        store.write(prior + ".window.private.json", {"window_status": "observed_empty"})
+    source.ids = ["110", *source.ids, "111", "112", "113"]
+    main_ids = {"101", "110"}
     main_reads = []
     folder_reads = []
     folder_lists = []
@@ -1168,7 +1182,7 @@ def test_scheduled_service_discovers_later_save(migration, tmp_path, monkeypatch
             return httpx.Response(
                 200,
                 json={
-                    "data": [post(pid) for pid in source.ids if pid in {"101", "110"}],
+                    "data": [post(pid) for pid in source.ids if pid in main_ids],
                     "includes": includes([]),
                     "meta": {"next_token": "unused"},
                 },
@@ -1188,8 +1202,6 @@ def test_scheduled_service_discovers_later_save(migration, tmp_path, monkeypatch
             folder_reads.append(route)
             if history == "unknown_category":
                 return httpx.Response(200, json={"data": [{"id": "199"}]})
-            if history == "no_progress" and route.endswith("/20"):
-                return httpx.Response(200, json={"data": [{"id": i} for i in source.ids[:2]]})
             if route.endswith("/20"):
                 return httpx.Response(200, json={"data": [{"id": "199"}]})
         return source.handle(request)
@@ -1214,31 +1226,60 @@ def test_scheduled_service_discovers_later_save(migration, tmp_path, monkeypatch
         assert not main_reads
         assert store.read(JOURNAL)["next_intake"] == clock() + 86400
         now[0] += 86400
-    if history == "recover":
+    if history in {"recover", "orphan_parent", "retry_parent"}:
 
         def interrupt_after_receipt(self, receipt, inventory):
             assert self.store.read(receipt)["daily_pass"] == inventory.state["pass_id"]
             raise KeyboardInterrupt
 
+        def interrupt_after_queue(self, inventory, *, scheduled):
+            assert scheduled
+            self.state["items"]["110"]["retry_at"] = clock() + 2 * 86400
+            self.save()
+            raise KeyboardInterrupt
+
         with monkeypatch.context() as crash:
-            crash.setattr(Worker, "adopt", interrupt_after_receipt)
+            if history == "retry_parent":
+                crash.setattr(Worker, "drain", interrupt_after_queue)
+            else:
+                crash.setattr(Worker, "adopt", interrupt_after_receipt)
             with pytest.raises(KeyboardInterrupt):
                 cli.main()
         assert not source.deletes and not source.provider.posts
         receipt_count = len(list(store.root.glob("archive-*.private.json")))
+        if history != "recover":
+            old_receipts = [store.read(p.name) for p in store.root.glob("archive-*.private.json")]
+            (old_daily,) = [receipt for receipt in old_receipts if receipt.get("daily_pass")]
+            old = Inventory(store, "100")
+            with pytest.raises(PilotError, match="another active inventory"):
+                Inventory.load(store, daily_pass=old_daily["daily_pass"])
+        now[0] += 86401
+    if history == "retry_parent":
+        # A fresh baseline and a future item deadline must not strand unrelated new saves.
+        main_ids.add("114")
+        source.ids.insert(0, "114")
+        retry_at = store.read(JOURNAL)["items"]["110"]["retry_at"]
+        assert cli.main() == 0, capsys.readouterr()
+        deferred = store.read(JOURNAL)["items"]["110"]
+        assert deferred["state"] == "retryable" and deferred["retry_at"] == retry_at
+        assert [r.url.path.split("/")[-1] for r in source.deletes] == ["114"]
         now[0] += 86401
     assert cli.main() == 0, capsys.readouterr()
-    expected_reads = 2 if history == "recover" else 1
+    expected_reads = 2 if history in {"recover", "orphan_parent", "retry_parent"} else 1
+    if history == "retry_parent":
+        expected_reads += 1
     assert len(main_reads) == expected_reads
     if history == "recover":
         assert len(list(store.root.glob("archive-*.private.json"))) == receipt_count
     if history == "unknown_category":
         item = store.read(JOURNAL)["items"]["110"]
         assert item["state"] == "blocked" and "blocked_category_unknown" in item["blockers"]
-        assert not any(route.endswith("/20") for route in folder_reads)
+        assert any(route.endswith("/20") for route in folder_reads)
+        assert store.read("worker-report.private.json")["run_counts"]["daily_category_unknown"] == 1
         assert not source.deletes and not source.provider.posts
         return
-    assert [r.url.path.split("/")[-1] for r in source.deletes] == ["110"]
+    expected_removed = ["114", "110"] if history == "retry_parent" else ["110"]
+    assert [r.url.path.split("/")[-1] for r in source.deletes] == expected_removed
     attempt, _ = latest_attempt(store, "100", "110")
     assert store.read(attempt + ".intent.private.json")["inventory_post_ids"] == sorted(
         old.state["posts"]
@@ -1248,17 +1289,25 @@ def test_scheduled_service_discovers_later_save(migration, tmp_path, monkeypatch
     assert Inventory.load(store).name == old.name
     assert "199" not in journal["items"]
     assert journal["items"]["110"]["discovery_state"] == "raindrop"
+    if history in {"retry_parent", "orphan_parent"}:
+        current = store.read(journal["items"]["110"]["receipt"])
+        assert current["daily_pass"] != old_daily["daily_pass"]
+        assert (
+            Inventory.load(store, daily_pass=current["daily_pass"]).state["daily_parent"]
+            == old.state["pass_id"]
+        )
+        assert store.read("archive-" + old_daily["receipt_id"] + ".private.json") == old_daily
     if history == "paused":
-        assert not any(route.endswith("/20") for route in folder_reads)
+        assert any(route.endswith("/20") for route in folder_reads)
         assert Inventory.load(store).state["streams"]["folder:20"]["status"] == "paused"
 
-    if history == "no_progress":
-        assert not any(route.endswith("/10") for route in folder_reads)
+    if history in {"no_progress", "observed_empty"}:
+        assert any(route.endswith("/10") for route in folder_reads)
     assert (
         "unbookmark_attempt_requires_fresh_pass" in Inventory.load(store).state["continuity_notes"]
     )
-    assert len(read_catalog(source.catalog)) == 4
-    assert len(source.provider.posts) == 1
+    assert len(read_catalog(source.catalog)) == 3 + len(expected_removed)
+    assert len(source.provider.posts) == len(expected_removed)
     calls = len(source.calls), len(server.calls), len(source.provider.calls)
     now[0] += 300
     assert cli.main() == 0
@@ -1274,6 +1323,6 @@ def test_scheduled_service_discovers_later_save(migration, tmp_path, monkeypatch
     assert exit_status == int(report["stop_reason"] is not None)
     assert len(main_reads) == expected_reads + 1
     assert sum(r.url.path.endswith("/110") for r in source.deletes) == 1
-    assert len(source.provider.posts) == 1
+    assert len(source.provider.posts) == len(expected_removed)
     if history in {"delayed", "paused"}:
         assert len(folder_lists) == old_lists

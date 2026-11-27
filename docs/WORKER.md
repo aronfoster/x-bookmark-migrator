@@ -23,18 +23,26 @@ requires every local rollout gate. There is no default live mode.
 The service runs `--once --live --allow-delete --scheduled`. When intake is due,
 the worker checks identity and reads one fresh main bookmark window, even with a
 queued archive or delayed item. Only main-window candidates trigger first-page
-folder reads for category evidence. The worker skips paused folder streams,
-blocked historical windows and folders whose latest removal comparison stopped
-for lack of progress. Folder-only observations never become daily candidates.
-A save without the required positive folder evidence stays on X.
+folder reads for category evidence, including in a previously drained folder.
+A historical pause stays on its original checkpoint and cursor. The daily pass
+selects only IDs from its main window, even if other IDs appear in a folder.
+A save without positive category evidence stays on X. The private run report
+counts these holds under `daily_category_unknown`.
 
-Daily archive receipts identify their own inventory pass under the active
-historical checkpoint. A restart can therefore adopt a completed receipt or
-retry its item without replacing the historical inventory. Both checkpoints
-are invalidated for cursor resume before a daily removal. Intake and queue
-retries share the lock, global provider reset and request/spending bounds.
-The scheduled worker prioritizes due daily archives within the existing removal
-limit and uses remaining slots for eligible history. The initial intake deadline
+Daily archive receipts identify their original inventory. If FOS-169 advances
+the historical baseline while a daily item is queued or its receipt awaits
+adoption, the worker retains the archive and the item's retry deadline. Removal
+then requires fresh discovery, archive verification and a plan against the
+current baseline. On a daily removal both checkpoints are invalidated for
+cursor resume. The worker retains checkpoints as evidence for recovery and
+audit, including after removal.
+
+Intake and queue retries share the lock, provider resets and spending limits.
+The timer prioritizes eligible daily archives and can drain already-queued
+history within the same item limit. FOS-169's desktop passes own folder-only
+historical discovery and update the historical per-stream coverage report.
+The report describes its last historical observation; each scheduled
+transaction records its own before/after folder comparison. The initial intake deadline
 honors up to one day of a legacy queue delay.
 
 For an owner-approved **specific** bookmark, `max_items=1` alone does not select

@@ -226,12 +226,20 @@ class Inventory:
         active = store.read("inventory-active.private.json")
         if not active:
             raise PilotError("No inventory to export.")
-        result = cls.__new__(cls)
-        result.store = store
-        result.name = cls.checkpoint_name(active["pass_id"] if daily_pass is None else daily_pass)
-        result.state = load_checkpoint(store, result.name)
+        result = cls.read_pass(store, active["pass_id"] if daily_pass is None else daily_pass)
         if daily_pass is not None and result.state.get("daily_parent") != active["pass_id"]:
             raise PilotError("Daily archive belongs to another active inventory.")
+        return result
+
+    @classmethod
+    def read_pass(cls, store, pass_id):
+        """Read retained evidence. Removal callers use load() to verify the active binding."""
+        result = cls.__new__(cls)
+        result.store = store
+        result.name = cls.checkpoint_name(pass_id)
+        result.state = load_checkpoint(store, result.name)
+        if result.state["pass_id"] != pass_id:
+            raise PilotError("Inventory pass identity differs from its checkpoint.")
         return result
 
     @staticmethod
@@ -578,7 +586,6 @@ class Inventory:
         hydrate_batch_size=100,
         skip_hydration=(),
         primary_limit=None,
-        paused_streams=(),
     ):
         validate_run_limits(max_calls, hydrate_batch_size)
         if primary_limit is not None and (type(primary_limit) is not int or primary_limit < 1):
@@ -642,11 +649,9 @@ class Inventory:
                 if active is None:
                     break
                 item = state["streams"][active]
-                if daily and active != "main" and active in paused_streams:
-                    item.update(status="paused", reason="historical_stream_paused")
-                    continue
                 if daily and active == "folders" and not self.primary_candidates(skip_hydration, 1):
                     item.update(status="blocked", reason="no_daily_candidates")
+                    self.save()
                     continue
                 if len(item["pages"]) >= state["limits"]["max_pages"]:
                     item.update(status="blocked", reason="page_limit")
