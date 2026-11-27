@@ -4,12 +4,14 @@ from .catalog import drive_link, has_bound_description, raindrop_link
 from .drive import digest
 from .source import source_url
 
-RENDERER_VERSION = 2
+RENDERER_VERSION = 3
 
 
 def drive_text(record):
     pid = record["post_id"]
     lines = ["Saved post: " + source_url(pid)]
+    if "approved_description" in record:
+        lines.append("Approved description: " + record["approved_description"])
     if "category_override" in record:
         lines.append("Approved category: " + record["category_override"])
     if "raindrop_id" in record:

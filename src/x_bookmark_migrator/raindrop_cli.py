@@ -4,13 +4,14 @@ import json
 import os
 from pathlib import Path
 
+from . import correction
 from .catalog import checked_bytes, link_raindrop, primary_post_text, private_bytes, read_catalog
 from .core import PilotError
 from .publication import PublicationStore
 from .raindrop import RaindropAdapter, require_distinct_state_dirs
 from .source import source_url
 
-COMMANDS = ("raindrop-inventory", "raindrop-ensure", "raindrop-verify")
+COMMANDS = ("raindrop-inventory", "raindrop-ensure", "raindrop-verify", "bookmark-correction")
 
 
 def adapter_options(parser):
@@ -33,6 +34,18 @@ def add_commands(sub):
     for command in COMMANDS:
         p = sub.add_parser(command)
         adapter_options(p)
+        if command == "bookmark-correction":
+            p.add_argument("--catalog-dir", type=Path, required=True)
+            actions = p.add_subparsers(dest="action", required=True)
+            actions.add_parser("inspect").add_argument("--link", required=True)
+            preview = actions.add_parser("preview")
+            preview.add_argument("--link", required=True)
+            preview.add_argument("--description", required=True)
+            preview.add_argument("--asset-id")
+            preview.add_argument("--sha256")
+            for action in ("approve", "decline"):
+                actions.add_parser(action).add_argument("--preview-id", required=True)
+            continue
         if command != "raindrop-inventory":
             p.add_argument("--post-id", required=True)
         if command == "raindrop-ensure":
@@ -49,6 +62,8 @@ def add_commands(sub):
 
 def run(args):
     adapter = adapter_from_args(args)
+    if args.command == "bookmark-correction":
+        return correction.run(adapter, PublicationStore(args.catalog_dir), args)
     if args.command == "raindrop-inventory":
         snapshot = adapter.enumerate_now()
         return {

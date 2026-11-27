@@ -23,6 +23,7 @@ def search_fields(record, version):
     pid = record["post_id"]
     yield pid, None, "category", version["category"]
     yield pid, None, "approved_category", record.get("category_override")
+    yield pid, None, "approved_description", record.get("approved_description")
     for folder in version["folders"]:
         for name in folder["names"]:
             yield pid, None, "folder", name

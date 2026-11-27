@@ -312,6 +312,23 @@ class RaindropAdapter:
         if type(raindrop_id) is not int or raindrop_id <= 0:
             raise blocked("invalid_raindrop_id")
         body = self._get_evidence(pid, raindrop_id)
+        item = self._active_item(body, raindrop_id)
+        rid, cid = item_identity(item)
+        if raindrop_post_id(item["link"]) != pid:
+            raise blocked("wrong_primary_post")
+        return {
+            "schema_version": 1,
+            "source_post_id": pid,
+            "source_post_url": source_url(pid),
+            "raindrop_id": rid,
+            "verified_at": now(),
+            "primary_link": item["link"],
+            "collection_id": cid,
+            "response_sha256": digest(encode(body)),
+        }, item
+
+    @staticmethod
+    def _active_item(body, raindrop_id):
         if (
             not isinstance(body, dict)
             or body.get("result") is not True
@@ -326,18 +343,13 @@ class RaindropAdapter:
             or item.get("removed", False) is not False
         ):
             raise blocked("inactive_or_wrong_raindrop")
-        if raindrop_post_id(item["link"]) != pid:
-            raise blocked("wrong_primary_post")
-        return {
-            "schema_version": 1,
-            "source_post_id": pid,
-            "source_post_url": source_url(pid),
-            "raindrop_id": rid,
-            "verified_at": now(),
-            "primary_link": item["link"],
-            "collection_id": cid,
-            "response_sha256": digest(encode(body)),
-        }, item
+        return item
+
+    def read_active_item(self, rid):
+        return self._active_item(self._call("get", rid), rid)
+
+    def put_excerpt(self, rid, description):
+        self._call("update-excerpt-json", rid, payload={"excerpt": description})
 
     def _get_evidence(self, pid, raindrop_id):
         body = self._call("get", raindrop_id)
