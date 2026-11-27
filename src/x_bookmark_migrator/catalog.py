@@ -85,6 +85,10 @@ def restored_media_filename(pid, asset):
     return f"{exact_id(pid)}_{exact_id(asset['post_id'])}_{asset['index']:02d}.{extension}"
 
 
+def catalog_relative_url(output, path):
+    return quote(os.path.relpath(path, output.root), safe="/")
+
+
 def restored_media_path(output, link, filename):
     """Accept catalog.build's relative URL inside the catalog's archive tree."""
     archive = output.root.parent
@@ -94,7 +98,7 @@ def restored_media_path(output, link, filename):
         relative.is_absolute()
         or not path.is_relative_to(archive)
         or path.name != filename
-        or link != quote(os.path.relpath(path, output.root), safe="/")
+        or link != catalog_relative_url(output, path)
     ):
         raise PilotError("Invalid local archive link.")
     # A canonical sibling link may begin with ../. No symlinks or writable
@@ -179,7 +183,7 @@ def build(batches, output, *, apply_curation=True):
                             raise PilotError("Archived media container mismatch.")
                         media.update(
                             availability="local_hash_verified",
-                            local_url=quote(os.path.relpath(path, output.root), safe="/"),
+                            local_url=catalog_relative_url(output, path),
                         )
                 elif not payload["blockers"]:
                     raise PilotError("Unblocked archive has missing media receipt.")
@@ -502,6 +506,23 @@ def projection_bytes(records):
         "index.html": render(records).encode(),
         "source-links.jsonl": b"".join(encode(r) for r in source_sidecar(records)),
     }
+
+
+BATCH_INPUTS = "catalog-batches.private.json"
+
+
+def remember_batches(output, batches, *, replace=False):
+    """Keep the actual rebuild inputs private, under the catalog writer lock."""
+    prior = {} if replace else output.read(BATCH_INPUTS) or {}
+    inputs = prior.copy()
+    new = {}
+    for directory, path in batches:
+        manifest = json.loads(private_bytes(path))["manifest"]["sha256"]
+        # build() keeps the first copy of a duplicate snapshot within this build.
+        new.setdefault(manifest, [str(Path(directory).resolve()), str(Path(path).absolute())])
+    inputs.update(new)
+    if replace or inputs != prior:
+        output.write(BATCH_INPUTS, inputs)
 
 
 def publish(output, records):
@@ -835,6 +856,7 @@ def run(args):
             records = build(args.batch, output)
             if args.command == "catalog-verify":
                 return verify_publication(output, records, args.expected_records)
+            remember_batches(output, args.batch, replace=True)
             publish(output, records)
             return {"records": len(records), "network_calls": 0, "deletion_eligible": False}
         records = read_catalog(output)

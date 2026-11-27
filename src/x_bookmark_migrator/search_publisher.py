@@ -1,8 +1,18 @@
-"""Publish verified catalog text to a dedicated Drive folder. No live CLI or schedule."""
+"""Publish verified catalog text to a dedicated Drive folder."""
+
+import json
+from pathlib import Path
 
 import httpx
 
-from .catalog import build, verify_publication
+from .catalog import (
+    BATCH_INPUTS,
+    build,
+    catalog_relative_url,
+    checked_bytes,
+    private_bytes,
+    verify_publication,
+)
 from .core import PilotError, exact_id
 from .drive import FOLDER, UPLOAD, Drive, DriveHTTPError, checked, digest, drive_id, encode
 from .publication import publication_bytes
@@ -83,10 +93,98 @@ def publish_search(
     store, catalog, batches, *, expected_records, catalog_sha256, root, parent, http
 ):
     """Caller supplies reviewed inputs and transport. Serialize with archive and catalog writers."""
+    with store.locked():
+        return _publish_under_state_lock(
+            store,
+            catalog,
+            batches,
+            expected_records=expected_records,
+            catalog_sha256=catalog_sha256,
+            root=root,
+            parent=parent,
+            http=http,
+        )
+
+
+def _worker_batches(worker, lines):
+    catalog, store = worker.catalog, worker.store
+    # Older workers already pinned ordinary receipts and restored each under its hash.
+    # Recorded writer inputs also cover manual full builds and promoted repair batches.
+    manual = catalog.read(BATCH_INPUTS) or {}
+    adopted = {
+        sha: (worker.restore_root / sha, store.path(name))
+        for name, sha in worker.state["batches"].items()
+    }
+    inputs = {**adopted, **manual}
+    # A manual build and a worker can publish the same batch from different restores.
+    # Select the directory used for published media. build() verifies all its actual bytes.
+    worker_urls = {
+        sha: catalog_relative_url(catalog, adopted[sha][0])
+        for sha in adopted.keys() & manual.keys()
+    }
+    if worker_urls:
+        for line in lines:
+            for version in json.loads(line)["versions"]:
+                sha = version["manifest"]["sha256"]
+                if sha in worker_urls and any(
+                    asset.get("local_url", "").rpartition("/")[0] == worker_urls[sha]
+                    for asset in version["media"]
+                ):
+                    inputs[sha] = adopted[sha]
+    primaries = set()
+    for sha, (directory, path) in inputs.items():
+        receipt = json.loads(private_bytes(path))
+        manifest = receipt["manifest"]
+        require(manifest["sha256"] == sha, "Search batch receipt changed.")
+        rows = checked_bytes(Path(directory) / "manifest.jsonl", manifest).splitlines()
+        require(len(rows) == receipt["records"], "Search batch population differs from receipt.")
+        primaries.update(exact_id(json.loads(row)["post_id"]) for row in rows)
+    return inputs.values(), len(primaries)
+
+
+def publish_current(worker, parent):
+    """Called after migration while the normal live worker still owns the state lock."""
+    store, catalog, drive = worker.store, worker.catalog, worker.drive
+    with catalog.locked():
+        state = store.read(STATE)
+        path = catalog.path("catalog.jsonl")
+        if not path.exists() and state is None and not worker.state["batches"]:
+            return None
+        raw = publication_bytes(path)
+        generation = digest(raw)
+        pin = store.read("drive-destination.private.json")
+        if (
+            state
+            and pin
+            and pin.get("root") == drive.root
+            and state["destination"] == {**pin, "parent": parent}
+            and state["renderer"] == RENDERER_VERSION
+            and state["complete"] == generation
+        ):
+            return None
+
+        batches, population = _worker_batches(worker, raw.splitlines())
+    # An annotation can land between locks. The publisher fences the pinned generation.
+    return _publish_under_state_lock(
+        store,
+        catalog,
+        batches,
+        expected_records=population,
+        catalog_sha256=generation,
+        root=drive.root,
+        parent=parent,
+        http=drive.http,
+    )
+
+
+def _publish_under_state_lock(
+    store, catalog, batches, *, expected_records, catalog_sha256, root, parent, http
+):
     require(not http.follow_redirects, "Search publication requires redirects disabled.")
     parent = drive_id(parent)
     require(store.root != catalog.root and root != parent, "Distinct search destinations required.")
-    with store.locked(), catalog.locked():
+
+    with catalog.locked():
 
         def current_generation():
             require(

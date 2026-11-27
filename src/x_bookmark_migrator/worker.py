@@ -24,6 +24,7 @@ from .catalog import (
     publish,
     read_annotations,
     read_catalog,
+    remember_batches,
 )
 from .core import TOKEN_ROTATION, Client, PilotError
 from .discovery_gate import positive_media_only
@@ -157,6 +158,10 @@ class GuardedHTTP:
     def __init__(self, http, gate, provider):
         self.http, self.gate, self.provider = http, gate, provider
 
+    @property
+    def follow_redirects(self):
+        return self.http.follow_redirects
+
     def request(self, method, url, **kwargs):
         self.gate.check()
         response = self.http.request(method, url, **kwargs)
@@ -168,6 +173,9 @@ class GuardedHTTP:
 
     def post(self, url, **kwargs):
         return self.request("POST", url, **kwargs)
+
+    def patch(self, url, **kwargs):
+        return self.request("PATCH", url, **kwargs)
 
     def delete(self, url, **kwargs):
         return self.request("DELETE", url, **kwargs)
@@ -264,7 +272,7 @@ def require_catalog_versions(records, chains):
             raise PilotError("Catalog lacks the bound predecessor or donor version.")
 
 
-def merge_publication(output, incoming, *, required_versions=()):
+def merge_publication(output, incoming, *, batches=(), required_versions=()):
     """State lock -> catalog lock. Keep every old version and owner annotation."""
     with output.locked():
         prior = read_catalog(output) if output.path("catalog.jsonl").exists() else []
@@ -285,6 +293,8 @@ def merge_publication(output, incoming, *, required_versions=()):
                 else:
                     target["versions"].append(copy.deepcopy(version))
         records = [merged[k] for k in sorted(merged)]
+        if batches:
+            remember_batches(output, batches)
         publish(output, apply_annotations(records, read_annotations(output)))
 
 

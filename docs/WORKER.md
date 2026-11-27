@@ -127,6 +127,7 @@ Private JSON configuration fields:
 | --- | --- |
 | `schema_version` | `1` |
 | `owner_id`, `drive_folder_id` | Locally verified existing identities |
+| `drive_search_folder_id` | Optional ID of the dedicated, private search-text folder directly under the pinned archive root. Set in the existing protected worker configuration to enable publication. The first run indexes the complete verified catalog. |
 | `catalog_dir`, `restore_dir`, `raindrop_ledger_dir`, `raindrop_script` | Verified absolute paths to existing runtime resources |
 | `max_items` | 1–50; start at 1 for local acceptance |
 | `max_calls` | 1–100; shared across inventory/enrichment/DELETE and reserved after-reads |
@@ -202,6 +203,34 @@ lifetime limit and narrower run, request, and manual monthly limits still apply.
 Partial or repeated settlement is unsupported. An incomplete checkpoint or
 monthly regression stops reservations: retain all files for inspection rather
 than deleting a checkpoint or resetting a month. Settlement authorizes no live work.
+
+### Publish searchable text to Drive
+
+After an ordinary live worker pass, the configured worker picks up the latest
+catalog generation under the state and catalog locks. The same service command
+also picks up an offline approved edit on a tick when paid intake is not due.
+A completed, unchanged generation and renderer need no further requests.
+Offline and exact-plan modes retain their existing scope. Provider deferrals
+continue to apply. Search publication follows the migration transaction. A
+failure can leave search pending after an item was successfully archived or
+removed. Retry the ordinary service path and inspect the search journal and
+the existing migration report separately.
+
+Use the existing owner grant and archive root. Start with an empty, sole-owner
+child folder reserved for this writer, or the previously pinned folder with its
+mapping restored. The publisher checks its parent, permissions, and contents.
+Its private journal records the folder, per-primary Drive IDs, pending writes
+and completed catalog digest. Preserve it alongside the Drive allocation journal.
+
+The worker uses its adopted receipts and the actual restore/receipt pairs from
+catalog builds and repair promotions. The catalog writer keeps those paths in
+owner-only `catalog-batches.private.json`; include it with the protected catalog
+backup. Legacy worker receipts use their existing hash-named restores. For a
+pre-upgrade catalog containing additional operator-named restores or repair
+versions, repeat the existing full offline `catalog-build` with its original
+batch pairs and verify it before enabling search. A missing input or different
+projection stops publication. Use the existing [client probes](SEARCH_DESIGN.md#three-ways-to-find-the-same-saved-item)
+to measure indexing after byte readback.
 
 ## Recovery and safety
 

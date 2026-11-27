@@ -182,11 +182,8 @@ def run(args):
             result = write_repairs(store, drive, media_http, selected, author_restore=output)
             if catalog is not None:
                 # The merge applies curation to the full corpus under the catalog lock.
-                incoming = build(
-                    [(output.root, store.path(result["private_receipt"]))],
-                    catalog,
-                    apply_curation=False,
-                )
+                batches = [(output.root, store.path(result["private_receipt"]))]
+                incoming = build(batches, catalog, apply_curation=False)
                 if any(
                     a.get("availability") != "local_hash_verified"
                     for r in incoming
@@ -194,7 +191,7 @@ def run(args):
                     for a in v["media"]
                 ):
                     raise PilotError("Author successor lacks verified restored media.")
-                merge_publication(catalog, incoming, required_versions=chains)
+                merge_publication(catalog, incoming, batches=batches, required_versions=chains)
                 result["catalog_merged"] = True
             return result
         if args.command == "archive-probe":

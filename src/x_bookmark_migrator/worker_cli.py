@@ -14,6 +14,7 @@ from .core import PilotError, Store, exact_id
 from .drive import MAX_BYTES, Drive, digest, encode
 from .publication import PublicationStore
 from .raindrop import RaindropAdapter, require_distinct_state_dirs
+from .search_publisher import publish_current
 from .worker import (
     CumulativeBudget,
     Deferral,
@@ -355,6 +356,21 @@ def run(args):
                 if not args.scheduled:
                     worker.state["next_daily"] = 0
                 result = worker.run(allow_delete=args.allow_delete, scheduled=args.scheduled)
+                parent = config.get("drive_search_folder_id")
+                if parent is not None and not gate.remaining():
+                    try:
+                        published = publish_current(worker, parent)
+                    except PilotError as exc:
+                        raise PilotError(
+                            f"Drive search publication pending. {exc}", code=exc.code
+                        ) from exc
+                    except (httpx.HTTPError, OSError) as exc:
+                        raise PilotError(
+                            "Drive search publication pending. Check the restore inputs and "
+                            "reconcile the existing search journal on the next live worker pass."
+                        ) from exc
+                    if published:
+                        result.update(drive_search=published, quiet=False)
             result.pop("actual_billing", None)
             result["actual_observed_usd"] = str(money(bill["actual_usd"]))
             return result
