@@ -1,5 +1,6 @@
 """Manual, offline selection. A saved positive is not a fresh removal check."""
 
+import json
 import re
 import time
 from collections import defaultdict
@@ -9,7 +10,13 @@ import httpx
 
 from . import large_mp4
 from .archive import batch_receipt
-from .catalog import raindrop_link, read_annotations, read_catalog
+from .catalog import (
+    raindrop_link,
+    read_annotations,
+    read_catalog,
+    restored_media_filename,
+    restored_media_path,
+)
 from .core import PilotError, Store, exact_id, validate_page
 from .drive import Drive, digest, encode
 from .inventory import Inventory
@@ -55,6 +62,8 @@ def repair_anchor(store, plan, drive_root):
     binding = dict(
         plan_sha256=plan, max_asset_bytes=intent["max_asset_bytes"], drive_root=drive_root
     )
+    if receipt.get("reason") == "retained_author":
+        binding["reason"] = "retained_author"
     by_id = {exact_id(row["post_id"]): row for row in rows}
     if (
         intent != {**binding, "rows": rows}
@@ -129,6 +138,8 @@ def archive_anchors(store, drive_root):
         if not match:
             continue
         receipt, rows = repair_anchor(store, match[1], drive_root)
+        if receipt.get("reason") == "retained_author":
+            continue  # Removal verification cannot replay the separate donor evidence yet.
         if receipt["max_asset_bytes"] > large_mp4.MAX_BYTES:
             continue  # A remote-only repair cannot stand in for an exact completion.
         manifest = receipt["manifest"]
@@ -144,6 +155,25 @@ def archive_anchors(store, drive_root):
 def require_complete_history(config):
     if config.get("gates", {}).get("removal_sources_complete") is not True:
         raise PilotError("Complete removal history must be confirmed before backlog selection.")
+
+
+def ordinary_repair_payload(catalog, pid, version):
+    """Old receipts have no kind. Classify only the restored, receipt-bound successor."""
+    receipt = version["payload_receipt"]
+    for asset in version["media"]:
+        if not asset.get("local_url"):
+            continue
+        try:
+            path = restored_media_path(
+                catalog, asset["local_url"], restored_media_filename(pid, asset)
+            )
+            data = publication_bytes(path.with_name(pid + ".json"))
+        except FileNotFoundError:
+            continue
+        if len(data) == receipt["size_bytes"] and digest(data) == receipt["sha256"]:
+            payload = json.loads(data)
+            return payload.get("post_id") == pid and "retained_author_source" not in payload
+    return False
 
 
 def select_backlog(store, catalog, config, folder, catalog_sha256):
@@ -228,6 +258,10 @@ def select_backlog(store, catalog, config, folder, catalog_sha256):
                             for k in ("category", "folders", "blockers", "archive_status")
                         )
                     ):
+                        continue
+                    # Untagged legacy receipts may also name a donor-dependent
+                    # successor. Only its original archived bytes distinguish it.
+                    if source is None and not ordinary_repair_payload(catalog, pid, version):
                         continue
                 if source is not None:
                     media = [

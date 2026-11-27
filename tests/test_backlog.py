@@ -81,22 +81,44 @@ def test_manual_backlog_reads_latest_window_and_exact_repaired_version(migration
         select_backlog(store, catalog, cfg, "10", sha)
 
 
-def test_completed_repair_requires_published_exact_payload_and_bound_plan(migration, tmp_path):
+@pytest.mark.parametrize("repair", ["media", "tagged_author", "legacy_author"])
+def test_completed_repair_requires_published_exact_payload_and_bound_plan(
+    migration, tmp_path, repair
+):
     store, drive, _, source, client, archived, _, _ = migration
     cfg = dict(config(tmp_path), helper_descriptors=[])
     catalog = source.catalog
     original = store.read(archived["private_receipt"])["manifest"]
-    row, *_ = map(json.loads, drive.verify(original).splitlines())
+    row, donor, *_ = map(json.loads, drive.verify(original).splitlines())
+    if repair == "legacy_author":
+        payload = json.loads(drive.verify(row["payload"]))
+        evidence = payload["source_evidence"]
+        evidence["response"]["includes"]["users"] = []
+        payload["retained_author_source"] = {
+            "manifest": original,
+            "payload": donor["payload"],
+            "post_id": donor["post_id"],
+            "envelope_sha256": digest(
+                encode(json.loads(drive.verify(donor["payload"]))["source_evidence"])
+            ),
+        }
+        data = encode(payload)
+        row["payload"] = drive.save(
+            row["category"], row["post_id"] + ".json", data, "application/json"
+        )
+        (tmp_path / "restored" / (row["post_id"] + ".json")).write_bytes(data)
     manifest = save_manifest(drive, [row])
     plan = "e" * 64
     name = f"repair-{plan}.receipt.private.json"
     binding = dict(plan_sha256=plan, max_asset_bytes=drive.max_bytes, drive_root=drive.root)
+    if repair == "tagged_author":
+        binding["reason"] = "retained_author"
     receipt = {**batch_receipt(manifest, [row], plan), **binding}
     store.create(f"repair-{plan}.manifest-intent.private.json", {**binding, "rows": [row]})
     records = read_catalog(catalog)
     record = next(r for r in records if r["post_id"] == row["post_id"])
     (predecessor,) = record["versions"]
-    successor = dict(predecessor, manifest=manifest)
+    successor = dict(predecessor, manifest=manifest, payload_receipt=row["payload"])
     predecessor.update(archive_status="blocked", blockers=["blocked_byte_limit"])
     record["versions"].append(successor)
     source.ids = [row["post_id"]]
@@ -109,12 +131,43 @@ def test_completed_repair_requires_published_exact_payload_and_bound_plan(migrat
 
     assert inspect() == []  # Frozen manifest intent is not completion evidence.
     store.create(name, receipt)
+    store.write("config.json", cfg)
+    parser = argparse.ArgumentParser()
+    worker_cli.add_commands(parser.add_subparsers(dest="command"))
+    args = parser.parse_args(
+        [
+            "worker",
+            "--config",
+            str(store.path("config.json")),
+            "--inspect-backlog",
+            "10",
+            digest(catalog.path("catalog.jsonl").read_bytes()),
+        ]
+    )
+    args.state_dir = store.root
+    assert worker_cli.run(args)["candidates"] == int(repair == "media")
+    if repair != "media":
+        assert inspect() == []  # The archive is complete but removal needs donor replay.
+        return
     (candidate,) = inspect()
     assert candidate["archive_receipt"] == name and candidate["payload"] == row["payload"]
     assert candidate["manifest"] == manifest and candidate["raindrop_id"] == int(row["post_id"])
     # Confirm the downstream plan constructor accepts the real repair basename.
     result = make_plan(store, drive, name, [row["post_id"]], "100", acceptance_confirmed=True)
     assert result["verified"] == 1 and result["x_api_calls"] == result["deleted"] == 0
+    # A stale media link must withhold just its repair, not abort a folder scan.
+    source.ids = [row["post_id"], donor["post_id"]]
+    client.get("/2/users/100/bookmarks/folders/10", {"max_results": "100"}, lambda: None)
+    restore = tmp_path / "restored"
+    moved = tmp_path / "moved"
+    restore.rename(moved)
+    try:
+        assert worker_cli.run(args)["candidates"] == 1
+        assert [c["post_id"] for c in inspect()] == [donor["post_id"]]
+    finally:
+        moved.rename(restore)
+    source.ids = [row["post_id"]]
+    client.get("/2/users/100/bookmarks/folders/10", {"max_results": "100"}, lambda: None)
     successor["payload_receipt"] = dict(row["payload"], sha256="1" * 64)
     assert inspect() == []
     store.write(name, dict(receipt, plan_sha256="0" * 64))

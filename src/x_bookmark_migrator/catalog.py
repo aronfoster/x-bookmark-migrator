@@ -99,16 +99,25 @@ def restored_media_path(output, link, filename):
         raise PilotError("Invalid local archive link.")
     # A canonical sibling link may begin with ../. No symlinks or writable
     # intermediate directories can redirect the read outside the archive.
-    for directory in (*reversed(path.parent.parents), path.parent):
-        if not directory.is_relative_to(archive):
-            continue
-        st = directory.lstat()
-        if directory.is_symlink() or st.st_uid not in (0, os.getuid()) or st.st_mode & 0o022:
-            raise PilotError("Unsafe local archive directory.")
+    check_archive_directories(archive, path.parent)
     return path
 
 
-def build(batches, output):
+def check_archive_directories(archive, leaf):
+    for directory in (*reversed(leaf.parents), leaf):
+        if not directory.is_relative_to(archive):
+            continue
+        st = directory.lstat()
+        if (
+            not directory.is_dir()
+            or directory.is_symlink()
+            or st.st_uid not in (0, os.getuid())
+            or st.st_mode & 0o022
+        ):
+            raise PilotError("Unsafe local archive directory.")
+
+
+def build(batches, output, *, apply_curation=True):
     """Consume existing archive-restore directories plus independent batch receipts."""
     records = {}
     for directory, receipt_path in batches:
@@ -195,7 +204,9 @@ def build(batches, output):
             ):
                 record["versions"].append(version)
     result = [records[k] for k in sorted(records)]
-    return apply_annotations(add_source_links(result), read_annotations(output))
+    return apply_annotations(
+        add_source_links(result), read_annotations(output) if apply_curation else {}
+    )
 
 
 def read_annotations(output):

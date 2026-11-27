@@ -7,9 +7,12 @@ import httpx
 
 from .archive import archive_batch, import_pilot, restore_batch
 from .archive_repair import preview_repairs, select_repairs, write_repairs
+from .catalog import build, check_archive_directories, read_catalog
 from .core import PilotError, Store
 from .drive import MAX_BYTES, Drive, encode
 from .inventory import Inventory
+from .publication import PublicationStore
+from .retained_authors import select_author_repairs
 
 COMMANDS = ("archive", "archive-probe", "archive-import-pilot", "archive-restore", "archive-repair")
 
@@ -29,7 +32,18 @@ def add_commands(sub):
                 action="append",
                 required=True,
             )
-            parser.add_argument("--reason", choices=("byte_limit", "media_count"), required=True)
+            parser.add_argument(
+                "--reason", choices=("byte_limit", "media_count", "retained_author"), required=True
+            )
+            parser.add_argument(
+                "--output-dir",
+                type=str,
+                help="Separate local restore directory for retained-author apply",
+            )
+            parser.add_argument(
+                "--catalog-dir",
+                help="Merge the independently restored author successor into this existing catalog",
+            )
             parser.add_argument(
                 "--item",
                 type=int,
@@ -56,7 +70,10 @@ def run(args):
     if args.command == "archive-repair":
         if not 1024 <= args.max_asset_bytes <= MAX_BYTES:
             raise PilotError("Unsupported repair byte limit.")
-        selected = select_repairs(args.batch, args.reason)
+        author = args.reason == "retained_author"
+        selected = (
+            select_author_repairs(args.batch) if author else select_repairs(args.batch, args.reason)
+        )
         if args.item is not None:
             if not 1 <= args.item <= len(selected):
                 raise PilotError("Repair item position outside the selected sources.")
@@ -66,6 +83,52 @@ def run(args):
             return preview
         if args.apply_plan != preview["plan_sha256"]:
             raise PilotError("Repair plan differs from reviewed preview.")
+        output = catalog = None
+        if author:
+            if not args.output_dir:
+                raise PilotError("Author repairs require a separate local restore directory.")
+            path = Path(args.output_dir).expanduser().absolute()
+            inputs = [
+                Path(args.state_dir).expanduser().resolve(),
+                *(Path(d).resolve() for d, _ in args.batch),
+            ]
+            if path != path.resolve() or any(
+                path.is_relative_to(other) or other.is_relative_to(path) for other in inputs
+            ):
+                raise PilotError("Restore must be disjoint from source batches and state.")
+            # Check from the filesystem root, including ancestors of the archive tree.
+            # A root-owned sticky temporary directory protects existing owned children
+            # against rename; never create the restore directly inside such a directory.
+            for directory in reversed(path.parents):
+                st = directory.lstat()
+                sticky_parent = st.st_uid == 0 and st.st_mode & 0o1000 and directory != path.parent
+                if st.st_uid not in (0, os.getuid()) or (st.st_mode & 0o022 and not sticky_parent):
+                    raise PilotError("Unsafe local archive directory.")
+            archive_tree = path.parent
+            if getattr(args, "catalog_dir", None):
+                catalog_path = Path(args.catalog_dir).expanduser().absolute()
+                if (
+                    not (catalog_path / "catalog.jsonl").is_file()
+                    or catalog_path != catalog_path.resolve()
+                    or not path.is_relative_to(catalog_path.parent)
+                    or any(
+                        catalog_path.is_relative_to(other) or other.is_relative_to(catalog_path)
+                        for other in [*inputs, path]
+                    )
+                ):
+                    raise PilotError("Expected an existing separate catalog beside the restore.")
+                catalog = PublicationStore(catalog_path)
+                archive_tree = catalog.root.parent
+                if catalog.reader_gid is not None and path.parent != archive_tree:
+                    raise PilotError("Group restore must be a direct sibling of the catalog.")
+            check_archive_directories(archive_tree, path if path.exists() else path.parent)
+            output = PublicationStore(path)
+            if catalog is not None and catalog.reader_gid != output.reader_gid:
+                raise PilotError("Restore and catalog reader policies differ.")
+        elif getattr(args, "output_dir", None) or getattr(args, "catalog_dir", None):
+            raise PilotError(
+                "Restore and catalog destinations apply only to retained-author repair."
+            )
     if not args.drive_folder_id:
         raise PilotError("Set X_ARCHIVE_DRIVE_FOLDER_ID or --drive-folder-id.")
     store = Store(args.state_dir)
@@ -75,9 +138,44 @@ def run(args):
         httpx.Client(timeout=60, follow_redirects=False, trust_env=False) as media_http,
     ):
         drive = Drive(store, storage_http, args.drive_folder_id, args.max_asset_bytes)
+        if args.command == "archive-repair" and author:
+            pin = store.read("drive-destination.private.json")
+            if (
+                not isinstance(pin, dict)
+                or pin.get("root") != drive.root
+                or not pin.get("owner_permission_id")
+            ):
+                raise PilotError("Author repair requires the existing pinned Drive destination.")
         context = drive.preflight()
         if args.command == "archive-repair":
-            return write_repairs(store, drive, media_http, selected)
+            if catalog is not None:
+                from .worker import catalog_index, merge_publication, require_catalog_versions
+
+                chains = [
+                    p[key]
+                    for _, p in selected
+                    for key in ("repair_source", "retained_author_source")
+                ]
+                with catalog.locked():
+                    require_catalog_versions(catalog_index(read_catalog(catalog)), chains)
+            result = write_repairs(store, drive, media_http, selected, author_restore=output)
+            if catalog is not None:
+                # The merge applies curation to the full corpus under the catalog lock.
+                incoming = build(
+                    [(output.root, store.path(result["private_receipt"]))],
+                    catalog,
+                    apply_curation=False,
+                )
+                if any(
+                    a.get("availability") != "local_hash_verified"
+                    for r in incoming
+                    for v in r["versions"]
+                    for a in v["media"]
+                ):
+                    raise PilotError("Author successor lacks verified restored media.")
+                merge_publication(catalog, incoming, required_versions=chains)
+                result["catalog_merged"] = True
+            return result
         if args.command == "archive-probe":
             probe = {
                 "probe": secrets.token_hex(32),
