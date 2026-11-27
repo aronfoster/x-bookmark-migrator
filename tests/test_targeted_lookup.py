@@ -1,6 +1,7 @@
 """One targeted lookup supplies authors for an existing primary and its quote."""
 
 import json
+import os
 import sys
 from copy import deepcopy
 
@@ -67,7 +68,12 @@ def repair(tmp_path, storage, monkeypatch, capsys):  # noqa: F811
         "request": {"ids": "101,102,777,888", **post_fields("tweet")},
         "response": {
             "data": [primary, ref, post("777", text="unrelated lookup content")],
-            "includes": {"users": [{"id": "901", "username": "quoted_author"}]},
+            "includes": {
+                "users": [
+                    {"id": "901", "username": "quoted_author"},
+                    {"id": "977", "username": "unrelated_user_sentinel"},
+                ]
+            },
             "errors": [{"resource_type": "tweet", "resource_id": "888"}],
         },
     }
@@ -169,6 +175,7 @@ def test_targeted_lookup_restore_promotion_and_retry(repair, monkeypatch):
         assert payload[key] == predecessor[key]
     assert payload["targeted_lookup"]["sha256"] == digest(path.read_bytes())
     assert b"unrelated lookup content" not in successor.read_bytes()
+    assert b"unrelated_user_sentinel" not in successor.read_bytes()
     assert {p.name: p.read_bytes() for p in original.root.iterdir()} == before
     assert sessions == list(range(6))
 
@@ -237,3 +244,39 @@ def test_moved_media_cannot_be_promoted_even_if_bytes_still_match(repair):
     plan = run()
     assert "parent" in run("--apply-plan", plan["plan_sha256"], success=False)
     assert server.bytes == objects and read_catalog(catalog) == records
+
+
+@pytest.mark.parametrize("field", ["request", "response", "private_file", "ids", "users", "json"])
+def test_malformed_envelope_returns_a_safe_diagnostic(repair, field):
+    state, _, _, _, path, envelope, sessions, run = repair
+    if field == "ids":
+        del envelope["request"]["ids"]
+    elif field == "users":
+        del envelope["response"]["includes"]["users"]
+    elif field != "json":
+        del envelope[field]
+    state.write(path.name, envelope)
+    if field == "json":
+        path.write_bytes(b"unrelated_user_sentinel")
+    message = run(success=False)
+    assert message and "Local state/configuration" not in message
+    assert "unrelated_user_sentinel" not in message and not sessions
+
+
+@pytest.mark.parametrize("mode", [0o700, 0o2700])
+def test_group_readable_restore_resumes_empty_interrupted_setup(repair, mode):
+    _, _, _, catalog, _, _, _, run = repair
+    catalog.root.chmod(0o2750)
+    plan = run()["plan_sha256"]
+    restore = catalog.root.with_name("lookup-" + plan)
+    restore.mkdir(mode=0o700)
+    restore.chmod(mode)
+    sentinel = restore / "existing"
+    sentinel.touch(mode=0o600)
+    assert "occupied" in run("--apply-plan", plan, success=False)
+    assert restore.stat().st_mode & 0o7777 == mode
+    sentinel.unlink()
+    assert run("--apply-plan", plan)["catalog_promoted"]
+    assert restore.stat().st_mode & 0o7777 == 0o2750
+    assert restore.stat().st_gid == os.getgid()
+    assert (restore / "101.json").stat().st_mode & 0o777 == 0o640

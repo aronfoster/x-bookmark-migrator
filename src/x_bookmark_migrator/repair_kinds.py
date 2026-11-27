@@ -131,7 +131,7 @@ class RestoredRepairs:
     def directories(self):
         by_hash = defaultdict(list)
         for root in self.roots:
-            if root.resolve() != root or not root.is_dir():
+            if any(part.is_symlink() for part in (root, *root.parents)) or not root.is_dir():
                 continue
             try:
                 children = list(root.iterdir())
@@ -163,7 +163,7 @@ class RestoredRepairs:
     def kind(self, pid, version):
         seen = set()
         for path in self.paths(exact_id(pid), version):
-            if path in seen or path.resolve() != path:
+            if path in seen or any(parent.is_symlink() for parent in path.parents):
                 continue
             seen.add(path)
             try:

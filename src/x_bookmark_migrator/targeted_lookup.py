@@ -2,6 +2,7 @@
 
 import json
 import os
+import stat
 from pathlib import Path
 
 import httpx
@@ -59,18 +60,36 @@ def select(batch, lookup_path, pid):
 
 def lookup_authors(payload, lookup_path):
     raw = private_bytes(lookup_path)
-    lookup = json.loads(raw)
-    if lookup["status"] != 200 or lookup["endpoint"] != "/2/tweets":
+    try:
+        lookup = json.loads(raw)
+    except (ValueError, UnicodeError):
+        raise PilotError("Malformed protected lookup envelope.") from None
+    if (
+        not isinstance(lookup, dict)
+        or lookup.get("status") != 200
+        or lookup.get("endpoint") != "/2/tweets"
+    ):
         raise PilotError("Expected a successful official multi-post lookup.")
-    requested = [exact_id(i) for i in lookup["request"]["ids"].split(",")]
-    data, token, errors, _ = validate_page(lookup["response"], "hydrate", len(requested))
+    request = lookup.get("request")
+    if (
+        not isinstance(request, dict)
+        or not isinstance(request.get("ids"), str)
+        or not isinstance(request.get("expansions"), str)
+        or not isinstance(lookup.get("private_file"), str)
+        or not lookup["private_file"]
+    ):
+        raise PilotError("Malformed protected lookup request or provenance.")
+    requested = [exact_id(i) for i in request["ids"].split(",")]
+    response = lookup.get("response")
+    data, token, errors, _ = validate_page(response, "hydrate", len(requested))
+    supplied = object_map(response.get("includes", {}).get("users", []), "id")
     returned = object_map(data, "id")
     if (
         not 1 <= len(set(requested)) == len(requested) <= 100
         or len(returned) != len(data)
         or not returned.keys() <= set(requested)
         or token
-        or "author_id" not in lookup["request"].get("expansions", "").split(",")
+        or "author_id" not in request["expansions"].split(",")
     ):
         raise PilotError("Ambiguous targeted lookup request or response.")
 
@@ -104,13 +123,35 @@ def lookup_authors(payload, lookup_path):
 
     # Preserve the original response verbatim. Keep only the selected lookup evidence
     # in the successor; the digest binds it to the full protected multi-item envelope.
-    supplied = object_map(lookup["response"]["includes"]["users"], "id")
     return candidate["posts"], {
         "sha256": digest(raw),
         "endpoint": lookup["endpoint"],
         "returned": [{"id": i, "author_id": returned[i].get("author_id")} for i in sorted(related)],
         "authors": [supplied[uid] for uid in sorted(candidate["author_sources"])],
     }
+
+
+def restore_output(path, catalog):
+    path.mkdir(mode=0o700, exist_ok=True)
+    # mkdir inherits setgid from its parent. A crash can therefore leave either
+    # 0700 or 02700 here. Finish setup only for an owned, empty private directory.
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(fd)
+        mode = stat.S_IMODE(info.st_mode)
+        desired = 0o700 if catalog.reader_gid is None else 0o2750
+        if mode != desired and mode in (0o700, 0o2700) and info.st_uid == os.getuid():
+            if os.listdir(fd) or any(x.startswith("system.posix_acl") for x in os.listxattr(fd)):
+                raise PilotError("Cannot change permissions on an occupied or ACL-managed restore.")
+            if catalog.reader_gid is not None:
+                os.fchown(fd, -1, catalog.reader_gid)
+            os.fchmod(fd, desired)
+    finally:
+        os.close(fd)
+    output = PublicationStore(path)
+    if output.reader_gid != catalog.reader_gid:
+        raise PilotError("Successor restore must have the catalog's reader permissions.")
+    return output
 
 
 def run(args):
@@ -176,14 +217,7 @@ def run(args):
                 raise PilotError("Successor manifest differs from the selected primary.")
             for item in [verified_rows[args.post_id]["payload"], *media]:
                 fresh.confined(item["file_id"], item["parent_id"])
-            if not restore.exists():
-                restore.mkdir(mode=0o700)
-                if catalog.reader_gid is not None:
-                    os.chown(restore, -1, catalog.reader_gid)
-                    restore.chmod(0o2750)
-            output = PublicationStore(restore)
-            if output.reader_gid != catalog.reader_gid:
-                raise PilotError("Successor restore must have the catalog's reader permissions.")
+            output = restore_output(restore, catalog)
             with output.locked():
                 restored = restore_batch(
                     fresh, manifest["file_id"], output, manifest["sha256"], existing_ok=True

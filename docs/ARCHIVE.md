@@ -245,6 +245,7 @@ Catalog merge requires both
 source versions to be present and preserves earlier versions and annotations.
 An interrupted run can resume the same plan and restore directory. This repair
 does not change the X removal verifier or authorize removal.
+
 ## Repair a missing author from a saved targeted lookup
 
 For one primary whose only archived blocker is `blocked_missing_author`, run this
