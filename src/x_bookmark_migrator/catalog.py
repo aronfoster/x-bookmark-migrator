@@ -436,6 +436,8 @@ def render(records):
             f'<p><a href="{esc(source_url(record["post_id"]))}" rel="noreferrer">'
             "Open original saved X post</a></p>"
         )
+        if "approved_description" in record:
+            parts.append(f"<p>Approved description: {esc(record['approved_description'])}</p>")
         if "raindrop_id" in record:
             url = raindrop_link(record["raindrop_id"])
             if record.get("raindrop_url") != url:
@@ -445,8 +447,6 @@ def render(records):
             )
         if record.get("category_override"):
             parts.append(f"<p>Category override: {esc(record['category_override'])}</p>")
-        if "approved_description" in record:
-            parts.append(f"<p>Approved description: {esc(record['approved_description'])}</p>")
         for v in record["versions"]:
             categories = ", ".join(f"{' / '.join(f['names'])} ({f['id']})" for f in v["folders"])
             parts.append(f"<h3>{esc(categories or v['category'])}</h3>")
