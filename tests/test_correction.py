@@ -178,6 +178,24 @@ def test_bookmark_without_local_media(interaction, tmp_path, pid):
         assert next(r for r in rebuilt if r["post_id"] == pid)["approved_description"] == WORDING
 
 
+def test_missing_local_media_uses_bookmark_description(interaction, tmp_path):
+    call, _, catalog, batch = interaction
+    for filename in ("101_101_01.png", "101_101_02.mp4"):
+        (tmp_path / "restored" / filename).unlink()
+    publish(catalog, build([batch], catalog))
+    assets = call("inspect", "--link", LINK)["attachments"]
+    assert assets and all(a["availability"] == "missing_local" for a in assets)
+    args = ("preview", "--link", LINK, "--description", WORDING)
+    call(*args, "--asset-id", assets[0]["asset_id"], "--sha256", assets[0]["sha256"], ok=False)
+    edit = call(*args)["preview_id"]
+    result = call("approve", "--preview-id", edit)
+    assert result["status"] == "verified" and result["asset_id"] is result["sha256"] is None
+    assert catalog.read("annotations.private.json") == {"bookmark_descriptions": {"101": WORDING}}
+    rebuilt = build([batch], catalog)
+    assert read_catalog(catalog) == rebuilt and rebuilt[0]["approved_description"] == WORDING
+    assert (tmp_path / "calls").read_text().splitlines().count("update-excerpt-json") == 1
+
+
 @pytest.mark.parametrize("fault", ["drift", "unapplied", "reject", "rate_limit", "stale", "bytes"])
 def test_failed_decision_never_reissues_put(interaction, tmp_path, fault):
     call, item_file, catalog, _ = interaction
@@ -260,7 +278,21 @@ def test_two_step_local_reconciliation(interaction, tmp_path):
     unchanged = item_file.read_bytes()
     receipt = call("approve", "--preview-id", final["preview_id"])
     assert receipt["status"] == "reconciled" and receipt["reconciles_preview_id"] == original
+    journals = tmp_path / "ledger"
+    before = set(journals.iterdir())
+    remote_calls = (tmp_path / "calls").read_bytes()
+    for action in ("approve", "reconcile"):
+        assert call(action, "--preview-id", original) == receipt
+    # Simulate the interruption between the original and recovery journal writes.
+    path = journals / f"correction-{final['preview_id']}.private.json"
+    interrupted = json.loads(path.read_text())
+    interrupted.pop("verified_at")
+    path.write_text(json.dumps({**interrupted, "status": "attempted"}))
     assert call("approve", "--preview-id", final["preview_id"]) == receipt
+    assert json.loads(path.read_text())["status"] == "reconciled"
+    call("approve", "--preview-id", stale["preview_id"], ok=False)
+    assert set(journals.iterdir()) == before
+    assert (tmp_path / "calls").read_bytes() == remote_calls
     assert item_file.read_bytes() == unchanged
     assert (tmp_path / "calls").read_text().splitlines().count("update-excerpt-json") == 1
     notes = catalog.read("annotations.private.json")

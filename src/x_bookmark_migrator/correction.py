@@ -70,7 +70,7 @@ def attachments(record):
 
 
 def local_target(output, record, key, sha):
-    media = attachments(record)
+    media = [a for a in attachments(record) if a.get("availability") == "local_hash_verified"]
     if not media and key is None and sha is None:
         if record:
             return read_annotations(output).get("bookmark_descriptions", {}).get(record["post_id"])
@@ -186,9 +186,32 @@ def run(adapter, output, args):
 
 
 def decide(adapter, output, records, name, edit, *, reconcile):
+    if edit["status"] == "superseded":
+        return edit["recovery_receipt"]
+    original_id = edit.get("reconciles_preview_id")
+    if original_id:
+        original_name = f"correction-{original_id}.private.json"
+        original = adapter.store.read(original_name)
+        if not original or original.get("catalog") != edit["catalog"]:
+            raise PilotError("Missing original correction for this recovery.")
+        if original["status"] == "superseded":
+            settled = original["recovery_receipt"]
+            if settled["preview_id"] != edit["preview_id"]:
+                raise PilotError("Another recovery already settled the original correction.")
+            if edit["status"] != "reconciled":
+                adapter.store.write(name, {**edit, **settled})
+            return settled
+        if original["status"] != "attempted":
+            raise PilotError("The original correction has already been settled.")
+        if edit["status"] == "reconciled":
+            # Recovery journals created before the original carried a settlement.
+            settled = receipt(edit)
+            original.update(status="superseded", recovery_receipt=settled)
+            adapter.store.write(original_name, original)
+            return settled
     if reconcile and (edit["status"] != "attempted" or "reconciles_preview_id" in edit):
         raise PilotError("Reconciliation needs the original attempted write.")
-    if edit["status"] in ("verified", "reconciled"):
+    if edit["status"] == "verified":
         return receipt(edit)
     if edit["status"] not in ("preview", "attempted"):
         raise PilotError("This preview is closed. Inspect the item before a new proposal.")
@@ -202,7 +225,7 @@ def decide(adapter, output, records, name, edit, *, reconcile):
     expected = {**edit["before"], "excerpt": description}
     if reconcile:
         return reconciliation_preview(adapter.store, edit, current, prior)
-    local_only = "reconciles_preview_id" in edit
+    local_only = original_id is not None
     if edit["status"] == "preview":
         if snapshot(current) != snapshot(edit["before"]) or prior != edit["local_before"]:
             raise PilotError("Preview is stale. Inspect and preview again.")
@@ -247,8 +270,14 @@ def decide(adapter, output, records, name, edit, *, reconcile):
             notes.setdefault("bookmark_descriptions", {})[record["post_id"]] = description
             save_annotations(output, records, notes)
     edit.update(status="reconciled" if local_only else "verified", verified_at=now())
+    result = receipt(edit)
+    if original_id:
+        # Commit the receipt on the original first. Either ID can resume if the
+        # process stops before the final write to the recovery journal.
+        original.update(status="superseded", recovery_receipt=result)
+        adapter.store.write(original_name, original)
     adapter.store.write(name, edit)
-    return receipt(edit)
+    return result
 
 
 def reconciliation_preview(store, edit, current, prior):

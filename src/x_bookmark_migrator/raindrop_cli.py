@@ -43,7 +43,7 @@ def add_commands(sub):
             preview.add_argument("--description", required=True)
             preview.add_argument(
                 "--asset-id",
-                help="Required for a saved primary with media; select the reviewed attachment.",
+                help="Required when the saved primary has locally verified media.",
             )
             preview.add_argument("--sha256")
             actions.add_parser(
