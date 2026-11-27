@@ -8,36 +8,17 @@ until its exit evidence exists.
 
 ## Session and sprint discipline
 
-### Captured backlog exit criteria — 26 November
+### Historical drain and daily intake
 
-1. Drain the 31 complete, linked records first when live checks and the existing
-   budget allow. Require a positive source match, verified archive and Drive
-   receipts, the saved Raindrop ID's fresh GET, and a confirmed X result. Keep
-   uncertain attempts separate; do not retry them as new removals.
-2. Repair the 45 incomplete records from retained evidence where possible.
-   Preserve earlier versions. Publish and restore-check the repaired version
-   before promoting a record to the removal queue. Count distinct records, not
-   resolved blocker labels; a record can have several.
-3. Account for IDs observed outside the catalog separately. Resume new-save
-   worker acceptance with one real primary through discovery, local and Drive
-   archival, Mnemosyne retrieval, titled Raindrop publication and X confirmation;
-   verify restart without duplicate publication or removal. A successful sample
-   is not evidence of exhaustive historical coverage.
+[FOS-169](https://linear.app/fosterstech/issue/FOS-169) owns the live counts,
+protected desktop handoff, repair candidates and window observations. Continue
+from its latest receipt. Remove eligible items after fresh item-specific checks.
+Restore and verify each repaired successor before promotion. Record unique IDs
+observed outside the catalog and which ones actually reach the archive.
 
-The owner-run checkpoint is 103 linked, 58 archive-complete and linked, 27
-confirmed removed. The cumulative reservation was $19.238, not a provider bill.
-
-Repair triage accounts for each of the 45 captured exceptions once:
-
-| Primary reason for repair | Records | Evidence and next check |
-| --- | ---: | --- |
-| Missing author or referenced post | 24 | 19 lack an author, seven lack a reference, and two are in both groups. A retained lookup supplied one exact author; no retained post supplied the seven missing references. Require a reproducible successor before clearing a blocker. |
-| Media origin only | 8 | Preserve the relation to the source post. Ordinary media bytes alone cannot establish its origin. |
-| Media exceeded byte limit only | 7 | Credential-free CDN size checks found five original renditions within the 256 MiB repair ceiling; two exceed it. Require content, Drive readback and local restore, not just a successful size check. |
-| Media count only | 2 | Each source declared 20 attachments and returned all 20 expansions; the prior local limit archived 16. Restore and verify all 20 for each primary. |
-| Article only | 2 | Article text is present; neither cover media key had a matching object in the retained expansions. Keep both incomplete. |
-| Missing media only | 1 | No matching media object or verified stored asset was found for the missing keys in the captured set. |
-| Folder unknown only | 1 | Require positive evidence of placement; absence from a capped folder page cannot establish that it was unfiled. |
+[FOS-168](https://linear.app/fosterstech/issue/FOS-168) owns daily intake.
+Its next exit is one later save discovered by the scheduled worker with history
+pending. The two workstreams can proceed independently.
 
 ### Working rules
 
@@ -75,139 +56,39 @@ Repair triage accounts for each of the 45 captured exceptions once:
 Local decrypt and old marker restores do not count as full recovery. The retired
 source machine is not needed. No repeat setup/capture/key transfer.
 
-### Historical S1 checkpoint — 18 November
-
-The 19 November owner receipts confirm remote restore, independent key recovery
-and cleanup passed. The following table records the state before those receipts.
-
-| Work | Evidence and status |
-| --- | --- |
-| Existing producer/receipt binding | Recovered the original private review copies and owner receipts from earlier OpenCode sessions; helper hashes matched recorded approvals. |
-| Full local archive verification | Owner reported PASS for independently anchored signature, decryption, exact member/directory/size/hash checks. The agent separately checked published ciphertext hashes and the signature. |
-| GPG recovery material | Owner reported PASS for a separate symmetric encrypted key-package backup and exact readback. Fresh temporary keyring construction validated the existing passphrase without changing the preserved key home. |
-| Backup scope and capacity | Owner-run quota query passed. Publication reader permissions and absence of ignore markers passed. Owner added only the ciphertext directory; the agent verified Home, exclusions, destination, schedule and retention were unchanged. |
-| Remote backup/restore | Pending. Last recorded success still predates this session. Starting or completing a new backup was not established before the owner requested this pause. |
-| Independent recovery and cleanup | Pending remote retrieval of both ciphertexts, fresh key recovery, complete restored-bundle verification and owner disposition of retained root-only staging. |
-| Search/curation preparation | Existing FOS-220/FOS-223 design tasks remain available; this recovery session did not establish their acceptance. |
-
-**18 November instruction, since completed:** owner with a supervised local agent. First read
-current backup activity and success evidence. If a job is already running, let it
-finish; if a suitable new snapshot completed, use it. Otherwise the owner starts
-the existing Backups job. Restore from that completed remote snapshot into a new
-empty destination with independent remote provenance, then repeat verification
-using the restored recovery-key ciphertext, not the desktop keyring as fallback.
-Only after all acceptance rows pass may M1 close.
-
-**Owner correction:** the password database already works across devices and is
-out of scope. Do not access, copy, modify or attach files to it. The unused
-vault-staging helper was removed. The accepted route uses the existing GPG
-passphrase to symmetrically protect the GPG recovery package separately from the
-asymmetrically encrypted bookmark bundle. This avoids needing the private key to
-decrypt its own backup. Off-host key recovery is still unproven.
-
-Private helper review and execution evidence remain in the local handoff and
-FOS-169 journal. Claude approved the final bounded helpers; split review caught
-and corrected a tar-padding compatibility defect. Local synthetic checks passed:
-12 archive-verifier tests, 10 original capture tests, producer/crypto/verifier
-roundtrip, two recovery-key test methods with positive/negative crypto cases, and
-three isolated quota fixtures. These are distinct from the owner-reported live
-PASS results above and do not establish remote recovery.
-
-**24 November search handoff:** [FOS-220 S1 design and executable fixtures](SEARCH_DESIGN.md)
-are ready for focused review. Review primary/attachment mapping, edit and crash
-recovery, and the native Drive and vague-memory acceptance probes before S3
-implementation. Desktop/Android indexing and provider discovery still need S3 proof.
-FOS-223 reviews the category queue/rehearsal in [V1_ACCEPTANCE.md](V1_ACCEPTANCE.md).
-These tasks do not require private recovery keys or wait for M1. No private
-content goes to public fixtures.
+Independent off-host restore, key recovery and staging cleanup passed for the
+captured generation. Preserve the approved separate GPG recovery package and
+existing backup scope. The owner's password database remains outside this work.
+FOS-168 verifies backup coverage for a subsequent save and catalog update.
 
 ## S2 — publish, reconcile and operate
 
-**M2. Trackers: FOS-216, FOS-166, FOS-169.**
+The worker and systemd unit implementations merged. The installed worker has
+confirmed real removals. The catalog is published, historical Raindrop links
+are repaired, and representative Mnemosyne retrieval has passed. Retain the
+existing [worker contract](WORKER.md) and [repair procedure](READINESS.md).
 
-### Desktop resume checkpoint — 24 November
+### Scheduled new-save acceptance (FOS-168)
 
-| Step | Action and evidence to retain |
-| --- | --- |
-| Start at the first unresolved operation | In the protected handoff, check for the result of the reviewed GET-only collection diagnostic. If absent, use that exact diagnostic under its existing scope. The title export and drafts already exist. Reconcile the observed lookup failure before any separately authorized update of those same 25 IDs. Preserve notes, primary URLs, collection identity, local mappings and targeted GET proof. |
-| Establish removal readiness | Inspect the original helper-retirement STOP and the deployed entry points read-only. Identify the last completed phase and actual partial changes before preparing a specific corrective step. Owner runs reviewed privileged steps. Use the existing [worker dry-run/report-only commands](WORKER.md#modes-and-configuration) under the intended account with the protected config. Verify history, counts, holds and the original ledger. |
-| Triage the backlog | Start with the saved per-record evidence and overlapping counts below. For the seven byte-limit-only items inspect recorded size, rendition and configured limit before considering a bounded retry. Missing author/media/reference, unsupported expansions, partial responses and Articles need evidence-specific resolution. Preserve blocked records and original receipts. |
-| Price and accept one transaction | Compare the retained reservations with the separate Console observation, per-operation whole-request reserves and the cumulative ceiling. Follow the remaining rollout steps below for separately authorized archive-only and one-item current-policy runs, including fresh external and exact-primary discovery proof, readback, and before/after window partitions. The first three historical removals already showed newly visible IDs. Reuse those comparisons and distinguish IDs outside the frozen inventory from IDs already known. Bookmark age and full-history coverage remain unverified. |
-| Prove daily intake before scaling | Prove that a stalled historical probe stays paused across restart/timer while any separately authorized new-save check keeps its own bounds. The current worker couples main and folder discovery. A due queued archive takes precedence and archive-only mode leaves it queued, so repeated archive-only runs can also skip discovery of new saves. Keep its discovery job paused where the streams cannot be isolated. Require scheduled non-root execution, a later new save, immutable/readable archive and continuing backup evidence. |
+1. Trace the normal systemd invocation, mode, installed revision and discovery
+   path. Compare the deployed worker with source. On main a due queued archive
+   bypasses discovery, and a delayed retry can defer it. Exercise the normal
+   path with pending history, including a paused historical stream. Fix the
+   smallest demonstrated cause while preserving historical probe stops.
+2. Under the existing host and provider authorizations, observe the timer pick
+   up a genuinely later save with history still pending. Follow that same
+   primary through durable local and Drive archive, catalog publication,
+   verified Raindrop pointer and confirmed X removal. Keep incomplete items on X.
+3. Verify restart preserves progress without duplicate publication or removal.
+   Confirm the later generation reaches the existing backup. Retain the
+   scheduled invocation and item receipts privately. Pass the stable reference to
+   FOS-220 and FOS-170 for actual retrieval, one approved edit and rebuild.
+   The owner rollout manifest linked in FOS-168 covers service-account permissions, controlled enablement and catch-up.
 
-The 19-of-25 checkpoint below predates the owner's protected continuation. All
-25 original repairs are complete. The metadata edit, prospective gate and helper
-retirement are separate. Reuse recovery, catalog and repair receipts at each step.
-
-### Historical checkpoint — 21 November before continuation
-
-Recovery/independent restore/cleanup and publication of the captured 103 records /
-117 media are complete. OpenClaw/Mnemosyne retrieval is owner-attested. The older
-S1 pause and S2 pilot instructions below are historical where these results
-supersede them; do not repeat them.
-
-Of 25 known historical removals, 19 have completed Raindrop/local-link repair,
-one has a created, identity-verified pointer without completed local publication,
-and five are unprocessed. The partial record's saved create response differs from
-its exact intended note only in edge whitespace. The stopped run and all original
-receipts remain preserved. Removal-source coverage is owner-attested; helper
-retirement is separate.
-
-**Current deliverable:** improve the existing shared adapter and repair command
-before live continuation, rather than adding another temporary migration engine.
-
-- One real complete active/Trash inventory at run start, retaining the existing
-  two-pass pagination validation; targeted GET per affected item afterward.
-  Run-local matches must not masquerade as a newly observed full inventory.
-- Compare note readback after stripping edge whitespace only. Preserve the exact
-  `text[:250]` intent/payload and complete immutable source text. Internal content
-  changes still stop. Preserve existing entries on adoption.
-- Resume from durable provider receipts and repair missing local mappings without
-  another POST. An uncertain prior POST with no active match stops for resolution;
-  absence is not permission to retry automatically in this repair mode.
-- Save private GET evidence before validation and checkpoint each verified item
-  before attempting the next. A publication failure stops further creates; resume
-  repairs the local projection. Report phases, counts and the actual request budget.
-- Bound the run and hold the existing shared ledger lock. Other account writers
-  must remain paused. This proves selected-item readback, not a transactional
-  server snapshot, global duplicate-freedom or an unrelated-metadata comparison.
-
-**Code exit tests:** one inventory operation for multiple items; trimmed notes
-accepted but changed internal text rejected; existing metadata not overwritten;
-Trash/duplicate conflicts; uncertain POST with no retry; create-before-publication
-and publication-before-completion crashes resume without duplicate creates; raw
-failure evidence retained; no further writes after a stop; full regression checks.
-Independent review and owner-run protected execution remain distinct evidence.
-
-**Remaining migration work:** the historical 25 passed final reconciliation
-and local-link verification. As of 2026-11-25, a **separate** one-item plan
-was saved by the owner under the migration account. That bookmark's content
-was reverified from Drive and its Raindrop link was created and verified.
-There are 26 distinct links but still only 25 confirmed X removals. The owner
-authorized this one unbookmark within the existing cumulative budget. Resume
-from the protected plan; do not pick another queued item, repeat the link
-creation, or start a batch. The protected installation is offline-only;
-fixture acceptance of the exact-plan worker is not deployment or live removal.
-See FOS-169 for the private operational checkpoint and outstanding dependencies.
-
-For the broader rollout, complete helper retirement and the existing worker's
-current-policy acceptance, then the 32 archived-complete main records and measured
-blocker fixes. Prior blocker counts overlap: missing author 18, missing media 10,
-unsupported media expansion 9, missing reference 7, byte limit 7, partial API
-response 3, Article completeness 2 and media-count bound 2. Start with retained
-evidence and fixable classes; seven byte-limit cases had no other recorded blocker.
-Recheck affected official X contracts before changing source integration or
-incurring new reads. Retain the existing budget and history-window stop rules.
-Full-history coverage, sustained intake/backups and search acceptance stay open.
-
-**Operational follow-through from PR #16 review:** FOS-169 owns resolution of a
-`no_repost` intent with no active match, GET-evidence retention/compaction and
-publication-failure recovery before unattended rollout. No automatic uncertain
-POST retry or evidence deletion is implemented. A worker `PilotError` during
-local link publication remains a blocking hold before X removal, even with a
-durable provider receipt. Repair the local cause and prepare a reviewed per-item
-requeue; ordinary restart must not silently clear that hold. The historical
-repair command can independently restore its missing local mapping by adoption.
+During unattended rollout, preserve per-item holds, rate-limit recovery,
+locking and fresh archive and discovery proofs. An uncertain Raindrop create
+requires readback and reconciliation. Preserve GET evidence, repair failed local
+publication before requeue, and reconcile an uncertain X removal before retry.
 
 ### 19 November formatting checkpoint
 
@@ -233,80 +114,32 @@ resolving the earlier “probably” checkpoint. This is owner confirmation, not
 independent verification. The owner subsequently completed the historical
 backfill. Helper retirement still requires its own evidence.
 
-### Existing rollout sequence
+### Historical migration (FOS-169)
 
-1. **Complete for the captured corpus.** Use the protected installation, catalog
-   publication and actual-reader receipts as the baseline.
-2. Audit real native/private helper sources and all attempts; preserve original
-   evidence, distinguish pre-intent stops, and prove old entry paths retired or
-   exclusively delegated to the hardened gate.
-3. **Historical repair complete.** All 25 known prior removals passed targeted
-   readback and local publication. [READINESS.md](READINESS.md) documents the
-   original procedure. Resume the separate metadata edit at the collection
-   diagnostic in the current desktop handoff.
-4. Accept FOS-166's prospective gate separately from FOS-216 historical repair.
-   Run the existing worker dry-run, authorized non-destructive live mode, then a
-   separately authorized one-item full transaction. Verify post-removal retrieval,
-   billing, restart/overlap/429/unknown-outcome behavior on the intended host.
-   Record the frozen inventory baseline and before/after window partitions,
-   including `not_previously_inventoried_ids`, with the owner's quiet-window
-   observations. New IDs alone do not prove age or complete history; preserve
-   `older_bookmarks_exposed: unverified`. Reuse valid earlier receipts; obtain only
-   missing current-policy evidence. Record both partitions; an empty
-   `not_previously_inventoried_ids` partition alone does not pause the S2 pilot.
-   The S4 window-stall condition applies here; failed or missing readback still
-   follows existing reconciliation/stop rules. Do not infer hidden-history failure
-   while known unprocessed records remain below the visible window.
-5. Validate/install the existing non-root units, then separately authorize timer
-   activation and observe a real scheduled invocation. Account for immediate
-   catch-up. Review recurring capture/retention binding so changing catalogs and
-   ledgers remain covered by the existing backup system; no speculative new backup.
+Use the active desktop session for live work. Reuse verified receipts for
+catalog publication, the completed one-item trial and installed-worker removals.
+Retain original evidence, reconcile old removal paths with FOS-166/FOS-216,
+and keep per-item archive, category, external retrieval and primary-link gates.
+Group incomplete records by recoverable cause, try retained evidence first and
+measure changes to the visible window after each bounded batch. Follow the S4
+stop rule for stalled history while daily new-save checks keep their own cadence.
 
-**Before expanding the drain or enabling unattended discovery (FOS-169):**
-
-- Build a reason/count table from existing per-item blockers, failure reasons and
-  stream reports. Separate code-fixable, transient, evidence-unknown and current
-  policy/API limitations. Include content, category and reference-depth failures;
-  do not infer irrecoverability from the worker's permanent-block label. Fix
-  measured code-fixable classes with the existing modules and focused tests,
-  prioritizing affected counts; record owners and exit tests for remaining fixes.
-  Reprocess saved evidence before paying for another hydration. For Articles and
-  other current-policy limits, investigate documented completeness first, then
-  present the known impact/options to the owner early. Default: retain on X and
-  keep v1 incomplete; a scoped release or policy change requires owner choice.
-- Compare cumulative reservations with separately observed Console charges and
-  compute conservative cost for the next bounded batch, plus a range for known
-  reachable work, including rescans, hydration and retries. Unseen population and
-  unmeasured rates remain unknown; do not invent a whole-history total. Low actual
-  spend does not release reserved headroom. If the next batch cannot fit, pause it
-  and present evidence-backed options: separately reviewed reconciliation or a
-  new owner-approved ceiling, continued pause, or an explicitly scoped release.
-  Recommend only what measured costs support; never reset reservations silently.
-- Verify that no-progress pauses survive restart and timer invocation before
-  unattended scaling. Existing stream status reports alone do not enforce this
-  rule. Reuse current controls, or prepare the smallest reviewed worker correction
-  under FOS-169; if a stream cannot be isolated, keep its containing discovery job
-  paused. Independent known-item work proceeds only within its existing gates.
-
-**Exit:** actual reader access, historical and prospective discovery acceptance,
-complete live transaction and scheduled-run receipts, preserved curation and
-continuing recovery evidence; blocker triage/actions, exposure result and stop
-behavior, and affordable next-batch scope or an explicit budget pause. Unresolved
-history coverage remains open even if the bounded operational pilot passes.
-Follow [WORKER.md](WORKER.md); FOS-168's merged
-code is reused, not reimplemented or treated as proof of installed acceptance.
-All already-required live permissions and spending limits remain in force.
+Use the owner's authorized prepaid X balance. Record requests and outcomes and
+use provider billing to measure cost afterward. Keep historical reservations as
+evidence. Preserve the existing per-run operational limits and auto-reload setting.
 
 ## S3 — search and categorization readiness
 
-**M3. Trackers: FOS-220 and FOS-223.**
+**M3. FOS-220 owns search, FOS-170 owns approved edits, and FOS-223 records plan acceptance.**
 
-The first offline packet implements the [catalog and description contract](CATALOG.md#reviewing-legacy-descriptions-and-rendering-drive-search-text-offline)
-and the per-primary Drive text renderer. Synthetic shared and changed captures
-exercise all four projections. The next Drive packet exercises the derived
-publisher against a fake provider through interrupted writes and stale
-generations. Freeze the protected query set before tuning or processing private
-content. Native search, retrieval and full-corpus acceptance remain open.
+The [catalog and description contract](CATALOG.md#reviewing-legacy-descriptions-and-rendering-drive-search-text-offline)
+and [recoverable Drive publisher](https://github.com/aronfoster/x-bookmark-migrator/pull/23)
+are merged. Freeze the private query set before tuning. Start with published
+records and run remembered-text and media queries through Mnemosyne. Exercise
+the live publication route and native Drive search on desktop and Android.
+Repeat on the later scheduled save for the shared demonstration. FOS-170 owns
+one approved correction and its persistence after republishing. FOS-220 owns
+ordinary search finding and opening the corrected item across applicable surfaces.
 
 - Use the existing catalog and exact identity mapping to provide searchable full
   preserved text, category/annotation fields and useful per-asset descriptions.
@@ -326,7 +159,7 @@ content. Native search, retrieval and full-corpus acceptance remain open.
 - Prove Raindrop discovery with required exact-source pointers and existing
   categories/metadata. Use the shared adapter and preserve notes/tags/collections;
   do not turn full article text into Raindrop notes or require a paid tier silently.
-- Accept the [manual categorization plan](V1_ACCEPTANCE.md#manual-categorization-plan)
+- Use the accepted [manual categorization plan](V1_ACCEPTANCE.md#manual-categorization-plan)
   with a concrete rehearsal, state/approval examples and a resumable next batch.
   FOS-170 implements [single-bookmark description corrections](V1_ACCEPTANCE.md#correct-one-bookmark-description);
   FOS-220 verifies ordinary Raindrop search finds the corrected item by description alone.
