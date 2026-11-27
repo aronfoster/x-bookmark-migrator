@@ -31,6 +31,7 @@ from .drive import digest, encode
 from .inventory import Inventory
 from .publication import PublicationStore, publication_bytes
 from .repair import scan_helper, scan_native
+from .repair_kinds import RestoredRepairs, archive_anchors, removable_version
 from .source import source_url
 from .unbookmark import apply_plan, latest_attempt, load_plan, make_plan
 
@@ -195,28 +196,43 @@ def removal_history(store, helper_descriptors=()):
     return result
 
 
-def snapshot(store, helpers=(), catalog=None):
+def snapshot(store, helpers=(), catalog=None, *, restore_dir=None):
     """Offline counts only. Does not create missing result receipts or disclose IDs."""
     history = removal_history(store, helpers)
     journal = store.read(JOURNAL) or {"items": {}, "batches": {}, "streams": {}}
     counts = Counter(i["state"] for i in journal["items"].values())
     archival = {}
     if catalog is not None and catalog.path("catalog.jsonl").exists():
+        pin = store.read("drive-destination.private.json") or {}
+        anchors = archive_anchors(store, pin.get("root"), report_only=True)
         with catalog.locked():
             records = read_catalog(catalog)
-        unattempted = [r for r in records if r["post_id"] not in history]
-        complete = sum(
-            any(
-                v["archive_status"] == "bytes_verified" and not v["blockers"] for v in r["versions"]
-            )
-            for r in unattempted
-        )
-        archival = {
-            "archived_records": len(records),
-            "complete_archives_unattempted": complete,
-            "blocked_archives_unattempted": len(unattempted) - complete,
-            "catalog_sha256": digest(catalog.path("catalog.jsonl").read_bytes()),
-        }
+            restores = RestoredRepairs(catalog, restore_dir)
+            counts_by_archive = Counter()
+            for record in records:
+                pid = record["post_id"]
+                if pid in history:
+                    continue
+                complete = [
+                    v
+                    for v in record["versions"]
+                    if v["archive_status"] == "bytes_verified" and not v["blockers"]
+                ]
+                if not complete:
+                    counts_by_archive["blocked_archives_unattempted"] += 1
+                elif any(removable_version(restores, pid, v, anchors) for v in complete):
+                    counts_by_archive["complete_archives_unattempted"] += 1
+                else:
+                    counts_by_archive["complete_archives_not_removable"] += 1
+            archival = {
+                "archived_records": len(records),
+                "complete_archives_unattempted": counts_by_archive["complete_archives_unattempted"],
+                "complete_archives_not_removable": counts_by_archive[
+                    "complete_archives_not_removable"
+                ],
+                "blocked_archives_unattempted": counts_by_archive["blocked_archives_unattempted"],
+                "catalog_sha256": digest(catalog.path("catalog.jsonl").read_bytes()),
+            }
     return {
         **archival,
         "known_records": len(journal["items"]),
@@ -231,11 +247,29 @@ def snapshot(store, helpers=(), catalog=None):
     }
 
 
-def merge_publication(output, incoming):
+def catalog_index(records):
+    indexed = {r["post_id"]: r for r in records}
+    if len(indexed) != len(records):
+        raise PilotError("Duplicate catalog primary.")
+    return indexed
+
+
+def require_catalog_versions(records, chains):
+    for chain in chains:
+        record = records.get(chain["post_id"], {})
+        if not any(
+            v["manifest"] == chain["manifest"] and v["payload_receipt"] == chain["payload"]
+            for v in record.get("versions", [])
+        ):
+            raise PilotError("Catalog lacks the bound predecessor or donor version.")
+
+
+def merge_publication(output, incoming, *, required_versions=()):
     """State lock -> catalog lock. Keep every old version and owner annotation."""
     with output.locked():
         prior = read_catalog(output) if output.path("catalog.jsonl").exists() else []
-        merged = {r["post_id"]: r for r in prior}
+        merged = catalog_index(prior)
+        require_catalog_versions(merged, required_versions)
         for record in incoming:
             target = merged.setdefault(record["post_id"], copy.deepcopy(record))
             for version in record["versions"]:
@@ -520,6 +554,69 @@ class Worker:
             self.save()
         return len(pending) <= self.config["max_batches"]
 
+    def historical_stops(self, baseline):
+        items = self.state["items"]
+        blocked = {pid for pid, item in items.items() if item["state"] == "blocked"}
+        settled = blocked | {
+            pid for pid, states in self.history.items() if "confirmed_removed" in states
+        }
+        stopped = set()
+        if baseline:
+            for key, stream in baseline.state["streams"].items():
+                visible = set(stream["pages"][0]["ids"]) if stream["pages"] else set()
+                if stream["status"] == "paused" or (
+                    key != "folders" and visible and visible <= blocked
+                ):
+                    stopped.add(key)
+        for key, coverage in self.state["streams"].items():
+            visible = set(coverage.get("observed_ids", []))
+            if coverage.get("window_exposure_status") == "stalled_on_blocked_window" or (
+                visible and visible <= blocked
+            ):
+                stopped.add(key)
+
+        # A category check for a daily save cannot release a historical stop.
+        # A later successful desktop comparison can record a changed condition.
+        comparisons = {}
+        for path in self.store.root.glob("unbookmark-*.intent.private.json"):
+            intent = self.store.read(path.name)
+            if intent["owner_id"] != self.config["owner_id"]:
+                continue
+            folder = intent.get("verified", {}).get("folder", {}).get("id")
+            if not folder:
+                stopped.add("folders")  # The legacy attempt cannot be attributed to a stream.
+                continue
+            window = self.store.read(path.name.replace(".intent.", ".window.")) or {}
+            stop = window.get("window_status") != "new_ids_observed"
+            if not stop:
+                visible = set(window["after"]["ids"])
+                stop = bool(visible and visible <= blocked)
+            plan = self.store.read(intent["plan_file"]) if intent.get("plan_file") else None
+            if not stop and not window.get("not_previously_inventoried_ids"):
+                members = intent.get("inventory_folder_post_ids")
+                if (
+                    members is None
+                    and baseline
+                    and plan
+                    and plan.get("inventory_checkpoint") == baseline.name
+                ):
+                    members = [
+                        pid
+                        for pid in intent.get("inventory_post_ids", [])
+                        if folder in baseline.state["posts"].get(pid, {}).get("folder_ids", [])
+                    ]
+                stop = members is None or not (set(members) - settled)
+            if stop or (plan and not plan.get("archive_receipt", {}).get("daily_pass")):
+                key = "folder:" + folder
+                observation = (intent.get("created_at", ""), stop)
+                comparisons[key] = max(comparisons.get(key, observation), observation)
+        stopped.update(key for key, (_, stop) in comparisons.items() if stop)
+        if baseline:
+            known_folders = {"folder:" + fid for fid in baseline.state["folders"]}
+            if known_folders and known_folders <= stopped:
+                stopped.add("folders")
+        return stopped
+
     def discover(self, *, scheduled=False, baseline=None):
         # Never resume a positional cursor across a run or DELETE.
         inv = Inventory(
@@ -533,24 +630,30 @@ class Worker:
             max_pages=1,
         )
         skipped = self.held | {pid for pid in self.state["items"] if not self.eligible(pid)}
+        known_history = set()
         if scheduled and baseline and "daily_parent" not in baseline.state:
-            skipped.update(pid for pid in baseline.state["posts"] if pid not in self.state["items"])
+            known_history = baseline.state["posts"].keys() - self.state["items"].keys()
+        empty_queue = not any(item["state"] == "queued" for item in self.state["items"].values())
         report = inv.run(
             self.client,
             self.budget,
             max_calls=self.config["max_calls"],
             hydrate_batch_size=20,
             skip_hydration=skipped,
+            known_history=known_history,
+            historical_stops=(lambda: self.historical_stops(baseline))
+            if scheduled and empty_queue
+            else None,
             primary_limit=self.config["max_items"],
         )
         if not scheduled:
             self.coverage(inv)
         self.counts["discovered"] += len(
-            inv.primary_candidates(skipped | self.state["items"].keys(), None)
+            inv.primary_candidates(skipped | self.state["items"].keys(), None, known_history)
         )
         if report["stop_reason"]:
             raise PilotError("Inventory stopped.", code=report["stop_reason"])
-        ids = inv.primary_candidates(skipped, self.config["max_items"])
+        ids = inv.primary_candidates(skipped, self.config["max_items"], known_history)
         for offset in range(0, len(ids), 20):
             batch = ids[offset : offset + 20]
             enriched = [pid for pid in batch if inv.state["posts"][pid].get("post")]
@@ -570,6 +673,8 @@ class Worker:
     def coverage(self, inv):
         for key, stream in inv.state["streams"].items():
             if key == "folders":
+                continue
+            if inv.state.get("historical_fallback") and (key == "main" or not stream["pages"]):
                 continue
             ids = {pid for page in stream["pages"] for pid in page["ids"]}
             previous = self.state["streams"].get(key, {})
@@ -779,6 +884,7 @@ class Worker:
         if intake_pending:
             self.state["next_intake"] = self.state["next_daily"]
         self.save()  # Must succeed before any provider call, including bootstrap.
+        daily = None
         try:
             if self.store.read("inventory-active.private.json"):
                 inventory = Inventory.load(self.store)
@@ -836,6 +942,8 @@ class Worker:
                     self.state["next_intake"] = saved["until"]
             else:
                 self.gate.save("worker", seconds=86400)
+        if daily and daily.state.get("historical_fallback"):
+            self.coverage(daily)
         self.save()
         report = {
             **snapshot(self.store, self.config.get("helper_descriptors", [])),

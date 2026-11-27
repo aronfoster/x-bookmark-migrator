@@ -85,6 +85,33 @@ used in tests. Read by exact string ID; URL spellings on x.com/twitter.com and
 renamed handles normalize to that ID. Do not use substring matching or coerce
 IDs through JavaScript numbers. No authenticated runtime invocation was tested.
 
+## Remembered clues and selected-result opening
+
+The Mnemosyne reader can run `catalog-search --catalog-dir DIR --query CLUE`
+with repeated `--query` arguments for its own reformulations. Each alternative
+matches whole words within one published field, independent of word order.
+The original clue has priority, then adjacent words. For equal wording, body,
+article and visual evidence rank ahead of author or category metadata. Prefer
+blocker-free snapshots and locally verified media on ties, then higher numeric
+saved-primary IDs (post order; save time is unknown). Search covers author
+handles and display names. For clues spanning fields, try a separate alternative
+for each facet and check the remaining detail in context. The response gives the
+total number of matching occurrences and up to three candidates. Match evidence
+is a typed field and quoted snippet. Equivalent hits across snapshots use one slot and open the selected
+snapshot. Shared quotes retain each saved context; different archived bytes
+under one attachment ID remain separately selectable.
+Search includes source alt text, byte-bound descriptions and hidden attachments.
+
+Pass a candidate's saved primary and ordered manifest/payload SHA-256 pair to
+`catalog-lookup --catalog-dir DIR --post PRIMARY --snapshot MANIFEST PAYLOAD
+--restore-root ROOT`. Add its exact `--asset-id ID` for media. ROOT is the
+reader's mounted restore tree or the selected restored batch. Lookup reads the
+receipt-matched manifest and payload, returns full post context, and for media
+rechecks the selected file before returning a local display path. Worker
+hash-named batches resolve directly. Legacy batch names resolve by their
+manifest contents. A missing restore, changed bytes, or stale selection fails
+the open. Ordinary exact-ID lookup retains its existing behavior.
+
 ## Hide, describe and restore visibility
 
 ```sh

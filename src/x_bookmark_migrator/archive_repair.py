@@ -11,11 +11,12 @@ from .archive import (
     media_format,
     partial_source_response,
     plan_post,
+    restore_batch,
     save_manifest,
 )
 from .catalog import asset_key, checked_bytes, private_bytes
 from .core import PilotError, exact_id
-from .drive import digest, encode
+from .drive import Drive, digest, encode
 from .source import source_url
 
 
@@ -114,15 +115,46 @@ def preview_repairs(selected, max_bytes):
     }
 
 
-def write_repairs(store, drive, media_http, selected):
+def verify_author_sources(drive, payload):
+    chains = (payload["repair_source"], payload["retained_author_source"])
+    receipts = [chain[key] for chain in chains for key in ("manifest", "payload")]
+    if any(not isinstance(asset.get("storage"), dict) for asset in payload["media"]):
+        raise PilotError("Missing author repair media receipt.")
+    for receipt in receipts + [asset["storage"] for asset in payload["media"]]:
+        parents = drive.metadata(receipt["file_id"]).get("parents")
+        if parents != [receipt["parent_id"]] or drive.metadata(parents[0]).get("parents") != [
+            drive.root
+        ]:
+            raise PilotError("Author evidence is outside the pinned archive.")
+    for chain in chains:
+        rows = [json.loads(line) for line in drive.verify(chain["manifest"]).splitlines()]
+        matches = [r for r in rows if r["post_id"] == chain["post_id"]]
+        if len(matches) != 1 or matches[0]["payload"] != chain["payload"]:
+            raise PilotError("Author evidence manifest/payload binding differs.")
+        original = json.loads(drive.verify(chain["payload"]))
+        if original["post_id"] != chain["post_id"] or (
+            "envelope_sha256" in chain
+            and digest(encode(original["source_evidence"])) != chain["envelope_sha256"]
+        ):
+            raise PilotError("Author evidence identity differs.")
+
+
+def write_repairs(store, drive, media_http, selected, *, author_restore=None):
     plan = preview_repairs(selected, drive.max_bytes)["plan_sha256"]
     name = f"repair-{plan}.receipt.private.json"
     pending_name = f"repair-{plan}.manifest-intent.private.json"
     binding = {"plan_sha256": plan, "max_asset_bytes": drive.max_bytes, "drive_root": drive.root}
+    if author_restore is not None:
+        binding["reason"] = "retained_author"
     # Receipts can be copied between state directories. Check the actual remote
     # source batch belongs to this archive root before creating any successors.
     verified = set()
     for _, payload in selected:
+        if "retained_author_source" in payload:
+            if author_restore is None:
+                raise PilotError("Author repairs require independent restore.")
+            verify_author_sources(drive, payload)
+            continue
         manifest = payload["repair_source"]["manifest"]
         identity = (manifest["file_id"], manifest["sha256"])
         if identity not in verified:
@@ -132,6 +164,11 @@ def write_repairs(store, drive, media_http, selected):
             drive.verify(manifest)
             verified.add(identity)
     receipt, intent = store.read(name), store.read(pending_name)
+    if author_restore is not None and intent is not None and "reason" not in intent:
+        # Resume an earlier intent in place. Below we verify the frozen successor
+        # payload against this exact donor-bound plan before accepting its receipt.
+        del binding["reason"]
+    new_receipt = receipt is None
     if intent is None:
         if receipt is not None:
             raise PilotError("Repair receipt lacks its manifest intent.")
@@ -164,12 +201,22 @@ def write_repairs(store, drive, media_http, selected):
     if receipt is None:
         manifest = save_manifest(drive, rows)
         receipt = {**batch_receipt(manifest, rows, plan), **binding}
-        store.create(name, receipt)
     else:
         manifest = receipt["manifest"]
         expected_receipt = {**batch_receipt(manifest, rows, plan), **binding}
         if receipt != expected_receipt or drive.verify(manifest) != b"".join(map(encode, rows)):
             raise PilotError("Repair completion receipt differs from its manifest intent.")
+    if author_restore is not None:
+        fresh = Drive(store, drive.http, drive.root, drive.max_bytes)
+        fresh.preflight()
+        for _, payload in selected:
+            verify_author_sources(fresh, payload)
+        with author_restore.locked():
+            restore_batch(
+                fresh, manifest["file_id"], author_restore, manifest["sha256"], existing_ok=True
+            )
+    if new_receipt:
+        store.create(name, receipt)
     return batch_summary(name, receipt)
 
 

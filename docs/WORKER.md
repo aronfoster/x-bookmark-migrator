@@ -22,10 +22,13 @@ requires every local rollout gate. There is no default live mode.
 
 The service runs `--once --live --allow-delete --scheduled`. When intake is due,
 the worker checks identity and reads one fresh main bookmark window, even with a
-queued archive or delayed item. Only main-window candidates trigger first-page
-folder reads for category evidence, including in a previously drained folder.
-A historical pause stays on its original checkpoint and cursor. The daily pass
-selects only IDs from its main window, even if other IDs appear in a folder.
+queued archive or delayed item. An eligible main-window save takes priority.
+First-page folder reads can establish its category even in a previously
+drained folder. Other IDs observed during those category reads stay unselected.
+When the queue is empty and the main window has no eligible new save, the same
+pass can select folder-only history from eligible first pages. It shares the
+original request, item and spend limits. Stalled streams keep their historical
+stops and cursors. A delayed queued item prevents the historical fallback.
 A save without positive category evidence stays on X. The private run report
 counts these holds under `daily_category_unknown`.
 
@@ -39,9 +42,8 @@ audit, including after removal.
 
 Intake and queue retries share the lock, provider resets and spending limits.
 The timer prioritizes eligible daily archives and can drain already-queued
-history within the same item limit. FOS-169's desktop passes own folder-only
-historical discovery and update the historical per-stream coverage report.
-The report describes its last historical observation; each scheduled
+history within the same item limit. The worker updates historical coverage for
+the folder windows it actually reads during fallback. Each scheduled
 transaction records its own before/after folder comparison. The initial intake deadline
 honors up to one day of a legacy queue delay.
 

@@ -673,6 +673,11 @@ def create_local(store, name, data, *, existing_ok=False):
     if existing_ok and path.exists():
         from .publication import publication_bytes
 
+        reader_gid = getattr(store, "reader_gid", None)
+        if reader_gid is not None:
+            st = path.lstat()
+            if st.st_gid != reader_gid or st.st_mode & 0o7777 != 0o640:
+                raise PilotError("Existing restored file does not match reader permissions.")
         if publication_bytes(path) != data:
             raise PilotError("Existing restore bytes differ from independent remote readback.")
         return

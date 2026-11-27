@@ -556,6 +556,11 @@ def apply_plan(
             "folder_name_evidence": folder_evidence,
             "before": before,
             "inventory_post_ids": sorted(baseline.state["posts"]),
+            "inventory_folder_post_ids": sorted(
+                post_id
+                for post_id, record in baseline.state["posts"].items()
+                if verified["folder"]["id"] in record["folder_ids"]
+            ),
             "operator_attestation": plan["operator_attestation"],
         }
         # Both operations must finish durably before the network call. No exception

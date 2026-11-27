@@ -569,13 +569,19 @@ class Inventory:
             raise
         return name
 
-    def primary_candidates(self, excluded, limit):
-        """Select in inventory order, counting posts already returned by the main stream."""
-        return [
-            pid
-            for pid, record in self.state["posts"].items()
-            if pid not in excluded and ("daily_parent" not in self.state or record["seen_in_main"])
-        ][:limit]
+    def primary_candidates(self, excluded, limit, known_history=()):
+        """Use positive folder membership for history and fresh main IDs for daily intake."""
+        candidates = (pid for pid in self.state["posts"] if pid not in excluded)
+        if "daily_parent" in self.state:
+            if self.state.get("historical_fallback"):
+                candidates = (pid for pid in candidates if self.state["posts"][pid]["folder_ids"])
+            else:
+                candidates = (
+                    pid
+                    for pid in candidates
+                    if self.state["posts"][pid]["seen_in_main"] and pid not in known_history
+                )
+        return list(candidates)[:limit]
 
     def run(
         self,
@@ -585,6 +591,8 @@ class Inventory:
         max_calls=10,
         hydrate_batch_size=100,
         skip_hydration=(),
+        known_history=(),
+        historical_stops=None,
         primary_limit=None,
     ):
         validate_run_limits(max_calls, hydrate_batch_size)
@@ -595,6 +603,7 @@ class Inventory:
         amounts = Counter()
         state = self.state
         daily = "daily_parent" in state
+        paused = set()
         state["stop_reason"] = None
 
         def get(path, params):
@@ -641,7 +650,7 @@ class Inventory:
                 )
             state["in_flight"] = False
             self.save()
-            # Only daily intake selects candidates exclusively from the main window.
+            # Decide whether history is needed after the single fresh main read.
             first_streams = ["main", "folders"] if daily else ["folders", "main"]
             while True:
                 keys = first_streams + [k for k in state["streams"] if k.startswith("folder:")]
@@ -649,8 +658,21 @@ class Inventory:
                 if active is None:
                     break
                 item = state["streams"][active]
-                if daily and active == "folders" and not self.primary_candidates(skip_hydration, 1):
-                    item.update(status="blocked", reason="no_daily_candidates")
+                if daily and active == "folders" and not item["pages"]:
+                    if not self.primary_candidates(skip_hydration, 1, known_history):
+                        main = state["streams"]["main"]
+                        if (
+                            historical_stops is None
+                            or not main["pages"]
+                            or main["pages"][0]["errors"]
+                        ):
+                            item.update(status="blocked", reason="no_daily_candidates")
+                            self.save()
+                            continue
+                        paused = historical_stops()
+                        state["historical_fallback"] = True
+                if active in paused:
+                    item.update(status="paused", reason="historical_probe_stop")
                     self.save()
                     continue
                 if len(item["pages"]) >= state["limits"]["max_pages"]:
@@ -683,7 +705,7 @@ class Inventory:
             active = None
             pending_ids = [
                 pid
-                for pid in self.primary_candidates(skip_hydration, primary_limit)
+                for pid in self.primary_candidates(skip_hydration, primary_limit, known_history)
                 if state["posts"][pid]["hydration_status"] == "pending"
             ]
             for offset in range(0, len(pending_ids), hydrate_batch_size):

@@ -1065,6 +1065,51 @@ def test_discovery_hydrates_only_the_selected_archive_batch(
     assert not source.deletes
 
 
+def test_snapshot_separates_unattempted_complete_and_held_repairs(migration):
+    from x_bookmark_migrator.archive import batch_receipt
+    from x_bookmark_migrator.catalog import publish
+
+    store, drive, _, source, _, _, _, _ = migration
+    catalog = source.catalog
+    records = read_catalog(catalog)
+    records = records[:3]
+    ordinary = copy.deepcopy(records[1]["versions"][0])
+    for index, reason in enumerate(("retained_author", "targeted_lookup"), 1):
+        version = records[index]["versions"][0]
+        row = next(
+            entry
+            for entry in map(json.loads, drive.verify(version["manifest"]).splitlines())
+            if entry["post_id"] == records[index]["post_id"]
+        )
+        raw = encode(row)
+        manifest = {**version["manifest"], "sha256": digest(raw), "size_bytes": len(raw)}
+        version["manifest"] = manifest
+        plan = str(index) * 64
+        binding = dict(plan_sha256=plan, max_asset_bytes=drive.max_bytes, drive_root=drive.root)
+        journal = store
+        if reason == "retained_author":
+            binding["reason"] = reason
+        else:
+            journal = Store(store.root / "targeted-lookup-repairs")
+        journal.create(
+            f"repair-{plan}.receipt.private.json",
+            {**batch_receipt(manifest, [row], plan), **binding},
+        )
+        journal.create(f"repair-{plan}.manifest-intent.private.json", {**binding, "rows": [row]})
+    publish(catalog, records)
+    store.path("repair-" + "f" * 64 + ".receipt.private.json").write_bytes(b"incomplete")
+    report = snapshot(store, catalog=catalog)
+    assert report["archived_records"] == 3
+    assert report["complete_archives_unattempted"] == 1
+    assert report["complete_archives_not_removable"] == 2
+    assert report["blocked_archives_unattempted"] == 0
+    records[1]["versions"].append(ordinary)
+    publish(catalog, records)
+    mixed = snapshot(store, catalog=catalog)
+    assert mixed["complete_archives_unattempted"] == 2
+    assert mixed["complete_archives_not_removable"] == 1
+
+
 def scheduled_cli(tmp_path, monkeypatch, store, source, clock):
     cfg = dict(
         config(tmp_path),
@@ -1168,7 +1213,7 @@ def test_scheduled_service_discovers_later_save(migration, tmp_path, monkeypatch
 
         prior = native(store, "199", 200, {"data": {"bookmarked": False}})
         store.write(prior + ".window.private.json", {"window_status": "observed_empty"})
-    source.ids = ["110", *source.ids, "111", "112", "113"]
+    source.ids = ["110", *source.ids, "111", "112", "113", "199"]
     main_ids = {"101", "110"}
     main_reads = []
     folder_reads = []
@@ -1187,6 +1232,15 @@ def test_scheduled_service_discovers_later_save(migration, tmp_path, monkeypatch
                     "meta": {"next_token": "unused"},
                 },
             )
+        if route == "/2/tweets":
+            # After baseline replacement, the next due empty queue may resume history.
+            return httpx.Response(
+                200,
+                json={
+                    "data": [post(pid) for pid in request.url.params["ids"].split(",")],
+                    "includes": includes([]),
+                },
+            )
         if route.endswith("/folders"):
             folder_lists.append(request)
             return httpx.Response(
@@ -1203,7 +1257,13 @@ def test_scheduled_service_discovers_later_save(migration, tmp_path, monkeypatch
             if history == "unknown_category":
                 return httpx.Response(200, json={"data": [{"id": "199"}]})
             if route.endswith("/20"):
-                return httpx.Response(200, json={"data": [{"id": "199"}]})
+                return httpx.Response(
+                    200,
+                    json={
+                        "data": [{"id": "199"}] if "199" in source.ids else [],
+                        "meta": {"result_count": int("199" in source.ids)},
+                    },
+                )
         return source.handle(request)
 
     client = httpx.Client
@@ -1323,6 +1383,133 @@ def test_scheduled_service_discovers_later_save(migration, tmp_path, monkeypatch
     assert exit_status == int(report["stop_reason"] is not None)
     assert len(main_reads) == expected_reads + 1
     assert sum(r.url.path.endswith("/110") for r in source.deletes) == 1
-    assert len(source.provider.posts) == len(expected_removed)
+    if history in {"orphan_parent", "retry_parent"}:
+        assert source.deletes[-1].url.path.endswith("/199")
+        assert len(source.provider.posts) == len(expected_removed) + 1
+    else:
+        assert len(source.provider.posts) == len(expected_removed)
     if history in {"delayed", "paused"}:
         assert len(folder_lists) == old_lists
+
+
+@pytest.mark.parametrize(
+    "history",
+    [
+        "eligible",
+        "paused",
+        "blocked_window",
+        "delayed",
+        "request_limit",
+        "stalled_comparison",
+        "baseline_settled",
+        "baseline_unfinished",
+        "missing_comparison",
+    ],
+)
+def test_empty_queue_scheduled_folder_history(migration, tmp_path, monkeypatch, history):
+    from test_archive import includes, post
+
+    store, _, server, source, *_ = migration
+
+    now = [time.time()]
+
+    def clock():
+        return now[0]
+
+    monkeypatch.setattr(time, "time", clock)
+    token = store.read("tokens.private.json")
+    store.write("tokens.private.json", {**token, "expires_at": clock() + 7 * 86400})
+    scheduled_cli(tmp_path, monkeypatch, store, source, clock)
+    baseline = Inventory.load(store)
+    worker = make_worker(migration, tmp_path)
+    worker.bootstrap(baseline)
+    for item in worker.state["items"].values():
+        item["state"] = "blocked"
+    if history in {
+        "stalled_comparison",
+        "baseline_settled",
+        "baseline_unfinished",
+        "missing_comparison",
+    }:
+        # Use the real transaction writer and its frozen baseline, including for legacy replay.
+        worker.state["items"]["101"]["state"] = "queued"
+        source.ids = (
+            ["101", "102", "103"]
+            if history == "stalled_comparison"
+            else ["101", "102", "104", "103"]
+        )
+        worker.save()
+        result = worker.run(allow_delete=True)
+        assert result["stop_reason"] == (
+            "no_new_ids_observed" if history == "stalled_comparison" else None
+        )
+        attempt, _ = latest_attempt(store, "100", "101")
+        assert store.read(attempt + ".intent.private.json")["inventory_folder_post_ids"] == [
+            "101",
+            "102",
+            "103",
+        ]
+        if history == "missing_comparison":
+            store.path(attempt + ".window.private.json").unlink()
+        if history == "baseline_unfinished":
+            del worker.state["items"]["103"]
+        now[0] += 86401
+        worker.state["streams"].clear()
+        source.calls.clear()
+    # A known, unfinished baseline member keeps this folder eligible for a historical read.
+    if history != "blocked_window":
+        stream = baseline.state["streams"]["folder:10"]
+        stream["pages"].clear()
+        baseline.accept_page(
+            "folder:10",
+            {"data": [{"id": pid} for pid in ("101", "102", "103", "109")]},
+            "baseline-window",
+        )
+    if history == "paused":
+        baseline.state["streams"]["folder:10"].update(status="paused", next_token="held-cursor")
+    if history == "delayed":
+        worker.state["items"]["101"].update(state="queued", retry_at=clock() + 86400)
+    if history == "request_limit":
+        path = tmp_path / "config.json"
+        path.write_text(json.dumps(dict(json.loads(path.read_text()), max_calls=2)))
+    baseline.save()
+    worker.save()
+    source.ids.insert(0, "110")
+    paths = []
+
+    def handle(req):
+        path = req.url.path
+        paths.append(path)
+        assert "pagination_token" not in req.url.params
+        if path == "/2/users/100/bookmarks":
+            return httpx.Response(
+                200,
+                json={"data": [post("101")], "includes": includes([]), "meta": {"result_count": 1}},
+            )
+        if path == "/2/tweets":
+            assert req.url.params["ids"] == "110"
+            return httpx.Response(200, json={"data": [post("110")], "includes": includes([])})
+        return source.handle(req)
+
+    client = httpx.Client
+    handlers = iter((handle, server.handle, media_http) * 2)
+    monkeypatch.setattr(
+        httpx, "Client", lambda **kw: client(transport=httpx.MockTransport(next(handlers)), **kw)
+    )
+    assert cli.main() == int(history == "request_limit")
+    assert paths.count("/2/users/100/bookmarks") == 1
+    journal = store.read(JOURNAL)
+    assert Inventory.load(store).name == baseline.name
+    if history in {"eligible", "baseline_unfinished"}:
+        assert [req.url.path.rsplit("/", 1)[1] for req in source.deletes] == ["110"]
+        assert len(source.provider.posts) == 1
+        assert journal["streams"]["folder:10"]["confirmed_removed"] == 1
+        assert journal["items"]["110"]["discovery_state"] == "raindrop"
+    else:
+        assert len(paths) == 2
+        assert "110" not in journal["items"]
+        assert not source.provider.posts and not source.deletes
+        if history == "request_limit":
+            assert store.read("worker-report.private.json")["stop_reason"] == "request_limit"
+    calls = len(paths)
+    assert cli.main() == 0 and len(paths) == calls
