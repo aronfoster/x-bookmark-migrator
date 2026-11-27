@@ -127,6 +127,7 @@ Private JSON configuration fields:
 | --- | --- |
 | `schema_version` | `1` |
 | `owner_id`, `drive_folder_id` | Locally verified existing identities |
+| `drive_search_folder_id` | Optional ID of the dedicated, private search-text folder directly under the pinned archive root. Set in the existing protected worker configuration to enable publication. The first run indexes the complete verified catalog. |
 | `catalog_dir`, `restore_dir`, `raindrop_ledger_dir`, `raindrop_script` | Verified absolute paths to existing runtime resources |
 | `max_items` | 1–50; start at 1 for local acceptance |
 | `max_calls` | 1–100; shared across inventory/enrichment/DELETE and reserved after-reads |
@@ -202,6 +203,47 @@ lifetime limit and narrower run, request, and manual monthly limits still apply.
 Partial or repeated settlement is unsupported. An incomplete checkpoint or
 monthly regression stops reservations: retain all files for inspection rather
 than deleting a checkpoint or resetting a month. Settlement authorizes no live work.
+
+### Publish searchable text to Drive
+
+After an ordinary live worker pass, the configured worker picks up the latest
+catalog generation under the state and catalog locks. The same service command
+also picks up an offline approved edit on a tick when paid intake is not due.
+A completed, unchanged generation and renderer need no further requests.
+Both ordinary live modes publish when configured, including `--once --live`
+without `--allow-delete`. Offline and exact-plan modes retain their existing scope.
+
+Search runs after migration. The private worker report keeps the migration
+outcome and a separate `drive_search` status. An interrupted or failed search
+attempt leaves a pending status and a retry time 24 hours from its start. The
+same generation skips the rebuild and Drive calls until then. A changed catalog,
+renderer or destination can be checked earlier. The existing destination pin,
+uncertain-write holds and shared provider deferrals still apply. A search-only
+hold leaves daily migration on its own schedule.
+
+Each changed generation rebuilds from local receipts and reads back Drive units.
+For the first publication and the first single-bookmark change, record the report's
+verified unit count, elapsed seconds, local rebuild/verification seconds and
+Drive request count (including OAuth and streamed downloads). Keep these measurements
+with the private indexing observations.
+
+Use the existing owner grant and archive root. Start with an empty, sole-owner
+child folder reserved for this writer, or the previously pinned folder with its
+mapping restored. The publisher checks its parent, permissions, and contents.
+Its private journal records the folder, per-primary Drive IDs, pending writes
+and completed catalog digest. Preserve it alongside the Drive allocation journal.
+
+The worker uses its adopted receipts and the actual restore/receipt pairs from
+catalog builds and repair promotions. The catalog writer keeps those paths in
+owner-only `catalog-batches.private.json`; include it with the protected catalog
+backup. Legacy worker receipts use their existing hash-named restores. For a
+pre-upgrade catalog containing additional operator-named restores or repair
+versions, repeat the existing full offline `catalog-build` with its original
+batch pairs and verify it before enabling search. Every subsequent full build also
+replaces the recorded input list. Include every retained repair restore and its
+receipt along with the ordinary batches. A missing input or different
+projection stops publication. Use the existing [client probes](SEARCH_DESIGN.md#three-ways-to-find-the-same-saved-item)
+to measure indexing after byte readback.
 
 ## Recovery and safety
 

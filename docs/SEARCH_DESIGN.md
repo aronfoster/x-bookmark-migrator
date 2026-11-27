@@ -96,8 +96,9 @@ folder and files. A failed connection before sending an edit can be retried.
 After an ambiguous create or PATCH, a missing file or the old bytes leave the
 item on hold: a delayed request may still publish the older text.
 Readback of the intended bytes releases that hold. Back up the private search
-mapping with the existing allocation journal. This packet has no live command;
-desktop/Android indexing and actual-reader checks remain separate acceptance tests.
+mapping with the existing allocation journal. The [live worker](WORKER.md#publish-searchable-text-to-drive) now consumes the
+latest generation through its protected configuration. Desktop/Android indexing
+and actual-reader checks remain separate acceptance tests.
 
 ## Producing descriptions inside the authorized boundary
 

@@ -24,6 +24,7 @@ from .catalog import (
     publish,
     read_annotations,
     read_catalog,
+    remember_batches,
 )
 from .core import TOKEN_ROTATION, Client, PilotError
 from .discovery_gate import positive_media_only
@@ -156,9 +157,15 @@ class GuardedHTTP:
 
     def __init__(self, http, gate, provider):
         self.http, self.gate, self.provider = http, gate, provider
+        self.requests = 0
+
+    @property
+    def follow_redirects(self):
+        return self.http.follow_redirects
 
     def request(self, method, url, **kwargs):
         self.gate.check()
+        self.requests += 1
         response = self.http.request(method, url, **kwargs)
         self.gate.observe(response, self.provider)
         return response
@@ -169,6 +176,9 @@ class GuardedHTTP:
     def post(self, url, **kwargs):
         return self.request("POST", url, **kwargs)
 
+    def patch(self, url, **kwargs):
+        return self.request("PATCH", url, **kwargs)
+
     def delete(self, url, **kwargs):
         return self.request("DELETE", url, **kwargs)
 
@@ -178,6 +188,7 @@ class GuardedHTTP:
     @contextmanager
     def stream(self, method, url, **kwargs):
         self.gate.check()
+        self.requests += 1
         with self.http.stream(method, url, **kwargs) as response:
             self.gate.observe(response, self.provider)
             yield response
@@ -235,6 +246,7 @@ def snapshot(store, helpers=(), catalog=None, *, restore_dir=None):
             }
     return {
         **archival,
+        **({"drive_search": journal["drive_search"]} if "drive_search" in journal else {}),
         "known_records": len(journal["items"]),
         "states": dict(counts),
         "confirmed_removed": sum("confirmed_removed" in h for h in history.values()),
@@ -264,7 +276,7 @@ def require_catalog_versions(records, chains):
             raise PilotError("Catalog lacks the bound predecessor or donor version.")
 
 
-def merge_publication(output, incoming, *, required_versions=()):
+def merge_publication(output, incoming, *, batches=(), required_versions=()):
     """State lock -> catalog lock. Keep every old version and owner annotation."""
     with output.locked():
         prior = read_catalog(output) if output.path("catalog.jsonl").exists() else []
@@ -285,6 +297,8 @@ def merge_publication(output, incoming, *, required_versions=()):
                 else:
                     target["versions"].append(copy.deepcopy(version))
         records = [merged[k] for k in sorted(merged)]
+        if batches:
+            remember_batches(output, batches)
         publish(output, apply_annotations(records, read_annotations(output)))
 
 
