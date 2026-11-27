@@ -20,7 +20,7 @@ from x_bookmark_migrator.catalog import annotate, read_catalog
 from x_bookmark_migrator.core import WRITE_SCOPES, PilotError, Store
 from x_bookmark_migrator.drive import digest, encode
 from x_bookmark_migrator.inventory import Inventory
-from x_bookmark_migrator.unbookmark import latest_attempt
+from x_bookmark_migrator.unbookmark import attempt_base, latest_attempt
 from x_bookmark_migrator.worker import (
     DEFER,
     GATES,
@@ -1320,6 +1320,7 @@ def test_scheduled_service_discovers_later_save(migration, tmp_path, monkeypatch
         source.ids.insert(0, "114")
         retry_at = store.read(JOURNAL)["items"]["110"]["retry_at"]
         assert cli.main() == 0, capsys.readouterr()
+        assert store.read("worker-report.private.json")["run_counts"]["superseded_queued"] == 1
         deferred = store.read(JOURNAL)["items"]["110"]
         assert deferred["state"] == "retryable" and deferred["retry_at"] == retry_at
         assert [r.url.path.split("/")[-1] for r in source.deletes] == ["114"]
@@ -1404,6 +1405,7 @@ def test_scheduled_service_discovers_later_save(migration, tmp_path, monkeypatch
         "baseline_settled",
         "baseline_unfinished",
         "missing_comparison",
+        "unattributed_intents",
     ],
 )
 def test_empty_queue_scheduled_folder_history(migration, tmp_path, monkeypatch, history):
@@ -1456,6 +1458,23 @@ def test_empty_queue_scheduled_folder_history(migration, tmp_path, monkeypatch, 
         now[0] += 86401
         worker.state["streams"].clear()
         source.calls.clear()
+    if history == "unattributed_intents":
+        for pid, metadata in zip(
+            ("201", "202", "203"),
+            ({}, {"verified": None}, {"verified": {"folder": None}}),
+            strict=True,
+        ):
+            store.create(
+                attempt_base("100", pid) + "-000000.intent.private.json",
+                {
+                    "schema_version": 1,
+                    "state": "unbookmark_requested",
+                    "post_id": pid,
+                    "owner_id": "100",
+                    "endpoint": f"/2/users/100/bookmarks/{pid}",
+                    **metadata,
+                },
+            )
     # A known, unfinished baseline member keeps this folder eligible for a historical read.
     if history != "blocked_window":
         stream = baseline.state["streams"]["folder:10"]
@@ -1511,5 +1530,9 @@ def test_empty_queue_scheduled_folder_history(migration, tmp_path, monkeypatch, 
         assert not source.provider.posts and not source.deletes
         if history == "request_limit":
             assert store.read("worker-report.private.json")["stop_reason"] == "request_limit"
+    if history == "unattributed_intents":
+        report = store.read("worker-report.private.json")
+        assert report["stop_reason"] is None
+        assert report["run_counts"]["historical_stops_unattributed"] == 3
     calls = len(paths)
     assert cli.main() == 0 and len(paths) == calls

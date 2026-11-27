@@ -30,13 +30,18 @@ pass can select folder-only history from eligible first pages. It shares the
 original request, item and spend limits. Stalled streams keep their historical
 stops and cursors. A delayed queued item prevents the historical fallback.
 A save without positive category evidence stays on X. The private run report
-counts these holds under `daily_category_unknown`.
+counts these holds under `daily_category_unknown`. During historical fallback,
+`run_counts.historical_stops_unattributed` counts this owner's removal intents
+with missing folder identity. Any such intent holds the historical folder scan.
+Daily main-window intake can still obtain category evidence.
 
 Daily archive receipts identify their original inventory. If FOS-169 advances
 the historical baseline while a daily item is queued or its receipt awaits
 adoption, the worker retains the archive and the item's retry deadline. Removal
 then requires fresh discovery, archive verification and a plan against the
-current baseline. On a daily removal both checkpoints are invalidated for
+current baseline. The private report counts demoted queue entries under
+`run_counts.superseded_queued`. Rediscovery can incur additional X reads and
+Drive uploads. On a daily removal both checkpoints are invalidated for
 cursor resume. The worker retains checkpoints as evidence for recovery and
 audit, including after removal.
 

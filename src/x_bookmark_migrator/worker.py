@@ -582,9 +582,11 @@ class Worker:
             intent = self.store.read(path.name)
             if intent["owner_id"] != self.config["owner_id"]:
                 continue
-            folder = intent.get("verified", {}).get("folder", {}).get("id")
+            verified = intent.get("verified") or {}
+            folder = (verified.get("folder") or {}).get("id")
             if not folder:
-                stopped.add("folders")  # The legacy attempt cannot be attributed to a stream.
+                self.counts["historical_stops_unattributed"] += 1
+                stopped.add("folders")
                 continue
             window = self.store.read(path.name.replace(".intent.", ".window.")) or {}
             stop = window.get("window_status") != "new_ids_observed"
