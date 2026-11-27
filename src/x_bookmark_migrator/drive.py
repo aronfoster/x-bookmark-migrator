@@ -132,6 +132,16 @@ class Drive:
             raise PilotError("Drive returned a missing, trashed or mismatched file.")
         return value
 
+    def confined(self, file_id, expected_parent=None):
+        obj = self.metadata(file_id)
+        parents = obj.get("parents", [])
+        if len(parents) != 1 or (expected_parent is not None and parents != [expected_parent]):
+            raise PilotError("Object has an unexpected archive parent.")
+        folder = self.metadata(parents[0])
+        if folder.get("mimeType") != FOLDER or folder.get("parents") != [self.root]:
+            raise PilotError("Object is outside the selected archive root.")
+        return obj
+
     def preflight(self):
         root = self.metadata(self.root)
         if (

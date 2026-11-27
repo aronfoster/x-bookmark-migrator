@@ -19,7 +19,7 @@ from x_bookmark_migrator.catalog import publish, read_catalog
 from x_bookmark_migrator.core import TOKEN_ROTATION, PilotError
 from x_bookmark_migrator.drive import digest, encode
 from x_bookmark_migrator.unbookmark import make_plan
-from x_bookmark_migrator.worker import JOURNAL
+from x_bookmark_migrator.worker import JOURNAL, snapshot
 
 
 def test_manual_backlog_reads_latest_window_and_exact_repaired_version(migration, tmp_path):
@@ -58,6 +58,7 @@ def test_manual_backlog_reads_latest_window_and_exact_repaired_version(migration
     args.state_dir = store.root
     assert worker_cli.run(args) == {
         "mode": "inspect_backlog",
+        "withheld_unclassified_repairs": 0,
         "candidates": 1,
         "api_requests": 0,
         "source_sha256": candidate["source_read_sha256"],
@@ -81,7 +82,20 @@ def test_manual_backlog_reads_latest_window_and_exact_repaired_version(migration
         select_backlog(store, catalog, cfg, "10", sha)
 
 
-@pytest.mark.parametrize("repair", ["media", "tagged_author", "legacy_author"])
+@pytest.mark.parametrize(
+    "repair",
+    [
+        "media",
+        "tagged_author",
+        "legacy_author",
+        "text_only",
+        "legacy_author_text_only",
+        "text_only_missing_restore",
+        "text_only_worker_restore",
+        "text_only_wrong_manifest",
+        "text_only_symlink",
+    ],
+)
 def test_completed_repair_requires_published_exact_payload_and_bound_plan(
     migration, tmp_path, repair
 ):
@@ -90,8 +104,10 @@ def test_completed_repair_requires_published_exact_payload_and_bound_plan(
     catalog = source.catalog
     original = store.read(archived["private_receipt"])["manifest"]
     row, donor, *_ = map(json.loads, drive.verify(original).splitlines())
-    if repair == "legacy_author":
-        payload = json.loads(drive.verify(row["payload"]))
+    if "text_only" in repair:
+        row, donor = donor, row  # The second original primary genuinely has no attachments.
+    payload = json.loads(drive.verify(row["payload"]))
+    if repair.startswith("legacy_author"):
         evidence = payload["source_evidence"]
         evidence["response"]["includes"]["users"] = []
         payload["retained_author_source"] = {
@@ -102,11 +118,13 @@ def test_completed_repair_requires_published_exact_payload_and_bound_plan(
                 encode(json.loads(drive.verify(donor["payload"]))["source_evidence"])
             ),
         }
+    if repair.startswith("legacy_author"):
         data = encode(payload)
         row["payload"] = drive.save(
             row["category"], row["post_id"] + ".json", data, "application/json"
         )
-        (tmp_path / "restored" / (row["post_id"] + ".json")).write_bytes(data)
+        if repair == "legacy_author":
+            (tmp_path / "restored" / (row["post_id"] + ".json")).write_bytes(data)
     manifest = save_manifest(drive, [row])
     plan = "e" * 64
     name = f"repair-{plan}.receipt.private.json"
@@ -119,6 +137,28 @@ def test_completed_repair_requires_published_exact_payload_and_bound_plan(
     record = next(r for r in records if r["post_id"] == row["post_id"])
     (predecessor,) = record["versions"]
     successor = dict(predecessor, manifest=manifest, payload_receipt=row["payload"])
+    if "text_only" in repair:
+        assert not successor["media"] and not payload["media"]
+        if repair != "text_only_missing_restore":
+            parent = (
+                tmp_path / "worker-restored" if repair == "text_only_worker_restore" else tmp_path
+            )
+            restored = parent / "repair-copy"
+            restored.mkdir(parents=True, mode=0o700)
+            for filename, data in (
+                ("manifest.jsonl", drive.verify(manifest)),
+                (row["post_id"] + ".json", encode(payload)),
+            ):
+                out = restored / filename
+                out.write_bytes(data)
+                out.chmod(0o600)
+            if repair == "text_only_wrong_manifest":
+                (restored / "manifest.jsonl").write_bytes(b"wrong")
+            elif repair == "text_only_symlink":
+                outside = tmp_path / "nested" / "outside"
+                outside.parent.mkdir()
+                restored.rename(outside)
+                restored.symlink_to(outside)
     predecessor.update(archive_status="blocked", blockers=["blocked_byte_limit"])
     record["versions"].append(successor)
     source.ids = [row["post_id"]]
@@ -145,9 +185,20 @@ def test_completed_repair_requires_published_exact_payload_and_bound_plan(
         ]
     )
     args.state_dir = store.root
-    assert worker_cli.run(args)["candidates"] == int(repair == "media")
+    report = worker_cli.run(args)
+    ordinary = repair in {"media", "text_only", "text_only_worker_restore"}
+    assert report["candidates"] == int(ordinary)
+    assert report["withheld_unclassified_repairs"] == int(
+        repair in {"text_only_missing_restore", "text_only_wrong_manifest", "text_only_symlink"}
+    )
+    summary = snapshot(store, catalog=catalog, restore_dir=cfg["restore_dir"])
+    assert summary["complete_archives_not_removable"] == int(not ordinary)
+    if ordinary:
+        assert inspect()[0]["archive_receipt"] == name
     if repair != "media":
-        assert inspect() == []  # The archive is complete but removal needs donor replay.
+        assert (
+            bool(inspect()) == ordinary
+        )  # The archive is complete but removal needs donor replay.
         return
     (candidate,) = inspect()
     assert candidate["archive_receipt"] == name and candidate["payload"] == row["payload"]

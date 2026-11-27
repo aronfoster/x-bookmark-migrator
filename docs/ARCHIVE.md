@@ -245,3 +245,39 @@ Catalog merge requires both
 source versions to be present and preserves earlier versions and annotations.
 An interrupted run can resume the same plan and restore directory. This repair
 does not change the X removal verifier or authorize removal.
+
+## Repair a missing author from a saved targeted lookup
+
+For one primary whose only archived blocker is `blocked_missing_author`, run this
+offline preview with the existing protected paths. The lookup input is the saved
+HTTP envelope for the official multi-post lookup, including the request IDs,
+status, returned posts, expanded users and errors. A replay summary alone is
+insufficient. Use the affected primary's own restore directory and batch receipt.
+
+```sh
+x-migrator --state-dir "$STATE" archive-repair-lookup \
+  --batch "$PREDECESSOR_RESTORE" "$BATCH_RECEIPT" --post-id "$PRIMARY_ID" \
+  --lookup "$LOOKUP_ENVELOPE" --drive-folder-id "$DRIVE_ROOT" --catalog-dir "$CATALOG"
+```
+
+To apply on the desktop, repeat the command with `--apply-plan "$PLAN_SHA256"`
+from that preview. Keep any `--max-asset-bytes` setting identical. The saved
+request must cover the archived primary and referenced IDs, return each of them
+and have no error affecting them or with unknown scope. Unrelated tweet errors
+in the same batch may coexist with a successful repair.
+
+Apply reuses the original media, writes a create-only successor, restores it
+using a new Drive session into a sibling of the catalog, and merges it under
+the catalog lock only if the exact predecessor is still published. The full
+lookup stays in protected storage. Its file digest and the selected evidence
+travel with the successor. Retrying the same plan reuses the objects and catalog
+version. The repair journal is separate from removal anchors. The worker snapshot
+counts records whose only complete versions depend on lookup or donor evidence
+under `complete_archives_not_removable`. The removal verifier reconstructs authors
+from the original inventory. This command makes no X, media-CDN or Raindrop requests.
+
+In the read-only backlog listing, `withheld_unclassified_repairs` counts repair
+versions encountered during selection whose restored payload could not be
+verified. For a text-only repair, keep its verified manifest and payload together
+in a catalog sibling or an immediate child of the configured worker restore
+directory. A supplemental-author payload stays held even when its bytes verify.

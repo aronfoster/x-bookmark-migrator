@@ -14,7 +14,14 @@ from .inventory import Inventory
 from .publication import PublicationStore
 from .retained_authors import select_author_repairs
 
-COMMANDS = ("archive", "archive-probe", "archive-import-pilot", "archive-restore", "archive-repair")
+COMMANDS = (
+    "archive",
+    "archive-probe",
+    "archive-import-pilot",
+    "archive-restore",
+    "archive-repair",
+    "archive-repair-lookup",
+)
 
 
 def add_commands(sub):
@@ -24,7 +31,17 @@ def add_commands(sub):
             "--drive-folder-id", default=os.environ.get("X_ARCHIVE_DRIVE_FOLDER_ID")
         )
         parser.add_argument("--max-asset-bytes", type=int, default=64 * 1024 * 1024)
-        if name == "archive-repair":
+        if name == "archive-repair-lookup":
+            parser.add_argument(
+                "--batch", nargs=2, metavar=("RESTORE_DIR", "RECEIPT"), required=True
+            )
+            parser.add_argument(
+                "--lookup", required=True, help="Protected official lookup envelope"
+            )
+            parser.add_argument("--post-id", required=True)
+            parser.add_argument("--catalog-dir", required=True)
+            parser.add_argument("--apply-plan", metavar="SHA256")
+        elif name == "archive-repair":
             parser.add_argument(
                 "--batch",
                 nargs=2,
@@ -67,6 +84,10 @@ def add_commands(sub):
 def run(args):
     from pathlib import Path
 
+    if args.command == "archive-repair-lookup":
+        from . import targeted_lookup
+
+        return targeted_lookup.run(args)
     if args.command == "archive-repair":
         if not 1024 <= args.max_asset_bytes <= MAX_BYTES:
             raise PilotError("Unsupported repair byte limit.")
