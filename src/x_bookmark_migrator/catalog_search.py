@@ -29,7 +29,9 @@ def search_fields(record, version):
     for post in version["posts"]:
         child = post["id"]
         yield child, None, "text", post["text"]
-        yield child, None, "author", (post.get("author") or {}).get("username")
+        author = post.get("author") or {}
+        yield child, None, "author", author.get("username")
+        yield child, None, "author_name", author.get("name")
         article = post["raw"].get("article")
         if isinstance(article, dict):
             yield child, None, "article_title", article.get("title")
@@ -75,9 +77,29 @@ def search(records, queries):
                 match = match_clue(value, clues) if isinstance(value, str) else None
                 if match is None:
                     continue
-                rank, snippet = match
+                lexical_rank, snippet = match
                 aid = asset["asset_id"] if asset else ""
-                key = (pid, *snapshot, child, aid)
+                byte_hash = asset.get("storage", {}).get("sha256", "") if asset else ""
+                key = (pid, child, aid, byte_hash)
+                # Collapse repeated captures for presentation, keeping the exact snapshot
+                # that supplied the matching evidence. Changed bytes remain separate.
+                metadata = field in {
+                    "category",
+                    "approved_category",
+                    "folder",
+                    "author",
+                    "author_name",
+                }
+                rank = (
+                    *lexical_rank,
+                    metadata,
+                    bool(version["blockers"]),
+                    bool(asset and asset["availability"] != "local_hash_verified"),
+                    -int(pid),
+                    child,
+                    aid,
+                    *snapshot,
+                )
                 if key in hits and hits[key][0] <= rank:
                     continue
                 hit = {
@@ -98,7 +120,7 @@ def search(records, queries):
                         availability=asset["availability"],
                     )
                 hits[key] = rank, hit
-    ordered = sorted(hits, key=lambda key: (hits[key][0], key))
+    ordered = sorted(hits, key=lambda key: hits[key][0])
     return {"matches": [hits[k][1] for k in ordered[:3]], "total": len(hits), "network_calls": 0}
 
 

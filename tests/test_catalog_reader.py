@@ -18,9 +18,10 @@ from test_search_design import (  # noqa: F401
     VIDEO,
     VIDEO_ID,
     archive,
+    restored_batch,
 )
 
-from x_bookmark_migrator.catalog import annotate, build, lookup, read_catalog
+from x_bookmark_migrator.catalog import annotate, build, lookup, publish, read_catalog
 from x_bookmark_migrator.drive import digest
 
 
@@ -126,8 +127,8 @@ def test_paraphrased_media_ambiguity_refinement_and_absence(reader, playable):
     assert search(query)["total"] == 0
     hits = search(query, "wheel paper")["matches"]
     assert [(h["source_post_id"], h["containing_post_id"], h["asset_id"]) for h in hits] == [
-        ("701", "704", PHOTO_ID),
         ("703", "704", PHOTO_ID),
+        ("701", "704", PHOTO_ID),
     ]
     assert len({h["primary_excerpt"] for h in hits}) == 2
     for hit in hits:
@@ -170,3 +171,48 @@ def test_stale_selection_missing_and_changed_bytes(reader):
     open_hit(hit, error="missing locally")
     (batches[0][0] / "701.json").write_bytes(b"changed text")
     open_hit(search(TAIL)["matches"][0], error="differs from its receipt")
+
+
+def test_repaired_hit_field_priority_and_numeric_ties(reader, archive, storage, tmp_path):  # noqa: F811
+    search, open_hit, mounted = reader
+    output, _ = archive
+    # Reuse the same stored photo and post across a missing-author capture and its repair.
+    target = test_archive.post(
+        "999", text="Synthetic category beacon", attachments={"media_keys": ["p"]}
+    )
+    photo = dict(test_archive.photo("p"), alt_text="Harbor lighthouse")
+    context = test_archive.includes([photo])
+    restore = mounted[0][0].parent
+    batches = []
+    for name, posts, evidence in (
+        ("incomplete", [target], dict(context, users=[])),
+        (
+            "complete",
+            [
+                target,
+                test_archive.post("1000", text="Beacon"),
+                test_archive.post("9", text="Beacon"),
+            ],
+            context,
+        ),
+    ):
+        directory, receipt = restored_batch(tmp_path, storage[1], name, posts, evidence)
+        batches.append((directory.rename(restore / name), receipt))
+    records = build(batches, output)
+    publish(output, records)
+    result = search("beacon")
+    assert result["total"] == 3
+    assert [hit["source_post_id"] for hit in result["matches"]] == ["1000", "999", "9"]
+    repaired = result["matches"][1]
+    assert open_hit(repaired)["blockers"] == []
+    target_versions = next(r["versions"] for r in records if r["post_id"] == "999")
+    assert len(target_versions) == 2 and any(
+        "blocked_missing_author" in v["blockers"] for v in target_versions
+    )
+    result = search("synthetic category")
+    assert result["matches"][0]["matched_field"] == "text"
+    assert result["matches"][0]["source_post_id"] == "999"
+    assert search("Invented Author")["matches"][0]["matched_field"] == "author_name"
+    (photo_hit,) = search("harbor lighthouse")["matches"]
+    selected = open_hit(photo_hit)
+    assert selected["blockers"] == [] and Path(selected["attachment"]["path"]).read_bytes() == PNG
