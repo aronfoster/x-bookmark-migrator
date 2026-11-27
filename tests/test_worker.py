@@ -1062,3 +1062,48 @@ def test_discovery_hydrates_only_the_selected_archive_batch(
     assert inv.state["posts"]["106"]["hydration_status"] == "pending"
     assert worker.state["items"]["101"]["state"] == "blocked"
     assert not source.deletes
+
+
+def test_snapshot_separates_unattempted_complete_and_held_repairs(migration):
+    from x_bookmark_migrator.archive import batch_receipt
+    from x_bookmark_migrator.catalog import publish
+
+    store, drive, _, source, _, _, _, _ = migration
+    catalog = source.catalog
+    records = read_catalog(catalog)
+    records = records[:3]
+    ordinary = copy.deepcopy(records[1]["versions"][0])
+    for index, reason in enumerate(("retained_author", "targeted_lookup"), 1):
+        version = records[index]["versions"][0]
+        row = next(
+            entry
+            for entry in map(json.loads, drive.verify(version["manifest"]).splitlines())
+            if entry["post_id"] == records[index]["post_id"]
+        )
+        raw = encode(row)
+        manifest = {**version["manifest"], "sha256": digest(raw), "size_bytes": len(raw)}
+        version["manifest"] = manifest
+        plan = str(index) * 64
+        binding = dict(plan_sha256=plan, max_asset_bytes=drive.max_bytes, drive_root=drive.root)
+        journal = store
+        if reason == "retained_author":
+            binding["reason"] = reason
+        else:
+            journal = Store(store.root / "targeted-lookup-repairs")
+        journal.create(
+            f"repair-{plan}.receipt.private.json",
+            {**batch_receipt(manifest, [row], plan), **binding},
+        )
+        journal.create(f"repair-{plan}.manifest-intent.private.json", {**binding, "rows": [row]})
+    publish(catalog, records)
+    store.path("repair-" + "f" * 64 + ".receipt.private.json").write_bytes(b"incomplete")
+    report = snapshot(store, catalog=catalog)
+    assert report["archived_records"] == 3
+    assert report["complete_archives_unattempted"] == 1
+    assert report["complete_archives_not_removable"] == 2
+    assert report["blocked_archives_unattempted"] == 0
+    records[1]["versions"].append(ordinary)
+    publish(catalog, records)
+    mixed = snapshot(store, catalog=catalog)
+    assert mixed["complete_archives_unattempted"] == 2
+    assert mixed["complete_archives_not_removable"] == 1

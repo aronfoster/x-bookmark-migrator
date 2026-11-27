@@ -270,6 +270,7 @@ using a new Drive session into a sibling of the catalog, and merges it under
 the catalog lock only if the exact predecessor is still published. The full
 lookup stays in protected storage. Its file digest and the selected evidence
 travel with the successor. Retrying the same plan reuses the objects and catalog
-version. The repair journal is separate from removal anchors. The existing
-removal verifier cannot reconstruct supplemental authors from the original
-inventory alone. This command makes no X, media-CDN or Raindrop requests.
+version. The repair journal is separate from removal anchors. The worker snapshot
+counts records whose only complete versions depend on lookup or donor evidence
+under `complete_archives_not_removable`. The removal verifier reconstructs authors
+from the original inventory. This command makes no X, media-CDN or Raindrop requests.
