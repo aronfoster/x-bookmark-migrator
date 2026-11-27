@@ -86,7 +86,23 @@ def local_target(output, record, key, sha):
 
 def snapshot(item):
     # Canonical JSON preserves type distinctions (e.g. true versus 1).
-    return json.dumps({k: v for k, v in item.items() if k != "lastUpdate"}, sort_keys=True)
+    return {k: json.dumps(v, sort_keys=True) for k, v in item.items() if k != "lastUpdate"}
+
+
+def attachment_choices(media):
+    choices = {}
+    for asset in media:
+        sha = asset.get("storage", {}).get("sha256")
+        identity = (asset["asset_id"], sha)
+        if identity not in choices or asset["availability"] == "local_hash_verified":
+            choices[identity] = {
+                "asset_id": asset["asset_id"],
+                "sha256": sha,
+                "type": asset["logical_type"],
+                "availability": asset["availability"],
+                "description": asset.get("description"),
+            }
+    return list(choices.values())
 
 
 def receipt(edit):
@@ -101,6 +117,8 @@ def receipt(edit):
             "asset_id",
             "sha256",
             "description",
+            "reconciles_preview_id",
+            "changed_fields",
             "approved_at",
             "verified_at",
         )
@@ -124,16 +142,7 @@ def run(adapter, output, args):
                 "excerpt": item.get("excerpt"),
                 "provider_media": item.get("media", []),
                 "cover": item.get("cover"),
-                "attachments": [
-                    {
-                        "asset_id": a["asset_id"],
-                        "sha256": a.get("storage", {}).get("sha256"),
-                        "type": a["logical_type"],
-                        "availability": a["availability"],
-                        "description": a.get("description"),
-                    }
-                    for a in media
-                ],
+                "attachments": attachment_choices(media),
             }
             if args.action == "inspect":
                 return view
@@ -171,11 +180,15 @@ def run(adapter, output, args):
                 edit["status"] = "declined"
                 adapter.store.write(name, edit)
                 return receipt(edit)
-            return approve(adapter, output, records, name, edit)
+            return decide(
+                adapter, output, records, name, edit, reconcile=args.action == "reconcile"
+            )
 
 
-def approve(adapter, output, records, name, edit):
-    if edit["status"] == "verified":
+def decide(adapter, output, records, name, edit, *, reconcile):
+    if reconcile and (edit["status"] != "attempted" or "reconciles_preview_id" in edit):
+        raise PilotError("Reconciliation needs the original attempted write.")
+    if edit["status"] in ("verified", "reconciled"):
         return receipt(edit)
     if edit["status"] not in ("preview", "attempted"):
         raise PilotError("This preview is closed. Inspect the item before a new proposal.")
@@ -187,22 +200,35 @@ def approve(adapter, output, records, name, edit):
     key, sha, description = edit["asset_id"], edit["sha256"], edit["description"]
     prior = local_target(output, record, key, sha)
     expected = {**edit["before"], "excerpt": description}
+    if reconcile:
+        return reconciliation_preview(adapter.store, edit, current, prior)
+    local_only = "reconciles_preview_id" in edit
     if edit["status"] == "preview":
         if snapshot(current) != snapshot(edit["before"]) or prior != edit["local_before"]:
             raise PilotError("Preview is stale. Inspect and preview again.")
         edit.update(status="attempted", approved_at=now())
         adapter.store.write(name, edit)  # Durable intent before the only PUT.
-        try:
-            adapter.put_excerpt(rid, description)
-        except PilotError as exc:
-            status = exc.summary.get("provider", {}).get("http_status", "")
-            if status.startswith("4") and status != "408":
-                edit["status"] = "rejected"
-                adapter.store.write(name, edit)
-                raise
-            # The server may have applied it. Only a fresh GET can settle this.
-        current = adapter.read_active_item(rid)
+        if not local_only:
+            try:
+                adapter.put_excerpt(rid, description)
+            except PilotError as exc:
+                provider = (exc.summary or {}).get("provider") or {}
+                status = str(provider.get("http_status", ""))
+                if status.startswith("4") and status != "408":
+                    edit["status"] = "rejected"
+                    adapter.store.write(name, edit)
+                    raise PilotError(
+                        "Write rejected. Resolve the reported cause or wait for the rate limit, "
+                        "then start a new preview for approval.",
+                        summary=exc.summary,
+                    ) from exc
+                # The server may have applied it. Only a fresh GET can settle this.
+            current = adapter.read_active_item(rid)
     if snapshot(current) != snapshot(expected):
+        if not local_only and current.get("excerpt") == description:
+            raise PilotError(
+                "Other fields changed. Use reconcile to preview a local-only decision."
+            )
         raise PilotError("Readback differs from approved state. No automatic retry. Inspect again.")
     if record:
         if prior not in (edit["local_before"], description):
@@ -214,12 +240,37 @@ def approve(adapter, output, records, name, edit):
                 key,
                 sha256=sha,
                 description=description,
-                edit_id=edit["preview_id"],
+                edit_id=edit.get("reconciles_preview_id", edit["preview_id"]),
             )
         else:
             notes = read_annotations(output)
             notes.setdefault("bookmark_descriptions", {})[record["post_id"]] = description
             save_annotations(output, records, notes)
-    edit.update(status="verified", verified_at=now())
+    edit.update(status="reconciled" if local_only else "verified", verified_at=now())
     adapter.store.write(name, edit)
     return receipt(edit)
+
+
+def reconciliation_preview(store, edit, current, prior):
+    if current.get("excerpt") != edit["description"]:
+        raise PilotError("Raindrop does not hold the exact approved wording.")
+    expected = snapshot({**edit["before"], "excerpt": edit["description"]})
+    observed = snapshot(current)
+    changed = sorted(
+        k for k in expected.keys() | observed.keys() if expected.get(k) != observed.get(k)
+    )
+    if not changed:
+        raise PilotError("Readback matches. Resume the original approved preview.")
+    if {"link", "user", "userId"} & set(changed) or prior != edit["local_before"]:
+        raise PilotError("Source, owner or local description changed. Inspect the item again.")
+    recovery = {
+        **edit,
+        "preview_id": uuid4().hex,
+        "status": "preview",
+        "before": current,
+        "reconciles_preview_id": edit["preview_id"],
+        "changed_fields": changed,
+    }
+    recovery.pop("approved_at")
+    store.create(f"correction-{recovery['preview_id']}.private.json", recovery)
+    return {**receipt(recovery), "excerpt": current["excerpt"], "previous_local_description": prior}

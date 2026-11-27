@@ -41,8 +41,14 @@ def add_commands(sub):
             preview = actions.add_parser("preview")
             preview.add_argument("--link", required=True)
             preview.add_argument("--description", required=True)
-            preview.add_argument("--asset-id")
+            preview.add_argument(
+                "--asset-id",
+                help="Required for a saved primary with media; select the reviewed attachment.",
+            )
             preview.add_argument("--sha256")
+            actions.add_parser(
+                "reconcile", help="Preview local-only recovery of a divergent write."
+            ).add_argument("--preview-id", required=True)
             for action in ("approve", "decline"):
                 actions.add_parser(action).add_argument("--preview-id", required=True)
             continue

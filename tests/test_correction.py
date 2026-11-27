@@ -10,6 +10,7 @@ import pytest
 from test_catalog import corpus, storage  # noqa: F401
 
 from x_bookmark_migrator.catalog import build, publish, read_catalog
+from x_bookmark_migrator.correction import attachment_choices
 
 LINK = "https://app.raindrop.io/my/0/item/42"
 WORDING = "  Blue helix — owner's recall cue: orrery.\n"
@@ -33,8 +34,9 @@ assert args == ["42"]
 if cmd == "update-excerpt-json":
     payload = json.load(sys.stdin)
     assert set(payload) == {"excerpt"}
-    if mode == "reject":
-        print('{"http_status":"400"}', file=sys.stderr)
+    if mode in ("reject", "rate_limit"):
+        status = "429" if mode == "rate_limit" else "400"
+        print(json.dumps({"http_status": status}), file=sys.stderr)
         sys.exit(1)
     if mode != "unapplied":
         item.update(payload, lastUpdate="new")
@@ -176,7 +178,7 @@ def test_bookmark_without_local_media(interaction, tmp_path, pid):
         assert next(r for r in rebuilt if r["post_id"] == pid)["approved_description"] == WORDING
 
 
-@pytest.mark.parametrize("fault", ["drift", "unapplied", "reject", "stale", "bytes"])
+@pytest.mark.parametrize("fault", ["drift", "unapplied", "reject", "rate_limit", "stale", "bytes"])
 def test_failed_decision_never_reissues_put(interaction, tmp_path, fault):
     call, item_file, catalog, _ = interaction
     asset = next(a for a in call("inspect", "--link", LINK)["attachments"] if a["type"] == "photo")
@@ -198,8 +200,85 @@ def test_failed_decision_never_reissues_put(interaction, tmp_path, fault):
         (tmp_path / "restored" / "101_101_01.png").write_bytes(b"changed bytes")
     else:
         (tmp_path / "fault").write_text(fault)
-    for _ in range(2):
-        call("approve", "--preview-id", edit, ok=False)
+    error = call("approve", "--preview-id", edit, ok=False)
+    if fault == "rate_limit":
+        assert "rate limit" in error and "new preview" in error
+    call("approve", "--preview-id", edit, ok=False)
     writes = (tmp_path / "calls").read_text().splitlines().count("update-excerpt-json")
     assert writes == (0 if fault in ("stale", "bytes") else 1)
     assert catalog.read("annotations.private.json") is None
+
+
+def test_two_step_local_reconciliation(interaction, tmp_path):
+    call, item_file, catalog, batch = interaction
+    asset = next(a for a in call("inspect", "--link", LINK)["attachments"] if a["type"] == "photo")
+    original = call(
+        "preview",
+        "--link",
+        LINK,
+        "--description",
+        WORDING,
+        "--asset-id",
+        asset["asset_id"],
+        "--sha256",
+        asset["sha256"],
+    )["preview_id"]
+    call("reconcile", "--preview-id", original, ok=False)
+    (tmp_path / "fault").write_text("drift")
+    assert "Other fields changed" in call("approve", "--preview-id", original, ok=False)
+    item = json.loads(item_file.read_text())
+    assert item["excerpt"] == WORDING
+    # A provider-normalized excerpt or retargeted link must never be adopted.
+    for change in (
+        {"excerpt": WORDING.strip()},
+        {"link": "https://x.com/new/status/101"},
+        {"user": {"$id": 999}},
+        {"_id": 99},
+    ):
+        item_file.write_text(json.dumps({**item, **change}))
+        call("reconcile", "--preview-id", original, ok=False)
+    item_file.write_text(json.dumps(item))
+
+    def preview():
+        view = call("reconcile", "--preview-id", original)
+        assert view["reconciles_preview_id"] == original
+        assert view["excerpt"] == view["description"] == WORDING
+        assert view["sha256"] == asset["sha256"] and view["status"] == "preview"
+        return view
+
+    first = preview()
+    assert first["changed_fields"] == ["extension"]  # true changed to 1
+    call("decline", "--preview-id", first["preview_id"])
+    call("approve", "--preview-id", first["preview_id"], ok=False)
+    stale = preview()
+    item["note"] = "Another client's edit"
+    item_file.write_text(json.dumps(item))
+    assert "stale" in call("approve", "--preview-id", stale["preview_id"], ok=False)
+    final = preview()
+    assert final["changed_fields"] == ["extension", "note"]
+    assert catalog.read("annotations.private.json") is None
+    unchanged = item_file.read_bytes()
+    receipt = call("approve", "--preview-id", final["preview_id"])
+    assert receipt["status"] == "reconciled" and receipt["reconciles_preview_id"] == original
+    assert call("approve", "--preview-id", final["preview_id"]) == receipt
+    assert item_file.read_bytes() == unchanged
+    assert (tmp_path / "calls").read_text().splitlines().count("update-excerpt-json") == 1
+    notes = catalog.read("annotations.private.json")
+    assert notes[asset["asset_id"]]["descriptions"][asset["sha256"]] == WORDING
+    assert list(notes["description_edit_history"]) == [original]
+    assert read_catalog(catalog) == build([batch], catalog)
+
+
+def test_inspect_shared_capture_keeps_distinct_byte_versions():
+    asset = {
+        "asset_id": "101:photo",
+        "storage": {"sha256": "a" * 64},
+        "logical_type": "photo",
+        "availability": "missing_local",
+    }
+    local = {**asset, "availability": "local_hash_verified"}
+    choices = attachment_choices([asset, local, asset, {**asset, "storage": {"sha256": "b" * 64}}])
+    assert [(a["sha256"], a["availability"]) for a in choices] == [
+        ("a" * 64, "local_hash_verified"),
+        ("b" * 64, "missing_local"),
+    ]
