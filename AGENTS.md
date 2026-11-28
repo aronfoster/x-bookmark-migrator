@@ -17,7 +17,7 @@ response schema or pagination guarantees from another endpoint.
 
 Use only documented official APIs. Never publish real tokens, callback URLs,
 account IDs/usernames, bookmark content, folder names or private diagnostic filenames.
-Tests must use synthetic data. Verify locally before uploading:
+Tests must use synthetic data. When iterating on code changes, run targeted tests (`uv run pytest -q tests/<file> -k <pattern>`). Before uploading a PR that changes code, tests, or dependencies, run:
 
 ```
 uv sync --locked
@@ -26,4 +26,6 @@ uv run ruff format --check .
 uv run pytest -q
 ```
 
-Synthetic tests do not prove live access, billing, completeness or archival.
+Skip the test suite for docs-only or instruction-only changes. Synthetic tests do not prove live access, billing, completeness or archival.
+
+For local desktop deployment, do not improvise throwaway multi-step installer scripts in `~/.cache/` or `/tmp/`. Prefer a simple repo-tracked deploy script or direct `sudo cp` / `systemctl restart` commands, and always syntax-check (`python3 -m py_compile` / `bash -n`) any script handed to the user before presenting it.
