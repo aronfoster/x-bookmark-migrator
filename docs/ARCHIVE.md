@@ -44,7 +44,7 @@ against the linked official documentation while addressing PR #4 reviews.
 | [Folder contents](https://docs.x.com/x-api/users/get-bookmarks-by-folder-id) | `data` contains IDs, not hydrated bodies. Request parameters do not prove complete response coverage. | Owner previously observed the same capped window without metadata. Preserve positive named-category evidence; absent membership stays unknown. |
 | [Lookup index](https://docs.x.com/x-api/posts/lookup/introduction), [GET /2/tweets](https://docs.x.com/x-api/posts/get-posts-by-ids) | 1–100 exact IDs, selected fields/expansions; returned data and optional errors. Current enums do not list the old nested referenced-tweet media expansion. | `archive-enrich` explicitly looks up direct quote/repost IDs, at most 20 per primary. Missing nested context remains blocked. No guessed expansion or paid fallback. |
 | [Data dictionary](https://docs.x.com/x-api/fundamentals/data-dictionary) | Generic documentation still describes `note_tweet.text`, while endpoint schemas show `note_post.text`. Article shape is not specified sufficiently to prove its full body. Variants expose `content_type`, `bit_rate`, `url`. | Preserve both documented long-text dialects; conflicting values block. Every Article stays `blocked_incomplete_article`, even if an unverified `text` member appears. Highest-bitrate observed MP4 is selected; HLS/posters do not substitute. |
-| [Errors](https://docs.x.com/x-api/fundamentals/response-codes-and-errors), [bookmark integration](https://docs.x.com/x-api/posts/bookmarks/integrate) | A successful HTTP response can contain partial errors. Authentication/access/rate errors differ from deletion. | Existing read-only user grant and reservation caps remain. No automatic retries; partial/missing references block affected archives. |
+| [Errors](https://docs.x.com/x-api/fundamentals/response-codes-and-errors), [bookmark integration](https://docs.x.com/x-api/posts/bookmarks/integrate) | A successful HTTP response can contain partial errors. Authentication/access/rate errors differ from deletion. | Existing read-only user grant remains. No automatic retries; partial/missing references block affected archives. |
 | [Drive upload](https://developers.google.com/workspace/drive/api/guides/manage-uploads), [files.create](https://developers.google.com/workspace/drive/api/reference/rest/v3/files/create), [generateIds](https://developers.google.com/workspace/drive/api/reference/rest/v3/files/generateIds) | Create metadata, obtain a resumable upload session, PUT bytes. Pre-generated IDs support safe create retries; an already completed create can return 409. | Persist the ID before creation. On an explicit rerun, inspect the same ID and GET its bytes; never overwrite. An interrupted partial upload restarts a session with the same file ID, not a new object. No live write here. |
 | [files.list](https://developers.google.com/workspace/drive/api/reference/rest/v3/files/list), [search](https://developers.google.com/workspace/drive/api/guides/search-files) | Parent query and private appProperties identify objects; pagination/incomplete search must be handled. | A bounded exact-key search recovers the remote object if the local journal was lost. Ambiguous or incomplete results stop instead of choosing a duplicate. One serialized writer/state directory is required. |
 | [files.get](https://developers.google.com/workspace/drive/api/reference/rest/v3/files/get), [downloads](https://developers.google.com/workspace/drive/api/guides/manage-downloads), [about.get](https://developers.google.com/workspace/drive/api/reference/rest/v3/about/get) | Metadata/capabilities and `alt=media` byte retrieval; account identity and storage quota. | Root ownership/write capability and account pin checked. Every saved asset/payload/manifest is downloaded and SHA-256/size checked. This implementation supports an owner-controlled My Drive folder. |
@@ -119,19 +119,17 @@ API calls**. Repeat `--post-id` to choose specific inventory IDs; otherwise it
 uses the first five. It does not automatically skip blocked records or drain a
 folder. For a folder-only ID without a body, finish the existing inventory's
 bounded hydration first. If direct quote/repost expansions lack authors or media, run the
-explicit paid step using the same budget configuration as inventory:
+explicit paid step for the missing references:
 
 ```sh
-uv run --env-file .env x-migrator archive-enrich --max-posts 5 \
-  --console-hard-cap-confirmed --auto-recharge-off-confirmed
+uv run --env-file .env x-migrator archive-enrich --max-posts 5
 ```
 
 This unions direct reference IDs across the selected primaries and reads them in
 chunks of at most 100 IDs. The default five primaries need at most one identity
 read and one lookup; the maximum 20 primaries with 20 references each need at
 most one identity read and four lookups. Shared IDs are requested once per run.
-The existing per-call/run/month reservation settings remain required; fewer
-requests are not a claim about per-resource billing or actual cost. Repeating
+Fewer requests are not a claim about per-resource billing or actual cost. Repeating
 this explicit command repeats paid reads; there is no hidden retry. Actual
 Console charges must be recorded separately. The archived payload retains every
 raw response. Explicit tweet errors block the affected references (including

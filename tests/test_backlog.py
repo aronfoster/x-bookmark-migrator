@@ -2,7 +2,6 @@ import argparse
 import copy
 import json
 import sys
-from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import httpx
@@ -14,7 +13,6 @@ from test_worker import config, make_worker
 from x_bookmark_migrator import cli, worker_cli
 from x_bookmark_migrator.archive import batch_receipt, save_manifest
 from x_bookmark_migrator.backlog import select_backlog
-from x_bookmark_migrator.billing import HIGH_WATER, cutoff, settle
 from x_bookmark_migrator.catalog import publish, read_catalog
 from x_bookmark_migrator.core import TOKEN_ROTATION, PilotError
 from x_bookmark_migrator.drive import digest, encode
@@ -373,8 +371,6 @@ def test_real_cli_requires_complete_sources_and_rejects_staged_artifact_on_gener
         "100",
         "--drive-folder-id",
         "root",
-        "--per-call-reserve-usd",
-        ".01",
         "--catalog-dir",
         str(source.catalog.root),
         "--raindrop-ledger-dir",
@@ -383,8 +379,6 @@ def test_real_cli_requires_complete_sources_and_rejects_staged_artifact_on_gener
         str(source.adapter.script),
         "--legacy-removal-helper-retired",
         "--confirm-unbookmark",
-        "--console-hard-cap-confirmed",
-        "--auto-recharge-off-confirmed",
     )
     assert status == 1 and "not an executable unbookmark plan" in result.err
     assert (files(), len(server.calls)) == before
@@ -401,8 +395,6 @@ def test_real_cli_requires_complete_sources_and_rejects_staged_artifact_on_gener
         "missing_link",
         "missing_restore",
         "rate_limit",
-        "half_settled",
-        "spend_cap",
         "identity_denied",
     ],
 )
@@ -453,12 +445,8 @@ def test_staged_worker_dispatch(migration, tmp_path, monkeypatch, capsys, fault)
     monkeypatch.setattr(worker_cli, "Drive", lambda *a: migration[1])
     monkeypatch.setenv("X_CLIENT_ID", "fixture")
     monkeypatch.setenv("RAINDROP_TOKEN", "fixture")
-    store.write(
-        "worker-billing.private.json",
-        {"actual_usd": "0", "observed_at": datetime.now(UTC).isoformat()},
-    )
-    reserved = "20.00" if fault == "spend_cap" else "1.00"
-    store.write("budget.private.json", {datetime.now(UTC).strftime("%Y-%m"): reserved})
+    legacy_ledger = {"2026-11": "100.00"}
+    store.write("budget.private.json", legacy_ledger)
     envelope = staged["plan_sha256"]
     if fault == "hold":
         store.write(JOURNAL, {"schema_version": 1, "items": {"102": {"state": "blocked"}}})
@@ -494,21 +482,6 @@ def test_staged_worker_dispatch(migration, tmp_path, monkeypatch, capsys, fault)
             *args,
         ],
     )
-    if fault == "half_settled":
-        settle(
-            store,
-            expected=cutoff(store)["cutoff_sha256"],
-            cumulative="0.50",
-            through=datetime.now(UTC).isoformat(),
-            evidence="3" * 64,
-            attested=True,
-        )
-    if fault == "spend_cap":
-        assert cli.main() == 1
-        assert "Staged removal stopped: spend_cap" in capsys.readouterr().err
-        assert before == (len(server.calls), len(source.calls))
-        assert not source.deletes and not list(store.root.glob("unbookmark-*.intent.private.json"))
-        return
     if fault in ("hold", "repinned"):
         with pytest.raises(PilotError, match="held|digest differs"):
             run(*args)
@@ -528,7 +501,7 @@ def test_staged_worker_dispatch(migration, tmp_path, monkeypatch, capsys, fault)
                 *args,
             ],
         )
-        if fault in ("half_settled", "identity_denied"):
+        if fault == "identity_denied":
             calls = []
 
             def deny(req):
@@ -536,16 +509,11 @@ def test_staged_worker_dispatch(migration, tmp_path, monkeypatch, capsys, fault)
                 return httpx.Response(403, json={"detail": "fixture"})
 
             client.http = real_client(transport=httpx.MockTransport(deny))
-            if fault == "half_settled":
-                store.path(HIGH_WATER).unlink()
-                store.write(
-                    "tokens.private.json", dict(store.read("tokens.private.json"), expires_at=0)
-                )
             token_before = store.read("tokens.private.json")
             rotation_before = store.read(TOKEN_ROTATION)
             assert cli.main() == 1
             output = capsys.readouterr()
-            assert calls == ([] if fault == "half_settled" else ["/2/users/me"])
+            assert calls == ["/2/users/me"]
             assert len(server.calls) == before[0] and not source.provider.calls
             assert not list(store.root.glob("unbookmark-*.intent.private.json"))
             assert store.read("tokens.private.json") == token_before
@@ -556,6 +524,7 @@ def test_staged_worker_dispatch(migration, tmp_path, monkeypatch, capsys, fault)
                 assert name not in output.err + output.out and "http_403" in output.err
             return
         status = cli.main()
+        assert store.read("budget.private.json") == legacy_ledger
         targets = [r.url.path.rsplit("/", 1)[-1] for r in source.deletes]
         intents = len(list(store.root.glob("unbookmark-*.intent.private.json")))
         print(

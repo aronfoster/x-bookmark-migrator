@@ -11,11 +11,9 @@ import re
 import time
 from collections import Counter
 from contextlib import contextmanager
-from decimal import Decimal
 from pathlib import Path
 
 from .archive import archive_batch, enrich_references, restore_batch
-from .billing import ledger, money, reserve
 from .catalog import (
     apply_annotations,
     build,
@@ -59,60 +57,8 @@ GATES = (
     "removal_sources_complete",
     "fos166_runtime_accepted",
     "fos216_backfill_accepted",
-    "console_cap_confirmed",
-    "auto_recharge_off",
     "live_authorized",
 )
-
-
-def removal_gates(config, *, exact_plan):
-    if exact_plan and config.get("manual_plan_local_budget_only") is True:
-        return tuple(key for key in GATES if key != "console_cap_confirmed")
-    return GATES
-
-
-def reservation_total(store):
-    return sum(ledger(store).values(), Decimal(0))
-
-
-class CumulativeBudget:
-    """Conservative lifetime reservations; no calendar reset, no automatic release.
-
-    Actual Console observations are separate evidence. Without a reconciled billing
-    cutoff we add actual and reservations conservatively, never release reservations automatically.
-    """
-
-    def __init__(self, store, rates, run_cap, max_calls, *, actual="0", cap="20"):
-        if set(rates) != set(OPERATIONS):
-            raise PilotError("Supply a reviewed reservation for each operation.")
-        self.store, self.rates = store, {k: money(v) for k, v in rates.items()}
-        self.per_call = max(self.rates.values())
-        self.run_cap, self.cap, self.actual = money(run_cap), money(cap), money(actual)
-        if (
-            not 0 < self.cap <= 20
-            or not 0 < self.run_cap <= self.cap
-            or any(v <= 0 for v in self.rates.values())
-            or self.rates["delete"] < Decimal(".005")
-            or type(max_calls) is not int
-            or not 1 <= max_calls <= 100
-        ):
-            raise PilotError("Invalid worker budget or request bounds.")
-        self.used, self.max_calls = Decimal(0), max_calls
-        self.operations = Counter()
-        self.amounts = Counter()
-        reservation_total(store)
-
-    def reserve(self):
-        self.reserve_operation("other")
-
-    def reserve_operation(self, operation):
-        amount = self.rates[operation]
-        if sum(self.operations.values()) >= self.max_calls or self.used + amount > self.run_cap:
-            raise PilotError("Cumulative/run reservation or request cap reached.", code="spend_cap")
-        reserve(self.store, amount, actual=self.actual, cap=self.cap)
-        self.used += amount
-        self.operations[operation] += 1
-        self.amounts[operation] += amount
 
 
 class Deferral:
@@ -252,8 +198,6 @@ def snapshot(store, helpers=(), catalog=None, *, restore_dir=None):
         "confirmed_removed": sum("confirmed_removed" in h for h in history.values()),
         "outcome_unknown": sum("outcome_unknown" in h for h in history.values()),
         "attempted_ids_held": len(history),
-        "reserved_cumulative_usd": str(reservation_total(store)),
-        "actual_billing": store.read("worker-billing.private.json"),
         "deferred": bool(Deferral(store).remaining()),
         "all_history_complete": False,
     }
@@ -356,8 +300,7 @@ class Worker:
     def require_manual_removal(self):
         self.gate.check()
         if self.config["max_items"] != 1 or not all(
-            self.config["gates"].get(key) is True
-            for key in removal_gates(self.config, exact_plan=True)
+            self.config["gates"].get(key) is True for key in GATES
         ):
             raise PilotError("Verified-plan removal requires every live gate and max_items=1.")
 
@@ -770,6 +713,10 @@ class Worker:
             # A pending daily receipt keeps its priority after an interrupted run or provider reset.
             selected.sort(key=lambda pid: items[pid]["checkpoint"] == inventory.name)
         for pid in selected[: self.config["max_items"]]:
+            # Don't begin a fresh removal without room for its identity, folder,
+            # before-window, DELETE, and after-window checks.
+            if scheduled and self.config["max_calls"] - self.budget.operations.total() < 5:
+                break
             self.gate.check()
             item = self.state["items"][pid]
             daily_pass = self.store.read(item["receipt"]).get("daily_pass")
@@ -863,6 +810,12 @@ class Worker:
             elif pid in self.retry429:
                 item["state"] = "queued"
             elif result["blocked"]:
+                # If earlier X work used up this run's slots before this item's
+                # DELETE intent, leave it eligible for a fresh bounded pass.
+                if scheduled and result["stop_reason"] == "request_limit":
+                    item.update(state="queued", retry_at=self.clock() + 300)
+                    self.save()
+                    break
                 item.update(
                     state="queued"
                     if result["stop_reason"]
@@ -935,6 +888,10 @@ class Worker:
                 self.coverage(inventory)
             deadline = self.clock() + 86400
             retries = self.pending_retries() if scheduled and allow_delete else []
+            if scheduled and allow_delete and any(
+                self.queued(pid, item) for pid, item in self.state["items"].items()
+            ):
+                retries.append(self.clock() + 300)
             self.state["next_daily"] = min([deadline, *retries])
         except Exception as exc:
             # Never serialize exception text (paths, tokens and provider bodies may be present).
@@ -965,11 +922,7 @@ class Worker:
             **snapshot(self.store, self.config.get("helper_descriptors", [])),
             "run_counts": dict(self.counts),
             "stop_reason": stop,
-            "reserved_this_run_usd": str(self.budget.used),
-            "reservations_by_operation": {
-                k: {"requests": n, "usd": str(self.budget.amounts[k])}
-                for k, n in self.budget.operations.items()
-            },
+            "request_slots_by_operation": dict(self.budget.operations),
             "remaining_reachable_queued": sum(
                 i["state"] == "queued" for i in self.state["items"].values()
             ),

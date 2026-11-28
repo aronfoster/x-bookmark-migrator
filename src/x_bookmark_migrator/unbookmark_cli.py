@@ -5,7 +5,7 @@ from pathlib import Path
 
 import httpx
 
-from .core import Budget, Client, PilotError, Store, exact_id
+from .core import Client, PilotError, RequestSlots, Store, exact_id
 from .drive import Drive
 from .raindrop_cli import adapter_from_args, adapter_options
 from .unbookmark import apply_plan, make_plan, reconcile_plan
@@ -34,15 +34,6 @@ def add_commands(sub):
         else:
             parser.add_argument("--plan-file", required=True)
             parser.add_argument("--max-calls", type=int, default=20)
-            parser.add_argument("--console-hard-cap-confirmed", action="store_true")
-            parser.add_argument("--auto-recharge-off-confirmed", action="store_true")
-            parser.add_argument(
-                "--per-call-reserve-usd", default=os.environ.get("X_PER_CALL_RESERVE_USD")
-            )
-            parser.add_argument("--run-cap-usd", default=os.environ.get("X_RUN_CAP_USD", "0.25"))
-            parser.add_argument(
-                "--month-cap-usd", default=os.environ.get("X_MONTH_CAP_USD", "1.00")
-            )
             if command == "unbookmark-apply":
                 parser.add_argument("--confirm-unbookmark", action="store_true")
                 parser.add_argument("--catalog-dir", type=Path, required=True)
@@ -65,8 +56,6 @@ def run(args):
     if args.command == "unbookmark-plan" and not args.archive_acceptance_confirmed:
         raise PilotError("Complete the ARCHIVE.md runtime/restore acceptance first.")
     if args.command != "unbookmark-plan":
-        if not (args.console_hard_cap_confirmed and args.auto_recharge_off_confirmed):
-            raise PilotError("Confirm Console hard spending limit and auto-recharge off first.")
         if not os.environ.get("X_CLIENT_ID"):
             raise PilotError("Set X_CLIENT_ID.")
     if args.command == "unbookmark-apply" and not args.confirm_unbookmark:
@@ -91,7 +80,7 @@ def run(args):
                 acceptance_confirmed=args.archive_acceptance_confirmed,
             )
         client = Client(store, x_http, os.environ["X_CLIENT_ID"], os.environ.get("X_CLIENT_SECRET"))
-        budget = Budget(store, args.per_call_reserve_usd, args.run_cap_usd, args.month_cap_usd)
+        budget = RequestSlots()
         if args.command == "unbookmark-reconcile":
             return reconcile_plan(
                 store, client, budget, args.plan_file, owner, max_calls=args.max_calls

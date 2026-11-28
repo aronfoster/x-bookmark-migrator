@@ -47,10 +47,6 @@ def run_cli(tmp_path, monkeypatch):
                     "pilot",
                     "--app-owner-id",
                     "123",
-                    "--per-call-reserve-usd",
-                    "0.1",
-                    "--console-hard-cap-confirmed",
-                    "--auto-recharge-off-confirmed",
                 ]
             ),
         )
@@ -121,18 +117,6 @@ def test_refresh_recovery(run_cli, capsys, status):
     assert calls[0].method == "POST"
 
 
-def test_console_confirmation_required(run_cli, capsys):
-    run, _, calls = run_cli
-    assert (
-        run(
-            lambda req: pytest.fail("network"),
-            ["pilot", "--app-owner-id", "123", "--per-call-reserve-usd", "0.1"],
-        )
-        == 1
-    )
-    assert not calls and "Confirm Console" in capsys.readouterr().err
-
-
 def test_callback_requires_terminal(run_cli, monkeypatch, capsys):
     run, _, calls = run_cli
     monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
@@ -157,10 +141,6 @@ def test_inventory_cli_partial_and_offline_export(run_cli, capsys, monkeypatch):
                 "123",
                 "--max-calls",
                 "2",
-                "--per-call-reserve-usd",
-                ".1",
-                "--console-hard-cap-confirmed",
-                "--auto-recharge-off-confirmed",
             ],
         )
         == 1
@@ -179,25 +159,9 @@ def test_inventory_cli_partial_and_offline_export(run_cli, capsys, monkeypatch):
     assert len(calls) == 2 and (store.root / exported["private_export"]).exists()
 
 
-def test_inventory_cli_requires_console_confirmation(run_cli, capsys):
-    run, _, calls = run_cli
-    assert (
-        run(
-            lambda req: pytest.fail("network"),
-            ["inventory", "--app-owner-id", "123", "--per-call-reserve-usd", ".1"],
-        )
-        == 1
-    )
-    assert not calls and "Confirm Console" in capsys.readouterr().err
-
-
 def read_args(command="inventory"):
     return [
         command,
-        "--per-call-reserve-usd",
-        ".1",
-        "--console-hard-cap-confirmed",
-        "--auto-recharge-off-confirmed",
     ]
 
 
@@ -338,7 +302,7 @@ httpx.Client = lambda **kw: original(transport=httpx.MockTransport(handle), **kw
     assert summary["records"] == summary["membership_counts"]["filed"] == 20
     assert summary["get_attempts_this_run"] == 6 and summary["lookup_requests_this_run"] == 2
     assert summary["hydration_counts"] == {"read": 3, "pending": 17}
-    assert summary["estimated_reserved_usd"] == "0.6"
+    assert "estimated_reserved_usd" not in summary
     assert "synthetic" not in result.stdout
 
 
@@ -357,33 +321,6 @@ def test_budget_environment_defaults(run_cli, monkeypatch, capsys):
             else {"meta": {"result_count": 0}},
         )
 
-    assert (
-        run(handle, ["pilot", "--console-hard-cap-confirmed", "--auto-recharge-off-confirmed"]) == 0
-    )
+    assert run(handle, ["pilot"]) == 0
     assert len(calls) == 2
-    assert json.loads(capsys.readouterr().out)["estimated_reserved_usd"] == "0.4"
-
-
-@pytest.mark.parametrize(
-    "setting",
-    ["X_PER_CALL_RESERVE_USD", "X_RUN_CAP_USD", "X_MONTH_CAP_USD"],
-)
-@pytest.mark.parametrize("value", ["", "PRIVATE_INVALID_VALUE"])
-def test_invalid_budget_environment_identifies_setting_without_echoing_value(
-    run_cli, monkeypatch, capsys, setting, value
-):
-    run, store, calls = run_cli
-    monkeypatch.setenv("X_APP_OWNER_ID", "123")
-    monkeypatch.setenv("X_PER_CALL_RESERVE_USD", ".1")
-    monkeypatch.setenv(setting, value)
-    assert (
-        run(
-            lambda req: pytest.fail("network"),
-            ["inventory", "--console-hard-cap-confirmed", "--auto-recharge-off-confirmed"],
-        )
-        == 1
-    )
-    output = capsys.readouterr()
-    assert setting in output.err and "finite, positive dollar amount" in output.err
-    assert "PRIVATE" not in output.err and not calls
-    assert not (store.root / "inventory-active.private.json").exists()
+    assert "estimated_reserved_usd" not in json.loads(capsys.readouterr().out)

@@ -26,9 +26,9 @@ from x_bookmark_migrator.catalog import build, link_raindrop, publish, read_cata
 from x_bookmark_migrator.core import (
     SCOPES,
     WRITE_SCOPES,
-    Budget,
     Client,
     PilotError,
+    RequestSlots,
     Store,
     auth_start,
 )
@@ -146,7 +146,7 @@ def migration(storage, tmp_path):
             store,
             drive,
             client,
-            Budget(store, ".1", "10", "100"),
+            RequestSlots(),
             name,
             "100",
             confirmed=True,
@@ -299,7 +299,7 @@ def test_ambiguous_response_never_retried_or_inferred_from_absence(migration, bo
     assert result["stop_reason"] == "unbookmark_outcome_unknown"
     assert len(source.deletes) == 1
     source.body, source.status = {"data": {"bookmarked": False}}, 200
-    recovered = reconcile_plan(store, client, Budget(store, ".1", "10", "100"), name, "100")
+    recovered = reconcile_plan(store, client, RequestSlots(), name, "100")
     assert recovered["states"]["unbookmark_outcome_unknown"] == 1
     assert len(source.deletes) == 1
     # A new plan for that ID cannot evade the durable attempt guard.
@@ -317,7 +317,7 @@ def test_timeout_after_success_stays_unknown_and_never_redeletes(migration):
     assert "101" not in source.ids
     source.mutate_then_timeout = False
     apply(name, retry_rejected=True)
-    recovered = reconcile_plan(store, client, Budget(store, ".1", "10", "100"), name, "100")
+    recovered = reconcile_plan(store, client, RequestSlots(), name, "100")
     assert recovered["states"] == {"unbookmark_outcome_unknown": 1}
     assert len(source.deletes) == 1
 
@@ -338,7 +338,7 @@ def test_disk_failure_at_each_transaction_boundary(migration, monkeypatch, stage
         apply(name)
     assert len(source.deletes) == (0 if stage == "intent" else 1)
     monkeypatch.setattr(store, "create", original)
-    result = reconcile_plan(store, client, Budget(store, ".1", "10", "100"), name, "100")
+    result = reconcile_plan(store, client, RequestSlots(), name, "100")
     expected = {
         "intent": "not_attempted",
         "response": "unbookmark_outcome_unknown",
@@ -383,23 +383,6 @@ def test_definite_rejection_needs_explicit_retry_and_new_validation(migration, s
     assert count == 2 and len(list(store.root.glob("*.intent.private.json"))) == 2
 
 
-@pytest.mark.parametrize("cap", [".3", ".4"])
-def test_reserve_delete_and_followup_before_intent(migration, cap):
-    store, drive, _, source, client, _, plan, _ = migration
-    result = apply_plan(
-        store,
-        drive,
-        client,
-        Budget(store, ".1", cap, "100"),
-        plan(),
-        "100",
-        confirmed=True,
-        legacy_helper_retired=True,
-    )
-    assert result["stop_reason"] == "spend_cap"
-    assert not source.deletes and not list(store.root.glob("*.intent.private.json"))
-
-
 def test_request_bound_protects_followup_before_delete(migration):
     store, _, _, source, _, _, plan, apply = migration
     result = apply(plan(), max_calls=4)
@@ -424,13 +407,13 @@ def test_no_more_deletion_when_window_does_not_prove_progress(migration, mode):
         apply(name)
         assert len(source.deletes) == 1
         source.after_failure = False
-        restored = reconcile_plan(store, client, Budget(store, ".1", "10", "100"), name, "100")
+        restored = reconcile_plan(store, client, RequestSlots(), name, "100")
         assert restored["states"]["unbookmarked"] == 1
         assert len(source.deletes) == 1
     else:
         apply(name)
         assert len(source.deletes) == 1
-        restored = reconcile_plan(store, client, Budget(store, ".1", "10", "100"), name, "100")
+        restored = reconcile_plan(store, client, RequestSlots(), name, "100")
         assert restored["blocked"]
 
 
@@ -507,7 +490,7 @@ def test_cli_apply_and_reconcile_with_env_defaults(migration, monkeypatch, capsy
         "--legacy-removal-helper-retired",
     ]
     base = ["x-migrator", "--state-dir", str(store.root)]
-    flags = ["--plan-file", name, "--console-hard-cap-confirmed", "--auto-recharge-off-confirmed"]
+    flags = ["--plan-file", name]
     monkeypatch.setattr(sys, "argv", base + ["unbookmark-apply"] + flags + apply_flags)
     assert cli.main() == 1 and not source.calls
     capsys.readouterr()
@@ -640,7 +623,7 @@ def test_delayed_reconcile_keeps_original_baseline_and_cannot_resume_deletion(mi
     inv.save()
     source.ids = ["102", "104", "107"]
     source.after_failure = False
-    result = reconcile_plan(store, client, Budget(store, ".1", "10", "100"), name, "100")
+    result = reconcile_plan(store, client, RequestSlots(), name, "100")
     assert result["states"] == {"unbookmarked": 1, "not_attempted": 1}
     comparison = store.read(base + ".window.private.json")
     assert comparison["reconciled_later"]
@@ -673,9 +656,7 @@ def test_reconcile_records_failed_window_and_continues_other_receipts(migration,
         return source.handle(req)
 
     with httpx.Client(transport=httpx.MockTransport(handle)) as http:
-        result = reconcile_plan(
-            store, Client(store, http, "app"), Budget(store, ".1", "10", "100"), name, "100"
-        )
+        result = reconcile_plan(store, Client(store, http, "app"), RequestSlots(), name, "100")
     assert result["states"] == {"unbookmarked": 3} and result["blocked"]
     report = store.read(result["private_report"])
     outcomes = report["outcomes"]
@@ -697,7 +678,7 @@ def test_reconcile_records_failed_window_and_continues_other_receipts(migration,
     assert "PRIVATE" not in json.dumps(report) and "PRIVATE" not in json.dumps(result)
 
 
-@pytest.mark.parametrize("limit", ["requests", "spend", "rate"])
+@pytest.mark.parametrize("limit", ["requests", "rate"])
 def test_reconcile_recovers_all_receipts_without_exceeding_read_limits(migration, limit):
     store, _, _, source, client, _, plan, apply = migration
     name = plan(["101", "102", "103"])
@@ -708,16 +689,13 @@ def test_reconcile_recovers_all_receipts_without_exceeding_read_limits(migration
     result = reconcile_plan(
         store,
         client,
-        Budget(store, ".1", ".1" if limit == "spend" else "10", "100"),
+        RequestSlots(),
         name,
         "100",
         max_calls=1 if limit == "requests" else 20,
     )
     assert result["states"] == {"unbookmarked": 3}
-    assert (
-        result["stop_reason"]
-        == {"requests": "request_limit", "spend": "spend_cap", "rate": "http_429"}[limit]
-    )
+    assert result["stop_reason"] == {"requests": "request_limit", "rate": "http_429"}[limit]
     assert len(source.calls) - count == (2 if limit == "rate" else 1)
     assert all(
         o["window_status"] == "unverified" for o in store.read(result["private_report"])["outcomes"]
@@ -737,7 +715,7 @@ def test_malformed_identity_is_safe_error_before_mutation(migration, data):
                 store,
                 drive,
                 Client(store, http, "app"),
-                Budget(store, ".1", "10", "100"),
+                RequestSlots(),
                 name,
                 "100",
                 confirmed=True,
@@ -776,7 +754,7 @@ def test_folder_window_preserves_overreturn_with_defensive_ceiling(migration, si
     with httpx.Client(
         transport=httpx.MockTransport(lambda req: httpx.Response(200, json=body))
     ) as http:
-        reads = Reads(Client(store, http, "app"), Budget(store, ".1", "10", "100"), 1)
+        reads = Reads(Client(store, http, "app"), RequestSlots(), 1)
         if size > 10000:
             with pytest.raises(PilotError, match="Ambiguous folder window"):
                 window(reads, "100", "10", "before_window")

@@ -87,7 +87,7 @@ archive, catalog, saved Raindrop ID and removal holds. The existing one-item
 transaction then performs fresh provider checks, including a GET of that saved
 Raindrop ID. An uncertain attempt remains held; read-only reconciliation can use
 the original envelope. No executable plan copy or replacement pointer is needed.
-A reviewed billing observation and owner authorization still precede any paid run.
+Owner authorization still precedes any paid run.
 
 ```sh
 x-migrator --state-dir /private/state worker --config /private/worker.json --dry-run
@@ -134,75 +134,18 @@ Private JSON configuration fields:
 | `max_batches` | 1–100 existing archive receipts to adopt per invocation |
 | `max_asset_bytes` | Optional integer, 1,024–268,435,456 bytes per file; defaults to 64 MiB. Applies to ordinary archives. Exact-MP4 backlog preparation uses the size verified for the selected video. |
 | `dialect` | Existing observed `post` or `tweet` profile |
-| `run_cap_usd` | Positive reservation limit, at most 20 |
-| `reservation_usd` | Positive **whole-request** conservative reserves for every operation below; no implicit prices |
 | `helper_descriptors` | All reviewed private helper mappings using `REPAIR.md`; empty only when the local audit proves no out-of-tree attempts |
 | `raindrop_script_sha256` | Reviewed SHA256 of protected raindrop.sh; required for DELETE |
 | `raindrop_helper_sha256` | Reviewed SHA256 of sibling list_all.py; required for DELETE |
 | `publication_reader_gid` | Explicit reader GID for 2750 catalog/restore roots, or null for private roots |
 | `gates` | Explicit booleans below, initially false |
 
-Reservations must specify `identity`, `main`, `folders`, `folder`, `hydrate`,
-`folder_names`, `before_window`, `delete`, `after_window`, `reconcile_window`,
-`other`. Enrichment uses the conservative `other` allowance. Account for resource
-counts, expansions and folder over-return, **not just cost per one resource**.
-`delete` cannot be below $0.005. Bounds are local spending policy, not a guarantee
-of provider charges. A Console hard limit is required except for a manual
-`--apply-verified-plan` run with `manual_plan_local_budget_only: true` in
-the protected configuration. In that case leave `console_cap_confirmed` false
-if no cap is set. The same cumulative and per-run reservations, auto-recharge
-check and remaining removal gates still apply. Queue and scheduled runs
-cannot use this exception.
-
-Live gates: `live_authorized`, `console_cap_confirmed`, `auto_recharge_off`,
-`removal_sources_complete`. DELETE additionally requires `archive_restore_accepted`,
+Live gates: `live_authorized`, `removal_sources_complete`. DELETE additionally requires `archive_restore_accepted`,
 `legacy_helpers_retired`, `fos166_runtime_accepted`, `fos216_backfill_accepted`.
 Do not assert these merely because dependencies merged. Re-consent uses existing
 interactive auth commands; the worker never opens a consent flow.
 
-Before live execution, store the latest reviewed Console observation as
-`worker-billing.private.json` with `actual_usd` (decimal string) and `observed_at`
-(ISO timestamp). Preserve prior evidence independently. The worker reports actual
-observations and reservations separately. It sums **every month** in the existing
-`budget.private.json` and conservatively adds the actual observation when enforcing
-$20. This intentionally double-counts potentially overlapping historical usage
-until an owner-attested settlement is explicitly recorded. It never clears/rebases a
-ledger or silently renews the allowance. New reservations survive failed requests
-and crashes, and per-operation counts/amounts appear in each private run report.
-
-Staged removal uses the same conservative budget when no settlement exists.
-It does not require an owner-attested historical cutoff to use available headroom.
-
-**Optional one-time offline settlement.** Pause all writers using the billing
-account, including scheduled jobs and other tools. Use the existing private state
-directory, with the updated worker and manual commands. Run
-`x-migrator --state-dir "$STATE" billing-cutoff`. Retain the returned cutoff hash,
-all monthly reservation totals, and the prior observation privately. These totals
-are local estimates, not charges.
-
-The owner must verify the provider's **lifetime cumulative USD charges** for
-the same account, project and spending scope, the timezone-qualified timestamp
-through which charges are final, and the SHA-256 of the retained private evidence.
-Verify that the evidence includes every reservation in the snapshot (including
-requests ultimately charged zero), that no charge is pending, and that there was
-no intervening usage or reservation through application. Do not substitute a
-remaining balance, a top-up, a monthly subtotal, or a balance change. If these
-facts cannot be established, keep the conservative accounting. Once verified:
-
-```
-x-migrator --state-dir "$STATE" billing-settle \
-  --expected-cutoff "$CUTOFF_SHA256" --provider-cumulative-usd "$CUMULATIVE_USD" \
-  --settled-through "$SETTLED_THROUGH" --evidence-sha256 "$EVIDENCE_SHA256" \
-  --attest-full-coverage
-```
-
-Both commands are offline. Settlement accepts the entire reviewed snapshot
-once, without editing the ledger or observation. Future reservations count at
-full value on top of the settled actual (or higher observed actual). The $20
-lifetime limit and narrower run, request, and manual monthly limits still apply.
-Partial or repeated settlement is unsupported. An incomplete checkpoint or
-monthly regression stops reservations: retain all files for inspection rather
-than deleting a checkpoint or resetting a month. Settlement authorizes no live work.
+Request slots bound the run. The worker does not estimate charges or consult historical billing files.
 
 ### Publish searchable text to Drive
 
@@ -261,7 +204,7 @@ to measure indexing after byte readback.
   is already present uses one slot. Only pending bodies in that selection are
   looked up. Other observed IDs and their folder memberships stay in the private
   inventory. Page reads, expansions, reference enrichment for selected posts,
-  and verification still need their own reservations and request bounds.
+  and verification still need their own request slots.
   No old positional cursor is resumed after DELETE or
   restart. Existing permanent blockers and attempts are excluded from hydration;
   known transient media failures get a daily retry. Unknown category is retained;
@@ -306,7 +249,7 @@ to measure indexing after byte readback.
 
 `worker.private.json` contains the resumable queue and per-stream observed IDs,
 counts, blocked state and window exposure. `worker-report.private.json` contains
-counts, failures, cumulative reservations and billing observations. Detailed IDs,
+counts, failures, request-slot counts. Detailed IDs,
 paths, categories and provider evidence remain private. Empty/not-due/deferred
 runs exit quietly; failed work reports a nonzero exit. No report claims inaccessible
 history complete or equates new observed IDs with proven older bookmark age.

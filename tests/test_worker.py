@@ -5,7 +5,6 @@ import hashlib
 import json
 import sys
 import time
-from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -17,7 +16,7 @@ from test_unbookmark import storage as storage
 
 from x_bookmark_migrator import cli, worker_cli
 from x_bookmark_migrator.catalog import annotate, read_catalog
-from x_bookmark_migrator.core import WRITE_SCOPES, PilotError, Store
+from x_bookmark_migrator.core import WRITE_SCOPES, PilotError, RequestSlots, Store
 from x_bookmark_migrator.drive import digest, encode
 from x_bookmark_migrator.inventory import Inventory
 from x_bookmark_migrator.unbookmark import attempt_base, latest_attempt
@@ -27,7 +26,6 @@ from x_bookmark_migrator.worker import (
     JOURNAL,
     OPERATIONS,
     ROTATION,
-    CumulativeBudget,
     Deferral,
     GuardedHTTP,
     Worker,
@@ -63,7 +61,7 @@ def make_worker(migration, tmp_path, **updates):
     client.http = GuardedHTTP(
         client.http.http if isinstance(client.http, GuardedHTTP) else client.http, gate, "x"
     )
-    budget = CumulativeBudget(store, cfg["reservation_usd"], cfg["run_cap_usd"], cfg["max_calls"])
+    budget = RequestSlots(cfg["max_calls"])
     return Worker(
         store,
         source.catalog,
@@ -95,6 +93,27 @@ def test_real_queue_restores_publishes_verifies_and_drains_bounded(migration, tm
     assert len(migration[3].deletes) == 3
 
 
+@pytest.mark.parametrize("initial_slots", [0, 45])
+def test_scheduled_backlog_continues_without_repeating_daily_intake(
+    migration, tmp_path, initial_slots
+):
+    worker = make_worker(migration, tmp_path, max_items=1, max_calls=45)
+    now = time.time()
+    worker.clock = lambda: now
+    worker.state["next_intake"] = now + 86400
+    for _ in range(initial_slots):
+        worker.budget.reserve()
+    result = worker.run(allow_delete=True, scheduled=True)
+    assert result["stop_reason"] is None
+    assert len(migration[3].deletes) == (0 if initial_slots else 1)
+    assert worker.state["next_daily"] == now + 300
+    restarted = make_worker(migration, tmp_path, max_items=20, max_calls=45)
+    restarted.clock = lambda: now + 301
+    assert restarted.run(allow_delete=True, scheduled=True)["confirmed_removed"] == 3
+    assert len(set(migration[3].deletes)) == len(migration[3].deletes) == 3
+    assert restarted.state["next_intake"] == now + 86400
+
+
 def test_archive_only_cannot_create_raindrop_or_delete(migration, tmp_path):
     w = make_worker(migration, tmp_path)
     w.raindrop = None
@@ -122,15 +141,10 @@ def save_drive_proof(store, name):
 def test_verified_plan_removes_only_proved_id_without_raindrop_write(migration, tmp_path, linked):
     store, _, _, source, _, _, make_plan, _ = migration
     worker = make_worker(migration, tmp_path, max_items=1)
-    worker.config["gates"]["console_cap_confirmed"] = False
+    worker.config["gates"]["live_authorized"] = False
     with pytest.raises(PilotError, match="live gate"):
         worker.apply_verified_plan()
-    worker.config["manual_plan_local_budget_only"] = True
-    assert worker_cli.removal_gates(worker.config, exact_plan=False) == GATES
-    worker.config["gates"]["auto_recharge_off"] = False
-    with pytest.raises(PilotError, match="live gate"):
-        worker.apply_verified_plan()
-    worker.config["gates"]["auto_recharge_off"] = True
+    worker.config["gates"]["live_authorized"] = True
     name = make_plan(["102"])
     key = save_drive_proof(store, name)
     for ids in (["101"], ["101", "102"]):
@@ -367,25 +381,6 @@ def test_429_after_success_never_redeletes_and_wakes_after_reset(migration, tmp_
     assert make_worker(migration, tmp_path).run(allow_delete=True)["deferred"]
     assert calls == (len(migration[3].calls), len(migration[2].calls))
     assert len(migration[3].deletes) == 1
-
-
-def test_all_months_and_actual_observation_remain_conservative(tmp_path):
-    store = Store(tmp_path / "state")
-    store.write("budget.private.json", {"2026-01": "14.15", "2026-02": "5.205"})
-    budget = CumulativeBudget(store, dict.fromkeys(OPERATIONS, ".01"), "1", 10, actual=".63")
-    budget.reserve_operation("delete")
-    with pytest.raises(PilotError, match="cap"):
-        budget.reserve_operation("main")
-    assert budget.used == Decimal(".01")
-    assert store.read("budget.private.json")["2026-01"] == "14.15"
-
-
-@pytest.mark.parametrize("value", ["NaN", "-1", "Infinity", "", None])
-def test_invalid_ledger_cannot_reset_budget(tmp_path, value):
-    store = Store(tmp_path / "state")
-    store.write("budget.private.json", {"2026-01": value})
-    with pytest.raises(PilotError):
-        CumulativeBudget(store, dict.fromkeys(OPERATIONS, ".01"), "1", 10)
 
 
 @pytest.mark.parametrize("crash", ["before_send", "after_response", "after_token_write"])
@@ -983,7 +978,7 @@ def test_drive_failure_after_real_inventory_does_not_repeat_paid_reads(
 
     monkeypatch.setattr(worker, "archive_batch", archive_failure)
     assert w.run()["stop_reason"] == "drive_failure"
-    assert w.budget.used > 0
+    assert w.budget.operations.total() > 0
     before = len(source.calls), len(migration[2].calls)
     assert make_worker(migration, tmp_path).run()["deferred"]
     assert before == (len(source.calls), len(migration[2].calls))
@@ -1054,7 +1049,7 @@ def test_discovery_hydrates_only_the_selected_archive_batch(
     report = worker.run()
     assert report["stop_reason"] is None
     assert lookups == expected_lookups
-    assert report["reservations_by_operation"].get("hydrate", {}).get("requests", 0) == len(lookups)
+    assert report["request_slots_by_operation"].get("hydrate", 0) == len(lookups)
     assert (
         sorted(pid for pid in worker.state["items"] if pid not in ("101", "102", "103")) == archived
     )

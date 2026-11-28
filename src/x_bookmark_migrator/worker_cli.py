@@ -8,40 +8,25 @@ from pathlib import Path
 import httpx
 
 from .backlog import inspect_backlog, prepare_one, require_complete_history, staged_one
-from .billing import cutoff, ledger, settle, settlement_state
 from .catalog import private_bytes
-from .core import PilotError, Store, exact_id
+from .core import PilotError, RequestSlots, Store, exact_id
 from .drive import MAX_BYTES, Drive, digest, encode
 from .publication import PublicationStore
 from .raindrop import RaindropAdapter, require_distinct_state_dirs
 from .search_publisher import publish_current
 from .worker import (
-    CumulativeBudget,
+    GATES,
     Deferral,
     GuardedHTTP,
     Worker,
     WorkerClient,
-    money,
-    removal_gates,
     snapshot,
 )
 
-COMMANDS = ("worker", "billing-cutoff", "billing-settle")
+COMMANDS = ("worker",)
 
 
 def add_commands(sub):
-    sub.add_parser("billing-cutoff", help="Inspect the complete reservation cutoff offline")
-    billing = sub.add_parser("billing-settle", help="Record one owner-attested cutoff offline")
-    billing.add_argument("--expected-cutoff", required=True)
-    billing.add_argument("--provider-cumulative-usd", required=True)
-    billing.add_argument("--settled-through", required=True)
-    billing.add_argument("--evidence-sha256", required=True)
-    billing.add_argument(
-        "--attest-full-coverage",
-        required=True,
-        action="store_true",
-        help="All lifetime charges settled; no intervening reservations or usage",
-    )
     p = sub.add_parser("worker", help="Offline audit or explicitly authorized bounded migration")
     p.add_argument("--config", type=Path, required=True)
     mode = p.add_mutually_exclusive_group(required=True)
@@ -155,21 +140,6 @@ def load_config(path):
 
 
 def run(args):
-    if getattr(args, "command", None) in ("billing-cutoff", "billing-settle"):
-        if not args.state_dir.is_dir():
-            raise PilotError("Audited private state directory must already exist.")
-        store = Store(args.state_dir)
-        with store.locked():
-            if args.command == "billing-cutoff":
-                return {**cutoff(store), "api_requests": 0}
-            return settle(
-                store,
-                expected=args.expected_cutoff,
-                cumulative=args.provider_cumulative_usd,
-                through=args.settled_through,
-                evidence=args.evidence_sha256,
-                attested=args.attest_full_coverage,
-            )
     backlog = getattr(args, "inspect_backlog", None)
     prepare = getattr(args, "prepare_backlog_one", None)
     attested = getattr(args, "attest_archive_acceptance", False)
@@ -240,21 +210,16 @@ def run(args):
                 catalog,
                 restore_dir=config["restore_dir"],
             )
-            # Billing evidence is whitelisted: no arbitrary private notes enter stdout.
-            bill = result.pop("actual_billing")
-            result["actual_observed_usd"] = str(money(bill["actual_usd"])) if bill else "unverified"
             return {
                 **result,
                 "mode": "dry_run" if args.dry_run else "report_only",
                 "api_requests": 0,
             }
         required = (
-            removal_gates(config, exact_plan=args.apply_verified_plan)
+            GATES
             if args.allow_delete
             else (
                 "live_authorized",
-                "console_cap_confirmed",
-                "auto_recharge_off",
                 "removal_sources_complete",
             )
         )
@@ -268,19 +233,7 @@ def run(args):
         gate = Deferral(store)
         if gate.remaining():
             return {"quiet": True, "deferred": True}
-        bill = store.read("worker-billing.private.json")
-        if not isinstance(bill, dict) or not bill.get("observed_at"):
-            raise PilotError("Record the reviewed Console billing observation before live work.")
-        if staged:
-            # Reject incomplete settlement before OAuth, not just at the first reservation.
-            settlement_state(store, ledger(store), bill)
-        budget = CumulativeBudget(
-            store,
-            config["reservation_usd"],
-            config["run_cap_usd"],
-            config["max_calls"],
-            actual=bill["actual_usd"],
-        )
+        budget = RequestSlots(config["max_calls"])
         require_distinct_state_dirs(
             state_dir=store.root,
             catalog_dir=config["catalog_dir"],
@@ -371,6 +324,4 @@ def run(args):
                         ) from exc
                     if published:
                         result.update(drive_search=published, quiet=False)
-            result.pop("actual_billing", None)
-            result["actual_observed_usd"] = str(money(bill["actual_usd"]))
             return result

@@ -8,7 +8,6 @@ import json
 import re
 import secrets
 from collections import Counter
-from decimal import Decimal
 
 import httpx
 
@@ -437,10 +436,6 @@ def apply_plan(
         catalog_dir=catalog_dir,
         raindrop_ledger_dir=raindrop.store.root if raindrop is not None else None,
     )
-    require(
-        budget.per_call >= Decimal("0.005"),
-        "Per-call reservation must cover at least the published $0.005 Bookmark write rate.",
-    )
     plan = staged_plan if staged_plan is not None else load_plan(store, plan_name, owner_id)
     require(
         legacy_helper_retired, "Confirm private legacy removal helpers are disabled or gate-only."
@@ -636,7 +631,6 @@ def save_report(store, plan_name, outcomes, reads, stop):
         "outcomes": outcomes,
         "stop_reason": stop,
         "reservations_by_operation": dict(reads.reservations),
-        "estimated_reserved_usd": str(reads.budget.used),
         "actual_charge": "unverified",
     }
     store.create(name, report)
@@ -661,7 +655,6 @@ def save_report(store, plan_name, outcomes, reads, stop):
             o.get("window_status") == "new_ids_observed" for o in outcomes
         ),
         "blocked": not complete,
-        "estimated_reserved_usd": str(reads.budget.used),
         "reservations_by_operation": dict(reads.reservations),
         "actual_charge": "unverified",
     }

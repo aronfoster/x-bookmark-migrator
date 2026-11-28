@@ -38,8 +38,6 @@ verification still required. Partial category scans never become deletion permis
    Register the exact callback `http://127.0.0.1:8765/callback`.
 2. Record the credit balance and current prices. Retrieve the numeric user ID
    after OAuth setup using the instructions below.
-   Set a hard billing-cycle spending limit and turn auto-recharge **off** before reads.
-   The CLI flags below attest to these manual checks; they do not configure or verify Console.
 3. In a local interactive terminal, export `X_CLIENT_ID` (the OAuth 2.0 Client ID,
    not an API key or app-only bearer token). Alternatively, copy `.env.example` to
    ignored `.env` and fill it locally; use `uv run --env-file .env` in place of
@@ -105,12 +103,7 @@ Saved evidence may belong to an earlier login; if uncertain, use the fresh looku
 For a custom state directory, replace the `Store(...)` path in these snippets with
 that same absolute private directory.
 
-**No saved identity? After `auth-finish`, make one official identity lookup.** First
-confirm the Console hard cap and auto-recharge off, as for the pilot. This reserves
-an illustrative $0.10 against the same $1.00 UTC-month ledger; these amounts are
-operator estimates, not a price guarantee. Adjust them deliberately for your budget
-and current Console pricing. This command uses the existing client, token refresh,
-lock and budget controls; it does not request bookmarks or require the unknown ID.
+**No saved identity?** After `auth-finish`, make one official identity lookup:
 
 ```sh
 uv run --env-file .env python - <<'PYCODE'
@@ -118,12 +111,12 @@ import json
 import os
 from pathlib import Path
 import httpx
-from x_bookmark_migrator.core import Budget, Client, Store, exact_id
+from x_bookmark_migrator.core import RequestSlots, Client, Store, exact_id
 store = Store(Path.home() / ".local/state/x-bookmark-migrator")
 with store.locked(), httpx.Client(timeout=30, follow_redirects=False, trust_env=False) as http:
     client = Client(store, http, os.environ["X_CLIENT_ID"], os.environ.get("X_CLIENT_SECRET"))
-    budget = Budget(store, "0.10", "0.10", "1.00")
-    body = client.get("/2/users/me", {}, budget.reserve)
+    slots = RequestSlots(1)
+    body = client.get("/2/users/me", {}, slots.reserve)
     data = body.get("data")
     if body.get("errors") or not isinstance(data, dict):
         raise SystemExit("Identity incomplete; inspect the saved private read evidence.")
@@ -144,27 +137,16 @@ Set `X_APP_OWNER_ID` using [the identity instructions above](#find-your-numeric-
 confirm the account owns the app in Console, then run:
 
 ```sh
-uv run --env-file .env x-migrator pilot \
-  --console-hard-cap-confirmed --auto-recharge-off-confirmed \
-  --per-call-reserve-usd 0.10 --run-cap-usd 0.25 --month-cap-usd 1.00
+uv run --env-file .env x-migrator pilot
 ```
 
-The **$0.10 per-call reservation is an illustrative operator estimate, not an X
-price or guaranteed bound**. Review current Console pricing including expanded
-resources before using it. The command makes `/2/users/me` then at most one
+The command makes `/2/users/me` then at most one
 `/2/users/{id}/bookmarks?max_results=5` read. Identity must match the supplied app
 owner. This comparison cannot independently prove app ownership or Owned Read billing.
 It does not follow pagination or retry failed reads. Even an empty result may incur
 an identity-read charge. A mismatch stops before the bookmarks read.
 
-The CLI reserves estimated spend before each GET, persists monthly reservations
-across runs, and retains them on errors/uncertain transport outcomes. Reusing the
-same directory is essential. Changing directories or deleting the ledger resets
-this accounting. Caps are per state directory and UTC calendar month, not an
-account-wide meter or X billing-cycle meter. **Console's hard limit is the backstop**;
-actual billing and expansion costs must be measured. There is no billing API call.
-
-Stdout contains only counts, field names, pagination presence, estimated reservation,
+Stdout contains only counts, field names, pagination presence,
 expanded-data/media field names, rate-limit headers for both reads, and the generated
 private filename. Missing/non-numeric rate-limit headers are omitted. Full JSON (including expansion objects and
 opaque continuation token) is stored privately, never printed. These records are a

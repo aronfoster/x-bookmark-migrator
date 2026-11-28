@@ -19,7 +19,7 @@ from x_bookmark_migrator.archive import (
     restore_batch,
     source_url,
 )
-from x_bookmark_migrator.core import SCOPES, Budget, Client, PilotError, Store, post_fields
+from x_bookmark_migrator.core import SCOPES, Client, PilotError, RequestSlots, Store, post_fields
 from x_bookmark_migrator.drive import API, FOLDER, Drive, digest, encode
 from x_bookmark_migrator.inventory import Inventory
 
@@ -461,9 +461,7 @@ def test_explicit_reference_lookup_fills_media_gap(storage):
         )
 
     with httpx.Client(transport=httpx.MockTransport(x)) as http:
-        enriched = enrich_references(
-            inv, Client(store, http, "app"), Budget(store, ".01", ".10", "1"), "100"
-        )
+        enriched = enrich_references(inv, Client(store, http, "app"), RequestSlots(), "100")
     assert enriched["x_api_calls"] == len(calls) == 2
     with httpx.Client(transport=httpx.MockTransport(media_http)) as media:
         result = archive_batch(Inventory.load(store), drive, media)
@@ -825,9 +823,7 @@ def test_batched_references_dedupe_and_attribute_errors(storage, unknown_error):
         )
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as http:
-        result = enrich_references(
-            inv, Client(store, http, "app"), Budget(store, ".01", ".10", "1"), "100"
-        )
+        result = enrich_references(inv, Client(store, http, "app"), RequestSlots(), "100")
     assert result["enriched_posts"] == 3 and result["x_api_calls"] == len(calls) == 2
     links = inv.state["archive_reference_reads"]
     assert links["101"]["evidence"] == links["102"]["evidence"] == links["103"]["evidence"]
@@ -865,7 +861,7 @@ def test_reference_union_respects_lookup_bound_and_budget(storage, exhaust_budge
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as http:
         client = Client(store, http, "app")
-        budget = Budget(store, ".01", ".02" if exhaust_budget else ".10", "1")
+        budget = RequestSlots(2 if exhaust_budget else 10)
         if exhaust_budget:
             with pytest.raises(PilotError):
                 enrich_references(inv, client, budget, "100", limit=6)

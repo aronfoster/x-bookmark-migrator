@@ -28,9 +28,7 @@ despite missing pagination. Do not repeat the old page-size experiment.
 
 Use the same persistent state directory, X OAuth app/owner, Drive grant and archive
 root as the earlier commands. Configure `.env` with `X_CLIENT_ID`, `X_APP_OWNER_ID`,
-`X_ARCHIVE_DRIVE_FOLDER_ID` and deliberate `X_PER_CALL_RESERVE_USD`, `X_RUN_CAP_USD`,
-`X_MONTH_CAP_USD` values within the Console hard limit. No shell export of these
-values is necessary. Optional `X_CLIENT_SECRET` still applies to confidential clients.
+and `X_ARCHIVE_DRIVE_FOLDER_ID`. Optional `X_CLIENT_SECRET` still applies to confidential clients.
 All commands below use a shell variable only for the already-known state path:
 
 ```sh
@@ -39,7 +37,7 @@ uv sync --locked
 ```
 
 Use the actual mounted path instead when different. Do not create fresh state to
-reset spending or defeat previous-attempt checks. Keep the whole state volume
+defeat previous-attempt checks. Keep the whole state volume
 durable/protected, including removal receipts. Selectively back up non-secret
 archive anchors and deletion receipts in the existing private job record; never
 copy OAuth tokens to a ticket or upload the entire state directory.
@@ -94,8 +92,7 @@ only its verified candidates can proceed.
 read -r -p "Private plan basename: " XM_PLAN_FILE
 uv run python -m json.tool "$XM_STATE_DIR/$XM_PLAN_FILE"
 uv run --env-file .env x-migrator --state-dir "$XM_STATE_DIR" unbookmark-apply \
-  --plan-file "$XM_PLAN_FILE" --confirm-unbookmark \
-  --console-hard-cap-confirmed --auto-recharge-off-confirmed
+  --plan-file "$XM_PLAN_FILE" --confirm-unbookmark
 ```
 
 Apply checks the authenticated X owner and write scope, pins the Drive identity/root
@@ -107,7 +104,7 @@ observed response may be smaller. A rename, missing membership, incomplete archi
 category blocks that item. Unknown/unfiled items cannot use this pilot; it does
 not manufacture negative membership evidence from capped windows.
 
-Before sending DELETE, it reserves budget for both DELETE and the post-delete GET,
+Before sending DELETE, it allocates request slots for both DELETE and the post-delete GET,
 invalidates old inventory continuation/negative evidence, and durably creates
 `unbookmark_requested` with exact owner/post, before-window, category, archive
 checksums and reviewed-plan checksum. It stores the raw response before the result
@@ -147,14 +144,13 @@ Read-only reconciliation uses no Drive credential or X write scope:
 
 ```sh
 uv run --env-file .env x-migrator --state-dir "$XM_STATE_DIR" unbookmark-reconcile \
-  --plan-file "$XM_PLAN_FILE" \
-  --console-hard-cap-confirmed --auto-recharge-off-confirmed
+  --plan-file "$XM_PLAN_FILE"
 ```
 
 This writes another immutable observation/report. A failed per-item window read
 records `window_status: unverified` and a safe error code, retains that item's
 deletion result, and continues reconciling the remaining receipts within the
-request/spend bounds. It does not change an unknown result based on listing absence.
+request bounds. It does not change an unknown result based on listing absence.
 If a previously missing window is now read successfully, it is marked
 `reconciled_later`; that delayed comparison cannot authorize apply to continue
 the remaining IDs. It may include unrelated saves since the original intent.
@@ -182,17 +178,9 @@ At most three selected IDs, ten folder-list pages per candidate, a default
 When each folder name is on the first page, an uninterrupted pilot needs
 `1 + 4 × selected_count` X requests: identity, then folder-name GET, before GET,
 DELETE and after GET per candidate. Plan makes only Drive reads. OAuth refresh
-requests and Drive requests are outside X reservation accounting.
+requests and Drive requests are outside the X request bound.
 
-Each X request uses the configured per-call reservation; it must be at least
-the indicative $0.005 Bookmark-write rate. That floor does **not** cover every
-possible read charge. Choose it for the most expensive read, including a folder
-response larger than the requested size. The default $0.25 run/$1 month limits
-may be too small with existing reservations. Set `.env` deliberately before the
-pilot; do not clear the ledger. Reserve both final calls before deletion, retaining
-unused reservations on failures. Reports separate operation reservation counts,
-DELETE attempts sent this run, known states and unverified actual charges.
-Observe Console before/after charges independently; local estimates are not bills.
+The worker allocates slots for DELETE and the follow-up GET before mutation. Reports count allocated slots and actual DELETE attempts separately.
 
 Stdout contains safe counts/status and opaque private basenames. Exact IDs, names,
 text, API errors, response headers and archive file IDs stay in private 0600 files.

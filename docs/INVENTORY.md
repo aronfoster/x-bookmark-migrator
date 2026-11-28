@@ -16,43 +16,15 @@ continuations exist; it cannot repair capped folder windows.
 
 Use Linux, Python 3.12+, `uv`, direct HTTPS to `api.x.com`, and the completed
 [README OAuth setup](../README.md#one-time-owner-setup). Reuse its private state
-directory outside Git and the same `X_CLIENT_ID`. Confirm the Console hard spending
-limit and auto-recharge setting before spending more. The examples use the ignored
+directory outside Git and the same `X_CLIENT_ID`. The examples use the ignored
 `.env` through `uv run --env-file .env`; if variables are already exported, omit that
 option. Find the ID with [the README identity lookup](../README.md#find-your-numeric-account-id).
 Put `X_APP_OWNER_ID` in that ignored `.env`. The CLI reads it from the process
 environment; an explicit `--app-owner-id` overrides it. No shell export is needed.
 
-**Check existing reservations first.** The UTC-month budget is shared by pilot and
-inventory in this state directory and persists across invocations. It does not reset
-when an inventory starts or resumes. For the default directory, this offline command
-prints only the current month and reserved estimate (no credentials or API calls):
-
-```sh
-uv run python - <<'PYCODE'
-import json
-from datetime import UTC, datetime
-from pathlib import Path
-month = datetime.now(UTC).strftime("%Y-%m")
-path = Path.home() / ".local/state/x-bookmark-migrator/budget.private.json"
-ledger = json.loads(path.read_text()) if path.exists() else {}
-print(f"UTC month: {month}; estimated reserved USD: {ledger.get(month, '0')}")
-PYCODE
-```
-
-If using `--state-dir`, inspect `budget.private.json` in that directory instead.
-At the example's $0.10 reservation, allow up to $0.60 of **remaining** headroom;
-previous pilot reservations count toward the $1.00 example month ceiling. With
-$0.60 already reserved, only four further GETs fit. Do not delete the ledger or
-switch directories to reset accounting. Set any higher soft ceiling deliberately,
-within the verified Console limit and your intended budget, or wait for the next
-UTC accounting month (which may differ from the Console billing cycle).
-
 ```sh
 uv run --env-file .env x-migrator inventory \
-  --console-hard-cap-confirmed --auto-recharge-off-confirmed \
-  --max-calls 6 --page-size 1 --hydrate-batch-size 1 --max-pages-per-stream 1 \
-  --per-call-reserve-usd 0.10 --run-cap-usd 0.60 --month-cap-usd 1.00
+  --max-calls 6 --page-size 1 --hydrate-batch-size 1 --max-pages-per-stream 1
 ```
 
 This is a **probe**, not a full inventory. Each stream is limited to one page,
@@ -65,7 +37,7 @@ retaining all records. Page evidence reports requested size, actual count and
 omitted count. A request limit controls requests, not returned resources or charges.
 
 `hydration_counts.read` counts usable post bodies from **either** the main feed or
-lookup. Check `lookup_requests_this_run` for actual lookup GET reservations and
+lookup. Check `lookup_requests_this_run` for attempted lookup GETs and
 `lookup_batches_in_pass` / `lookup_returned_records_in_pass` for accepted lookup
 responses. `main_post_bodies` reports main-feed contributions separately. Zero
 lookup requests means lookup access remains unverified, even if `read` is nonzero.
@@ -75,25 +47,7 @@ responses omit pagination metadata. Its private JSONL/checkpoint remains useful.
 `page_limit` and `pagination_unverified` blocks cannot be cleared by `--resume`;
 start a fresh pass with suitable bounds after interpreting the evidence.
 
-The dollar amounts are illustrative operator reservations, **not guaranteed X
-prices**. Larger pages and expansions can cost more. Each GET reserves the same
-configured amount against the existing persistent run/month budget. Stdout separates
-reservation counts/costs for identity, main bookmarks, folder enumeration, folder
-contents, and hydration. The worker can reserve a different amount per operation.
-The inventory report uses two fields to describe reservations.
-
-- `get_attempts_this_run` counts GETs that reserved budget. A GET that times out
-  after reservation counts once. A GET refused by the spend cap before reservation
-  counts zero.
-- `estimated_reserved_usd` totals this inventory invocation's reservations. Its
-  value equals the sum of the amounts in `reservations_by_operation`. The pilot,
-  reference-enrichment and unbookmark reports use the same field name for the
-  amount used by their budget object, which can include earlier work in a shared run.
-
-For the $20 cumulative ceiling, read `reserved_cumulative_usd` from the offline
-[worker report](WORKER.md#modes-and-configuration). It sums all months in the
-persistent ledger. Keep the separate Console observation for actual charges.
-Adding command summaries together can double-count shared reservations.
+`requests_by_operation` counts attempted GETs by operation for this inventory invocation.
 
 Published indicative resource rates are $0.001 for eligible main-bookmark Owned Reads
 and $0.005 for standard Post lookup; **folder endpoint fees are unverified**. Eligibility,
@@ -109,41 +63,15 @@ write scopes, or destructive operations occur automatically.
 
 ## From probe to a full inventory
 
-1. Compare the probe's endpoint/status evidence and per-operation reservations with
-   actual Console charge details/deltas. A combined balance delta alone cannot price
-   each endpoint. Keep unobserved hydration and folder charges explicitly unverified.
-   Resolve missing pagination metadata before expecting complete category coverage.
-2. Choose page/batch sizes and a conservative per-call reserve for those sizes,
-   including expanded resources. **Do not reuse a one-item probe's measured charge
-   unchanged for 100-item pages.** Account for variable returned-resource counts,
-   current published rates and a margin; the single reserve must cover the most
-   expensive planned GET. If pricing is unresolved, continue only with deliberate
-   small bounded experiments and report the gap.
-3. Estimate main pages, folder-list pages, pages in every folder, hydration batches
-   for folder-only IDs, and one identity GET per invocation. Add headroom for
-   uncertain terminal pages and interrupted reads. Set the run cap to at least
-   `max_calls × per_call_reserve` if the request cap should be the normal stopping
-   point. Set the month cap to existing reservations **plus** the planned budget,
-   within your intended spending and Console limit; ten $0.10 reservations already
-   consume the original $1.00 example ceiling.
-4. Set `X_PER_CALL_RESERVE_USD`, `X_RUN_CAP_USD` and `X_MONTH_CAP_USD` in
-   your ignored `.env` to those deliberate dollar limits. Explicit CLI budget flags
-   override them. Start a
-   **fresh** full pass, without `--resume` or the probe's one-page bound. This example
-   uses ten GETs per invocation and 100-item pages/batches; reduce them if the pricing
-   evidence supports only a smaller batch. Default pass bounds remain 10,000 records,
-   1,000 folders and 100 pages per stream; choose higher bounds up front if needed.
+For a fresh full pass, omit `--resume` and set the desired request and page bounds:
 
 ```sh
 uv run --env-file .env x-migrator inventory \
-  --console-hard-cap-confirmed --auto-recharge-off-confirmed \
   --max-calls 10 --page-size 100 --hydrate-batch-size 100
 ```
 
 After `request_limit`, repeat that full-pass command with
 `--resume --source-unchanged-confirmed`, only while the source remains unchanged.
-After `spend_cap`, inspect the ledger and deliberately revise the applicable soft
-cap or wait; immediately repeating the same command cannot restore headroom.
 Stop resuming at `observed_end`. If streams are blocked or content remains partial,
 inspect the reported reasons instead of looping until success: resuming does not
 repair missing metadata, inaccessible content or a page/record limit. A larger
@@ -159,9 +87,7 @@ edits, moves, or unbookmarks have occurred since the pass began**. This is an op
 attestation, not an API snapshot guarantee. Resume uses the checkpoint's original
 page size and record/folder/page bounds. Omit those flags to inherit them; explicitly
 supplying a different value is rejected before any API request. `active_limits` in
-the summary reports the effective values. Request, hydration-batch and run-spend
-limits apply to this invocation; the month ceiling is checked against the persistent
-shared pilot/inventory ledger across invocations. The full uninterrupted and split/restarted synthetic tests
+the summary reports the effective values. Request and hydration-batch limits apply to this invocation. The full uninterrupted and split/restarted synthetic tests
 produce identical exact IDs, original folder names and memberships.
 
 After any source mutation, including a future migrator deletion, run without

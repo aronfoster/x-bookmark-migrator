@@ -2,12 +2,11 @@
 
 import json
 import time
-from decimal import Decimal
 
 import httpx
 import pytest
 
-from x_bookmark_migrator.core import SCOPES, Budget, Client, PilotError, Store
+from x_bookmark_migrator.core import SCOPES, Client, PilotError, RequestSlots, Store
 from x_bookmark_migrator.inventory import Inventory
 
 OWNER = "1000000000000000001"
@@ -61,7 +60,7 @@ def setup(tmp_path):
         with httpx.Client(transport=httpx.MockTransport(handle)) as http:
             return inventory.run(
                 Client(store, http, "app"),
-                budget if budget is not None else Budget(store, ".1", cap, "100"),
+                budget if budget is not None else RequestSlots(),
                 max_calls=max_calls,
                 **kwargs,
             )
@@ -263,7 +262,7 @@ def test_lookup_missing_ids_and_unknown_errors_stay_unresolved(setup):
     assert summary["inventory_status"] == "partial"
 
 
-@pytest.mark.parametrize("kind", ["spend", "pages", "records"])
+@pytest.mark.parametrize("kind", ["requests", "pages", "records"])
 def test_caps_preserve_checkpoint_and_prevent_false_completion(setup, kind):
     store, calls, run = setup
     inv = Inventory(
@@ -272,12 +271,12 @@ def test_caps_preserve_checkpoint_and_prevent_false_completion(setup, kind):
         max_pages=1 if kind == "pages" else 100,
         max_records=1 if kind == "records" else 10000,
     )
-    summary = run(inv, example, cap=".25" if kind == "spend" else "50")
+    summary = run(inv, example, max_calls=2 if kind == "requests" else 50)
     assert summary["inventory_status"] == "partial"
     assert not summary["all_history_complete"]
-    if kind == "spend":
-        assert len(calls) == 2 and Decimal(summary["estimated_reserved_usd"]) == Decimal(".2")
-        assert summary["stop_reason"] == "spend_cap"
+    if kind == "requests":
+        assert len(calls) == 2
+        assert summary["stop_reason"] == "request_limit"
     if kind == "pages":
         assert inv.state["streams"]["main"]["reason"] == "page_limit"
         assert inv.state["streams"]["main"]["next_token"] == "main-next"
@@ -400,7 +399,7 @@ def test_lookup_batches_capped_and_successes_survive_unavailable_peer(setup):
     lookups = [r for r in calls if r.url.path == "/2/tweets"]
     assert len(lookups) == 2
     assert all(len(r.url.params["ids"].split(",")) <= 2 for r in lookups)
-    assert summary["reservations_by_operation"]["hydrate"]["requests"] == 2
+    assert summary["requests_by_operation"]["hydrate"] == 2
 
 
 def test_export_does_not_overwrite_or_delete_existing_file(setup, monkeypatch):
@@ -422,7 +421,7 @@ def test_identity_failure_on_completed_resume_is_not_success(setup):
     with httpx.Client(
         transport=httpx.MockTransport(lambda req: httpx.Response(200, json={"data": {"id": "2"}}))
     ) as http:
-        summary = inv.run(Client(store, http, "app"), Budget(store, ".1", "1", "100"))
+        summary = inv.run(Client(store, http, "app"), RequestSlots())
     assert summary["inventory_status"] == "partial"
     assert summary["stop_reason"] == "identity"
 
@@ -749,6 +748,7 @@ def test_recover_legacy_rejected_read_offline_without_changing_billing_or_tokens
     store, calls, _ = setup
     inv, name = rejected_folder(setup, monkeypatch)
     raw = store.read(name)
+    store.write("budget.private.json", {"old": "untouched"})
     before = {
         n: (store.root / n).read_bytes()
         for n in (name, "tokens.private.json", "budget.private.json")
@@ -857,6 +857,7 @@ def test_lookup_rejects_duplicate_or_unrequested_ids_without_changing_posts(setu
 def test_exact_link_recovery_retains_consistency_and_clears_failed_link(setup, monkeypatch):
     store, calls, _ = setup
     inv, name = rejected_folder(setup, monkeypatch, legacy=False)
+    store.write("budget.private.json", {"old": "untouched"})
     before = {
         n: (store.root / n).read_bytes()
         for n in (name, "tokens.private.json", "budget.private.json")
@@ -913,25 +914,15 @@ def test_invalid_primary_limit_fails_before_requests(setup, limit):
 
 @pytest.mark.parametrize("max_requests", [2, 50])
 def test_inventory_reports_only_its_own_per_operation_reservations(setup, max_requests):
-    from x_bookmark_migrator.worker import OPERATIONS, CumulativeBudget, reservation_total
-
     store, calls, run = setup
-    rates = dict.fromkeys(OPERATIONS, ".01")
-    rates.update(main=".03", hydrate=".05", other=".20")
-    budget = CumulativeBudget(store, rates, "2", max_requests)
-    budget.reserve_operation("other")  # Work already reserved before this inventory call.
+    budget = RequestSlots(max_requests)
+    budget.reserve_operation("other")
     report = run(Inventory(store, OWNER), example, budget=budget)
-    expected = {
-        op: {"requests": count, "estimated_reserved_usd": str(Decimal(rates[op]) * count)}
-        for op, count in budget.operations.items()
-        if op != "other"
-    }
-    assert report["reservations_by_operation"] == expected
-    assert Decimal(report["estimated_reserved_usd"]) == budget.used - Decimal(".20")
-    assert reservation_total(store) == budget.used
+    expected = {k: v for k, v in budget.operations.items() if k != "other"}
+    assert report["requests_by_operation"] == expected
     assert report["get_attempts_this_run"] == len(calls)
-    assert len(calls) == sum(entry["requests"] for entry in expected.values())
-    assert report["stop_reason"] == ("spend_cap" if max_requests == 2 else None)
+    assert len(calls) == sum(expected.values())
+    assert report["stop_reason"] == ("request_limit" if max_requests == 2 else None)
 
 
 def test_primary_limit_spans_lookup_chunks_without_replacing_missing_results(setup):

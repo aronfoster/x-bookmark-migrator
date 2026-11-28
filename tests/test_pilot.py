@@ -7,9 +7,9 @@ import pytest
 
 from x_bookmark_migrator.core import (
     SCOPES,
-    Budget,
     Client,
     PilotError,
+    RequestSlots,
     Store,
     auth_start,
     exact_id,
@@ -43,7 +43,7 @@ def client(store, handler):
 
 
 def budget(store, cap="1"):
-    return Budget(store, "0.10", cap, "2")
+    return RequestSlots()
 
 
 def test_pilot_exact_strings_and_private_full_payload(store):
@@ -119,25 +119,7 @@ def test_errors_redacted_and_no_retry(store, status):
         client(store, handle).get("/2/users/me", {}, budget(store).reserve)
     assert "SECRET" not in str(error.value)
     assert str(status) in str(error.value) and len(calls) == 1
-    assert store.read("budget.private.json")
-
-
-def test_cap_prevents_network_and_persists_between_runs(store):
-    tokens(store)
-    calls = []
-    api = client(store, lambda req: calls.append(req) or httpx.Response(200, json={}))
-    with pytest.raises(PilotError, match="cap"):
-        api.get("/2/users/me", {}, budget(store, "0.09").reserve)
-    assert not calls
-    Budget(store, "0.1", "0.2", "0.1").reserve()
-    with pytest.raises(PilotError, match="cap"):
-        Budget(store, "0.1", "0.2", "0.1").reserve()
-
-
-@pytest.mark.parametrize("value", ["NaN", "Infinity", "-1", "0"])
-def test_bad_budget(store, value):
-    with pytest.raises(PilotError):
-        Budget(store, value, "1", "1")
+    assert not store.path("budget.private.json").exists()
 
 
 @pytest.mark.parametrize("value", [1234567890123456789, "1e19", "", "12/3", None])
@@ -336,15 +318,6 @@ def test_successful_rate_limits_in_summary(store):
     assert "PRIVATE" not in json.dumps(summary)
 
 
-@pytest.mark.parametrize("value", ["-1", "NaN", "Infinity"])
-def test_invalid_ledger_cannot_reduce_reserved_spend(store, value):
-    from datetime import UTC, datetime
-
-    store.write("budget.private.json", {datetime.now(UTC).strftime("%Y-%m"): value})
-    with pytest.raises(PilotError, match="ledger"):
-        budget(store).reserve()
-
-
 def test_pilot_retains_oversized_response_but_does_not_print_remote_field_names(store):
     tokens(store)
     body = {
@@ -397,7 +370,5 @@ def test_malformed_ledger_value_is_redacted_and_not_replaced(store, value):
     month = datetime.now(UTC).strftime("%Y-%m")
     store.write("budget.private.json", {month: value})
     before = (store.root / "budget.private.json").read_bytes()
-    with pytest.raises(PilotError, match="Invalid monthly reservation ledger") as error:
-        budget(store).reserve()
-    assert "PRIVATE" not in str(error.value)
+    budget(store).reserve()
     assert (store.root / "budget.private.json").read_bytes() == before

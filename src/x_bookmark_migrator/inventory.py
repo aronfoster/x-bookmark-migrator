@@ -438,7 +438,6 @@ class Inventory:
             "offline_recovery": True,
             "get_attempts_this_run": 0,
             "lookup_requests_this_run": 0,
-            "estimated_reserved_usd": "0",
             "private_export": self.export(),
             "private_checkpoint": self.name,
         }
@@ -600,7 +599,6 @@ class Inventory:
             raise PilotError("Primary selection limit must be a positive integer.")
         calls = 0
         reservations = Counter()
-        amounts = Counter()
         state = self.state
         daily = "daily_parent" in state
         paused = set()
@@ -627,13 +625,11 @@ class Inventory:
             )
 
             def reserve():
-                before = budget.used
                 if hasattr(budget, "reserve_operation"):
                     budget.reserve_operation(operation)
                 else:
                     budget.reserve()
                 reservations[operation] += 1
-                amounts[operation] += budget.used - before
 
             return client.get(path, params, reserve)
 
@@ -728,11 +724,7 @@ class Inventory:
             **self.summary(),
             "get_attempts_this_run": sum(reservations.values()),
             "lookup_requests_this_run": reservations.get("hydrate", 0),
-            "reservations_by_operation": {
-                op: {"requests": count, "estimated_reserved_usd": str(amounts[op])}
-                for op, count in reservations.items()
-            },
-            "estimated_reserved_usd": str(sum(amounts.values())),
+            "requests_by_operation": dict(reservations),
             "observed_charge": "unverified",
             "private_export": self.export(),
             "private_checkpoint": self.name,

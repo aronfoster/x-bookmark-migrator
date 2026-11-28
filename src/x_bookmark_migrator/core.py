@@ -9,9 +9,9 @@ import re
 import secrets
 import tempfile
 import time
+from collections import Counter
 from contextlib import contextmanager
 from datetime import UTC, datetime
-from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlsplit
 
@@ -368,33 +368,22 @@ class Client:
             ) from None
 
 
-class Budget:
-    """Reservations are estimates, retained even on failures; Console is the hard cap."""
+class RequestSlots:
+    """Track allocated request slots, including follow-up reads held before DELETE."""
 
-    def __init__(self, store, per_call, run_cap, month_cap):
-        self.store = store
-        settings = (
-            ("per_call", per_call, "--per-call-reserve-usd / X_PER_CALL_RESERVE_USD"),
-            ("run_cap", run_cap, "--run-cap-usd / X_RUN_CAP_USD"),
-            ("month_cap", month_cap, "--month-cap-usd / X_MONTH_CAP_USD"),
-        )
-        for attribute, value, label in settings:
-            try:
-                parsed = Decimal(value)
-            except (InvalidOperation, TypeError, ValueError):
-                raise PilotError(f"{label} must be a finite, positive dollar amount.") from None
-            if not parsed.is_finite() or parsed <= 0:
-                raise PilotError(f"{label} must be a finite, positive dollar amount.")
-            setattr(self, attribute, parsed)
-        self.used = Decimal(0)
+    def __init__(self, max_calls=None):
+        if max_calls is not None and (type(max_calls) is not int or not 1 <= max_calls <= 100):
+            raise PilotError("Invalid worker request bound.")
+        self.max_calls = max_calls
+        self.operations = Counter()
 
     def reserve(self):
-        from .billing import reserve
+        self.reserve_operation("other")
 
-        if self.used + self.per_call > self.run_cap:
-            raise PilotError("Estimated spend cap reached; no request sent.", code="spend_cap")
-        reserve(self.store, self.per_call, month_cap=self.month_cap)
-        self.used += self.per_call
+    def reserve_operation(self, operation):
+        if self.max_calls is not None and self.operations.total() >= self.max_calls:
+            raise PilotError("Request limit reached.", code="request_limit")
+        self.operations[operation] += 1
 
 
 def pilot(client, budget, owner_id, dialect="post"):
@@ -440,7 +429,6 @@ def pilot(client, budget, owner_id, dialect="post"):
         "duplicate_ids": duplicate_ids,
         "partial_errors": bool(body.get("errors")),
         "field_dialect": dialect,
-        "estimated_reserved_usd": str(budget.used),
         "observed_charge": "unverified",
         "private_file": client.observations[-1]["private_file"],
         "reads": client.observations,

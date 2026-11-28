@@ -10,7 +10,7 @@ import httpx
 
 from . import archive_cli, catalog, raindrop_cli, repair_cli, unbookmark_cli, worker_cli
 from .archive import enrich_references
-from .core import Budget, Client, PilotError, Store, auth_start, exact_id, pilot
+from .core import Client, PilotError, RequestSlots, Store, auth_start, exact_id, pilot
 from .inventory import Inventory, validate_run_limits
 
 
@@ -46,17 +46,6 @@ def main():
         read.add_argument(
             "--app-owner-id", help="Overrides X_APP_OWNER_ID from the process environment"
         )
-        read.add_argument("--console-hard-cap-confirmed", action="store_true")
-        read.add_argument("--auto-recharge-off-confirmed", action="store_true")
-        reserve_default = os.environ.get("X_PER_CALL_RESERVE_USD")
-        read.add_argument(
-            "--per-call-reserve-usd",
-            default=reserve_default,
-            required=reserve_default is None,
-            help="Overrides X_PER_CALL_RESERVE_USD; an operator estimate",
-        )
-        read.add_argument("--run-cap-usd", default=os.environ.get("X_RUN_CAP_USD", "0.25"))
-        read.add_argument("--month-cap-usd", default=os.environ.get("X_MONTH_CAP_USD", "1.00"))
         if command != "archive-enrich":
             read.add_argument("--field-dialect", choices=("post", "tweet"), default="post")
         if command == "archive-enrich":
@@ -139,10 +128,6 @@ def main():
         client_id = os.environ.get("X_CLIENT_ID")
         if not client_id:
             raise PilotError("Set X_CLIENT_ID to the app's OAuth 2.0 client ID.")
-        if args.command in ("pilot", "inventory", "archive-enrich") and not (
-            args.console_hard_cap_confirmed and args.auto_recharge_off_confirmed
-        ):
-            raise PilotError("Confirm Console hard spending limit and auto-recharge off first.")
         if args.command in ("pilot", "inventory", "archive-enrich"):
             owner_id = args.app_owner_id
             source = "--app-owner-id"
@@ -176,9 +161,7 @@ def main():
                 client.finish(getpass.getpass("Paste full callback URL (hidden): "))
                 print("Requested OAuth grant stored privately.")
             else:
-                budget = Budget(
-                    store, args.per_call_reserve_usd, args.run_cap_usd, args.month_cap_usd
-                )
+                budget = RequestSlots()
                 if args.command == "pilot":
                     result = pilot(client, budget, owner_id, args.field_dialect)
                 elif args.command == "archive-enrich":

@@ -197,7 +197,6 @@ def enrich_references(inventory, client, budget, owner_id, post_ids=None, limit=
     return {
         "enriched_posts": len(work),
         "x_api_calls": len(evidence_files) + 1,
-        "estimated_reserved_usd": str(budget.used),
         "observed_charge": "unverified",
     }
 
