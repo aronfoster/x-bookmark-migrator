@@ -832,7 +832,10 @@ def test_raindrop_retry_deadline_survives_shared_batch_and_skips_only_delayed_it
     assert w.state["items"]["101"]["retry_at"] > time.time()
 
 
-def test_reader_group_projection_preserves_private_state_and_real_delete_gate(migration, tmp_path):
+@pytest.mark.parametrize("partial", [False, True])
+def test_reader_group_projection_preserves_private_state_and_real_delete_gate(
+    migration, tmp_path, monkeypatch, partial
+):
     import os
 
     from x_bookmark_migrator.publication import PublicationStore
@@ -842,6 +845,20 @@ def test_reader_group_projection_preserves_private_state_and_real_delete_gate(mi
     w.catalog = PublicationStore(w.catalog.root)
     w.restore_root.mkdir(mode=0o700)
     w.restore_root.chmod(0o2750)
+    if partial:
+        receipt = w.store.read(migration[5]["private_receipt"])
+        child = w.restore_root / receipt["manifest"]["sha256"]
+        child.mkdir(mode=0o700)
+        assert child.stat().st_mode & 0o7777 == 0o2700
+
+    chmod = Path.chmod
+
+    def restricted_chmod(path, mode, **kwargs):
+        if mode & 0o6000:
+            raise PermissionError("RestrictSUIDSGID")
+        return chmod(path, mode, **kwargs)
+
+    monkeypatch.setattr(Path, "chmod", restricted_chmod)
     # Local fixture already contains a private catalog; publication replaces it with reader bytes.
     result = w.run(allow_delete=True)
     assert result["confirmed_removed"] == 1

@@ -7,7 +7,9 @@ never permission to delete. No independent implementation of the deletion gate.
 import copy
 import hashlib
 import json
+import os
 import re
+import stat
 import time
 from collections import Counter
 from contextlib import contextmanager
@@ -392,9 +394,26 @@ class Worker:
         manifest = receipt["manifest"]
         child = self.restore_root / manifest["sha256"]
         parent = PublicationStore(self.restore_root)
-        if not child.exists() and parent.reader_gid is not None:
-            child.mkdir(mode=0o700)
-            child.chmod(0o2750)  # setgid inherited from audited parent
+        if parent.reader_gid is not None:
+            if child.exists():
+                entry = child.lstat()
+                if (
+                    stat.S_ISDIR(entry.st_mode)
+                    and stat.S_IMODE(entry.st_mode) == 0o2700
+                    and entry.st_uid == os.getuid()
+                    and entry.st_gid == parent.reader_gid
+                    and not os.listxattr(child)
+                ):
+                    # Only an empty remnant of the previous mkdir/chmod can be removed.
+                    child.rmdir()
+            if not child.exists():
+                # Inherit setgid from the audited parent. Request only reader r-x;
+                # the service forbids explicitly setting setgid via chmod.
+                previous_mask = os.umask(0o027)
+                try:
+                    child.mkdir(mode=0o750)
+                finally:
+                    os.umask(previous_mask)
         root = PublicationStore(child)
         # Fresh independent GET/hash readback; create_local tolerates identical crash remnants.
         restore_batch(self.drive, manifest["file_id"], root, manifest["sha256"], existing_ok=True)
