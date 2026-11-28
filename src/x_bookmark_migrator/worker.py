@@ -888,8 +888,11 @@ class Worker:
                 self.coverage(inventory)
             deadline = self.clock() + 86400
             retries = self.pending_retries() if scheduled and allow_delete else []
-            if scheduled and allow_delete and any(
-                self.queued(pid, item) for pid, item in self.state["items"].items()
+            if (
+                scheduled
+                and allow_delete
+                and self.config.get("continue_queued_history") is True
+                and any(self.queued(pid, item) for pid, item in self.state["items"].items())
             ):
                 retries.append(self.clock() + 300)
             self.state["next_daily"] = min([deadline, *retries])

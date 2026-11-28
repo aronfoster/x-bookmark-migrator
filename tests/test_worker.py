@@ -97,7 +97,9 @@ def test_real_queue_restores_publishes_verifies_and_drains_bounded(migration, tm
 def test_scheduled_backlog_continues_without_repeating_daily_intake(
     migration, tmp_path, initial_slots
 ):
-    worker = make_worker(migration, tmp_path, max_items=1, max_calls=45)
+    worker = make_worker(
+        migration, tmp_path, max_items=1, max_calls=45, continue_queued_history=True
+    )
     now = time.time()
     worker.clock = lambda: now
     worker.state["next_intake"] = now + 86400
