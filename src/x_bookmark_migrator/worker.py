@@ -598,7 +598,7 @@ class Worker:
                 stopped.add("folders")
         return stopped
 
-    def discover(self, *, scheduled=False, baseline=None):
+    def discover(self, *, scheduled=False, baseline=None, history_only=False):
         # Never resume a positional cursor across a run or DELETE.
         inv = Inventory(
             self.store,
@@ -611,6 +611,13 @@ class Worker:
             max_pages=1,
         )
         skipped = self.held | {pid for pid in self.state["items"] if not self.eligible(pid)}
+        target = self.config.get("intake_target")
+        if scheduled and target and target not in skipped and not history_only:
+            inv.state["intake_target"] = target
+        if history_only:
+            inv.state["historical_fallback"] = True
+            inv.state["streams"]["main"].update(status="paused", reason="between_intakes")
+            inv.save()
         known_history = set()
         if scheduled and baseline and "daily_parent" not in baseline.state:
             known_history = baseline.state["posts"].keys() - self.state["items"].keys()
@@ -623,7 +630,7 @@ class Worker:
             skip_hydration=skipped,
             known_history=known_history,
             historical_stops=(lambda: self.historical_stops(baseline))
-            if scheduled and empty_queue
+            if scheduled and (empty_queue or history_only)
             else None,
             primary_limit=self.config["max_items"],
         )
@@ -733,7 +740,12 @@ class Worker:
         selected = [pid for pid, item in items.items() if self.queued(pid, item)]
         if scheduled and inventory:
             # A pending daily receipt keeps its priority after an interrupted run or provider reset.
-            selected.sort(key=lambda pid: items[pid]["checkpoint"] == inventory.name)
+            selected.sort(
+                key=lambda pid: (
+                    pid != self.config.get("intake_target"),
+                    items[pid]["checkpoint"] == inventory.name,
+                )
+            )
         for pid in selected[: self.config["max_items"]]:
             # Don't begin a fresh removal without room for its identity, folder,
             # before-window, DELETE, and after-window checks.
@@ -761,9 +773,16 @@ class Worker:
             with self.catalog.locked():
                 classification = (self.catalog.read("media-only.private.json") or {}).get(pid)
                 links = read_annotations(self.catalog).get("raindrop_links", {})
+            target = scheduled and pid == self.config.get("intake_target")
+            if target and not payload["media"]:
+                item.update(state="blocked", failure_reason="acceptance_media_missing")
+                self.counts["acceptance_media_missing"] += 1
+                self.save()
+                continue
             try:
-                if pid not in links and not positive_media_only(
-                    payload, classification, row["payload"]["sha256"]
+                if pid not in links and (
+                    target
+                    or not positive_media_only(payload, classification, row["payload"]["sha256"])
                 ):
                     raindrop_receipt = self.raindrop.ensure_raindrop(
                         pid,
@@ -815,11 +834,19 @@ class Worker:
                 retry_rejected=pid in self.retry429,
                 daily_pass=daily_pass,
                 catalog_dir=self.catalog.root,
+                restore_dir=root if scheduled else None,
+                require_raindrop=target,
                 raindrop=self.raindrop,
                 legacy_helper_retired=True,
                 max_calls=self.config["max_calls"],
             )
             self.refresh_history()
+            if (
+                scheduled
+                and result["new_window_observations"]
+                and result["delete_attempts_this_run"]
+            ):
+                self.state["history_probe_due"] = True
             self.counts["unbookmarked"] += result["states"].get("unbookmarked", 0)
             self.counts["delete_attempts"] += result["delete_attempts_this_run"]
             if pid in self.held:
@@ -847,6 +874,29 @@ class Worker:
                 )
             self.save()
             if result["stop_reason"]:
+                if (
+                    scheduled
+                    and self.config.get("continue_queued_history")
+                    and item["state"] == "held_previous_attempt"
+                    and result["states"].get("unbookmarked") == 1
+                    and result["stop_reason"] in {"observed_empty", "no_new_ids_observed"}
+                ):
+                    # An acknowledged removal with corroborated absence stops this
+                    # folder. Don't let that window defer work in unrelated folders.
+                    folder_ids = set(item["folder_ids"])
+                    for other in items.values():
+                        if other["state"] == "queued" and folder_ids.intersection(
+                            other["folder_ids"]
+                        ):
+                            other.update(
+                                state="retryable",
+                                retry_at=max(other.get("retry_at", 0), self.clock() + 86400),
+                                failure_reason=result["stop_reason"],
+                            )
+                    self.state["history_probe_due"] = True
+                    self.counts[result["stop_reason"]] += 1
+                    self.save()
+                    break
                 private = self.store.read(result["private_report"])
                 contexts = [
                     o.get("failure_context")
@@ -882,6 +932,12 @@ class Worker:
                 if inventory.state["owner_id"] != self.config["owner_id"]:
                     raise PilotError("Active inventory owner differs.")
                 if not self.bootstrap(inventory):
+                    if scheduled and self.config.get("continue_queued_history"):
+                        self.state["next_daily"] = now + 300
+                        if intake_pending:
+                            self.state["next_intake"] = self.state["next_daily"]
+                        self.save()
+                        return {"bootstrap_pending": True, "run_counts": dict(self.counts)}
                     raise PilotError(
                         "More existing receipts await adoption.", code="bootstrap_pending"
                     )
@@ -894,6 +950,16 @@ class Worker:
                 )
                 if inventory is None:
                     inventory = daily
+            elif (
+                scheduled
+                and allow_delete
+                and self.config.get("continue_queued_history")
+                and self.state.get("history_probe_due")
+                and not any(self.queued(pid, item) for pid, item in self.state["items"].items())
+            ):
+                daily = self.discover(scheduled=True, baseline=inventory, history_only=True)
+                self.state.pop("history_probe_due", None)
+                self.save()
             elif not scheduled and not any(
                 self.queued(pid, i) for pid, i in self.state["items"].items()
             ):
@@ -914,7 +980,10 @@ class Worker:
                 scheduled
                 and allow_delete
                 and self.config.get("continue_queued_history") is True
-                and any(self.queued(pid, item) for pid, item in self.state["items"].items())
+                and (
+                    self.state.get("history_probe_due")
+                    or any(self.queued(pid, item) for pid, item in self.state["items"].items())
+                )
             ):
                 retries.append(self.clock() + 300)
             self.state["next_daily"] = min([deadline, *retries])

@@ -515,9 +515,12 @@ def apply_plan(
                 payload,
                 catalog_dir,
                 raindrop,
-                exact_manifest=plan["archive_receipt"]["manifest"] if require_raindrop else None,
+                exact_manifest=plan["archive_receipt"]["manifest"]
+                if require_raindrop or restore_dir
+                else None,
                 catalog_sha256=(backlog_binding or {}).get("catalog_sha256"),
                 restore_dir=restore_dir,
+                allow_media_only=not require_raindrop,
             )
         except PilotError as exc:
             outcomes.append(

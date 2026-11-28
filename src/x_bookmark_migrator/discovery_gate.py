@@ -133,10 +133,19 @@ def verify_discovery_now(
     exact_manifest=None,
     catalog_sha256=None,
     restore_dir=None,
+    allow_media_only=None,
 ):
     try:
         return _verify_discovery_now(
-            pid, row, payload, catalog_dir, adapter, exact_manifest, catalog_sha256, restore_dir
+            pid,
+            row,
+            payload,
+            catalog_dir,
+            adapter,
+            exact_manifest,
+            catalog_sha256,
+            restore_dir,
+            exact_manifest is None if allow_media_only is None else allow_media_only,
         )
     except (KeyError, TypeError, AttributeError, UnicodeError):
         raise PilotError(
@@ -145,7 +154,15 @@ def verify_discovery_now(
 
 
 def _verify_discovery_now(
-    pid, row, payload, catalog_dir, adapter, exact_manifest, catalog_sha256, restore_dir
+    pid,
+    row,
+    payload,
+    catalog_dir,
+    adapter,
+    exact_manifest,
+    catalog_sha256,
+    restore_dir,
+    allow_media_only,
 ):
     require(catalog_dir is not None, "catalog_required")
     output = PublicationStore(Path(catalog_dir))
@@ -167,7 +184,12 @@ def _verify_discovery_now(
             record.get("source_post_id") == pid and record.get("source_post_url") == canonical,
             "source_projection_required",
         )
-        versions = [v for v in record["versions"] if v.get("payload_receipt") == row["payload"]]
+        versions = [
+            v
+            for v in record["versions"]
+            if v.get("payload_receipt") == row["payload"]
+            and (exact_manifest is None or v["manifest"] == exact_manifest)
+        ]
         require(len(versions) == 1, "catalog_archive_mismatch")
         version = versions[0]
         if exact_manifest is not None:
@@ -197,7 +219,7 @@ def _verify_discovery_now(
         }
         classifications = output.read("media-only.private.json") or {}
         classification = classifications.get(pid)
-        if exact_manifest is None and positive_media_only(
+        if allow_media_only and positive_media_only(
             payload, classification, row["payload"]["sha256"]
         ):
             return {**evidence, "kind": "media_only", "classification": classification}

@@ -172,6 +172,9 @@ def run(args):
     ):
         raise PilotError("Choose offline inspection or --once --live explicitly.")
     config = load_config(args.config)
+    target_file = os.environ.get("X_MIGRATOR_SCHEDULED_TARGET_FILE")
+    if args.scheduled and target_file:
+        config["intake_target"] = exact_id(protected_config(Path(target_file)).decode().strip())
     if backlog is not None or prepare is not None:
         require_complete_history(config)  # Before even creating lock files.
     state_path = args.state_dir.expanduser().resolve()

@@ -291,6 +291,10 @@ class Inventory:
         # Preserve existing memberships even when no space remains for new IDs.
         retained, accepted_ids = [], set(target)
         omitted_count = 0
+        priority = state.get("intake_target")
+        if priority and key != "folders":
+            # Reserve its slot without changing the order of observed IDs.
+            accepted_ids.add(priority)
         for entry in data:
             if entry["id"] in accepted_ids or len(accepted_ids) < limit:
                 retained.append(entry)
@@ -578,8 +582,14 @@ class Inventory:
                 candidates = (
                     pid
                     for pid in candidates
-                    if self.state["posts"][pid]["seen_in_main"] and pid not in known_history
+                    if (self.state["posts"][pid]["seen_in_main"] and pid not in known_history)
+                    or (
+                        pid == self.state.get("intake_target")
+                        and self.state["posts"][pid]["folder_ids"]
+                    )
                 )
+        if self.state.get("intake_target"):
+            candidates = sorted(candidates, key=lambda pid: pid != self.state["intake_target"])
         return list(candidates)[:limit]
 
     def run(
@@ -601,7 +611,9 @@ class Inventory:
         reservations = Counter()
         state = self.state
         daily = "daily_parent" in state
-        paused = set()
+        paused = (
+            historical_stops() if state.get("historical_fallback") and historical_stops else set()
+        )
         state["stop_reason"] = None
 
         def get(path, params):
@@ -655,7 +667,11 @@ class Inventory:
                     break
                 item = state["streams"][active]
                 if daily and active == "folders" and not item["pages"]:
-                    if not self.primary_candidates(skip_hydration, 1, known_history):
+                    if (
+                        not state.get("intake_target")
+                        and not state.get("historical_fallback")
+                        and not self.primary_candidates(skip_hydration, 1, known_history)
+                    ):
                         main = state["streams"]["main"]
                         if (
                             historical_stops is None

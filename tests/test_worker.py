@@ -1164,6 +1164,149 @@ def scheduled_cli(tmp_path, monkeypatch, store, source, clock):
     )
 
 
+@pytest.fixture
+def curated_backlog(migration, tmp_path):
+    from test_archive import archive_batch, includes, post
+
+    store, drive, _, source, *_ = migration
+    baseline = Inventory.load(store)
+    ids = [str(n) for n in range(201, 301)]
+    body = {"data": [post(pid) for pid in ids], "includes": includes()}
+    evidence = "read-extra.private.json"
+    store.write(evidence, {"status": 200, "endpoint": "/2/users/100/bookmarks", "response": body})
+    baseline.accept_page("main", body, evidence)
+    baseline.accept_page("folder:10", {"data": [{"id": pid} for pid in ids]}, evidence)
+    baseline.save()
+    worker = make_worker(migration, tmp_path)
+    for start in range(0, len(ids), 15):
+        archive_batch(baseline, drive, worker.media, post_ids=ids[start : start + 15], limit=15)
+    for pid in ids[:53]:
+        base = attempt_base("100", pid) + "-000000"
+        endpoint = "/2/users/100/bookmarks/" + pid
+        intent = {
+            "schema_version": 1,
+            "state": "unbookmark_requested",
+            "owner_id": "100",
+            "post_id": pid,
+            "endpoint": endpoint,
+            "verified": {"folder": {"id": "20"}},
+        }
+        store.create(base + ".intent.private.json", intent)
+        store.create(
+            base + ".response.private.json",
+            {
+                "status": 200,
+                "response": {"data": {"bookmarked": False}},
+                "endpoint": endpoint,
+                "intent_sha256": digest(encode(intent)),
+            },
+        )
+    rows = read_catalog(source.catalog)
+    asset = rows[0]["versions"][0]["media"][0]
+    annotate(
+        source.catalog,
+        rows,
+        asset["asset_id"],
+        visibility="hidden",
+        description="Owner memory",
+        sha256=asset["storage"]["sha256"],
+    )
+    annotations = source.catalog.read("annotations.private.json")
+    annotations["category_overrides"] = {"101": "Curated"}
+    source.catalog.write("annotations.private.json", annotations)
+    return baseline
+
+
+def test_bootstrap_slices_leave_scheduled_intake_due(migration, tmp_path, curated_backlog):
+    worker = make_worker(migration, tmp_path, continue_queued_history=True, max_batches=2)
+    now = [time.time()]
+    worker.clock = lambda: now[0]
+    for expected in (2, 4, 6):
+        assert worker.run(allow_delete=True, scheduled=True)["bootstrap_pending"]
+        assert len(worker.state["batches"]) == expected
+        assert not worker.gate.remaining() and not migration[3].calls
+        assert worker.state["next_daily"] == worker.state["next_intake"] == now[0] + 300
+        now[0] += 301
+    assert worker.bootstrap(curated_backlog)
+    assert len(worker.state["batches"]) == 8
+
+
+@pytest.mark.parametrize("broken_restore", [False, True])
+def test_scheduled_folder_save_then_new_history_window(
+    migration, tmp_path, monkeypatch, broken_restore, curated_backlog
+):
+    from test_archive import includes, photo, post
+
+    store, _, server, source, *_ = migration
+    now = [time.time()]
+    scheduled_cli(tmp_path, monkeypatch, store, source, lambda: now[0])
+    cfg_path = tmp_path / "config.json"
+    cfg = json.loads(cfg_path.read_bytes())
+    cfg["continue_queued_history"] = True
+    cfg_path.write_text(json.dumps(cfg))
+    target_file = tmp_path / "target"
+    target_file.write_text("110")
+    monkeypatch.setenv("X_MIGRATOR_SCHEDULED_TARGET_FILE", str(target_file))
+    worker = make_worker(migration, tmp_path)
+    worker.bootstrap(curated_backlog)
+    assert len(read_catalog(source.catalog)) == 103 and len(worker.held) == 53
+    for item in worker.state["items"].values():
+        if item["state"] == "queued":
+            item.update(retry_at=now[0] + 86400)
+    worker.save()
+    source.ids = ["110", "104", "105", "106", "107"]
+    main_reads = []
+
+    def handle(req):
+        if req.url.path == "/2/users/100/bookmarks":
+            main_reads.append(req)
+            return httpx.Response(200, json={"data": [post("101")], "includes": includes([])})
+        if req.url.path == "/2/tweets":
+            pid = req.url.params["ids"]
+            return httpx.Response(
+                200,
+                json={
+                    "data": [post(pid, attachments={"media_keys": ["photo-1"]})],
+                    "includes": includes([photo()]),
+                },
+            )
+        return source.handle(req)
+
+    client = httpx.Client
+    handlers = iter((handle, server.handle, media_http) * 2)
+    monkeypatch.setattr(
+        httpx, "Client", lambda **kw: client(transport=httpx.MockTransport(next(handlers)), **kw)
+    )
+    if broken_restore:
+        original = source.adapter.ensure_raindrop
+
+        def remove_media(*args, **kwargs):
+            receipt = original(*args, **kwargs)
+            (media,) = (tmp_path / "worker-restored").glob("*/110_*.png")
+            media.unlink()
+            return receipt
+
+        monkeypatch.setattr(source.adapter, "ensure_raindrop", remove_media)
+    assert cli.main() == 0
+    if broken_restore:
+        assert not source.deletes and latest_attempt(store, "100", "110")[0] is None
+        return
+    assert [r.url.path.split("/")[-1] for r in source.deletes] == ["110"]
+    journal = store.read(JOURNAL)
+    assert journal["next_daily"] == now[0] + 300
+    assert journal["next_intake"] == now[0] + 86400
+    now[0] += 301
+    assert cli.main() == 0
+    assert [r.url.path.split("/")[-1] for r in source.deletes] == ["110", "104"]
+    assert len(main_reads) == 1
+    assert store.read("worker-report.private.json")["confirmed_removed"] == 55
+    rows = read_catalog(source.catalog)
+    assert len(rows) == 105 and rows[0]["versions"][0]["media"][0]["browse_visibility"] == "hidden"
+    assert source.catalog.read("annotations.private.json")["category_overrides"] == {
+        "101": "Curated"
+    }
+
+
 @pytest.mark.parametrize(
     "history",
     [
