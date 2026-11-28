@@ -1247,6 +1247,8 @@ def test_scheduled_folder_save_then_new_history_window(
     target_file = tmp_path / "target"
     target_file.write_text("110")
     monkeypatch.setenv("X_MIGRATOR_SCHEDULED_TARGET_FILE", str(target_file))
+    monkeypatch.setenv("INVOCATION_ID", "1" * 32)
+    monkeypatch.setenv("X_MIGRATOR_SCHEDULED_PACKAGE_SHA256", "2" * 64)
     worker = make_worker(migration, tmp_path)
     worker.bootstrap(curated_backlog)
     assert len(read_catalog(source.catalog)) == 103 and len(worker.held) == 53
@@ -1299,6 +1301,17 @@ def test_scheduled_folder_save_then_new_history_window(
     assert cli.main() == 0
     assert [r.url.path.split("/")[-1] for r in source.deletes] == ["110", "104"]
     assert len(main_reads) == 1
+    import runpy
+
+    verified = runpy.run_path(
+        str(Path(__file__).resolve().parents[1] / "scripts/scheduled-worker.py")
+    )["verified"]
+    monkeypatch.setenv("INVOCATION_ID", "3" * 32)  # Resume verification on a later tick.
+    assert not verified(store.root, cfg, "104")  # A genuine removal without target provenance.
+    assert verified(store.root, cfg, "110") and not verified(store.root, cfg, "110")
+    (proof,) = store.root.glob("scheduled-acceptance-*.private.json")
+    assert store.read(proof.name)["invocation"] == "1" * 32
+    assert store.read(proof.name)["package_sha256"] == "2" * 64
     assert store.read("worker-report.private.json")["confirmed_removed"] == 55
     rows = read_catalog(source.catalog)
     assert len(rows) == 105 and rows[0]["versions"][0]["media"][0]["browse_visibility"] == "hidden"

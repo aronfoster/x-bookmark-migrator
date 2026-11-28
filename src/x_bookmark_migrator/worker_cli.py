@@ -175,6 +175,13 @@ def run(args):
     target_file = os.environ.get("X_MIGRATOR_SCHEDULED_TARGET_FILE")
     if args.scheduled and target_file:
         config["intake_target"] = exact_id(protected_config(Path(target_file)).decode().strip())
+        invocation = os.environ.get("INVOCATION_ID", "")
+        package = os.environ.get("X_MIGRATOR_SCHEDULED_PACKAGE_SHA256", "")
+        if not re.fullmatch("[0-9a-f]{32}", invocation) or not re.fullmatch(
+            "[0-9a-f]{64}", package
+        ):
+            raise PilotError("Missing scheduled invocation or package identity.")
+        config["scheduled_origin"] = {"invocation": invocation, "package_sha256": package}
     if backlog is not None or prepare is not None:
         require_complete_history(config)  # Before even creating lock files.
     state_path = args.state_dir.expanduser().resolve()

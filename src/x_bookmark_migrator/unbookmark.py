@@ -429,6 +429,7 @@ def apply_plan(
     backlog_binding=None,
     restore_dir=None,
     daily_pass=None,
+    scheduled_origin=None,
 ):
     require(confirmed, "Review the private plan and supply --confirm-unbookmark.")
     require_distinct_state_dirs(
@@ -563,6 +564,8 @@ def apply_plan(
         }
         # Both operations must finish durably before the network call. No exception
         # recovery here can accidentally fall through to DELETE.
+        if scheduled_origin is not None:
+            intent["scheduled_origin"] = scheduled_origin
         if baseline is not inventory:
             invalidate_inventory(baseline)
         invalidate_inventory(inventory)

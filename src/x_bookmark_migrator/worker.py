@@ -836,6 +836,7 @@ class Worker:
                 catalog_dir=self.catalog.root,
                 restore_dir=root if scheduled else None,
                 require_raindrop=target,
+                scheduled_origin=self.config.get("scheduled_origin") if target else None,
                 raindrop=self.raindrop,
                 legacy_helper_retired=True,
                 max_calls=self.config["max_calls"],

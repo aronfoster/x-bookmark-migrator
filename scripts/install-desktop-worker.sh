@@ -12,13 +12,49 @@ state=/var/lib/x-bookmark-migrator/state
 config=/etc/openclaw-x-migrator/scheduled-20x45.json
 app=$base/$revision.pyz
 pin=$base/$revision.sha256
+runner=$base/$revision-scheduled.py
 guard=/usr/local/libexec/verify-scheduled-x-migrator-20x45.py
 drop=/etc/systemd/system/$unit.d/40-catalog-curation.conf
+old=$base/6323e5e387a51db41faaf64567ee50e801770445
+
+check_commands() {
+    python3 - "$1" "$python" "$runner" "$app" "$old" "$state" "$config" "$guard" "$pin" <<'PY'
+import json
+import subprocess
+import sys
+
+mode, python, runner, app, old, state, config, guard, pin = sys.argv[1:]
+svc = "org.freedesktop.systemd1"
+obj = "/org/freedesktop/systemd1/unit/openclaw_2dx_2dmigrator_2eservice"
+pre = [["/usr/bin/python3", "-IB", guard], ["/usr/bin/sha256sum", "--status", "--check", old + ".sha256"]]
+if mode == "old":
+    runner = "/opt/x-bookmark-migrator/scheduled-20x45.py"
+    app = old + ".pyz"
+else:
+    pre.append(["/usr/bin/sha256sum", "--status", "--check", pin])
+for prop, expected in [("ExecStartPre", pre), ("ExecStart", [[python, "-IB", runner, app, state, config]])]:
+    raw = subprocess.check_output(["busctl", "--json=short", "get-property", svc, obj, svc+".Service", prop])
+    commands = [row[:3] for row in json.loads(raw)["data"]]
+    if commands != [[argv[0], argv, False] for argv in expected]:
+        sys.exit(f"Unexpected effective {prop} ({mode}).")
+PY
+}
 
 systemctl is-enabled --quiet "$timer"
 systemctl is-active --quiet "$timer"
-install -m 0644 "$release/$revision.pyz" "$app"
-install -m 0644 "$release/$revision.sha256" "$pin"
+exec 9>/run/openclaw-x-migrator-rollout.lock
+flock -n 9
+for artifact in "$app" "$runner" "$pin"; do
+    src="$release/${artifact##*/}"
+    if [[ -e $artifact ]]; then
+        cmp "$src" "$artifact"
+    else
+        staged=$(mktemp "$base/.install.XXXXXXXX")
+        trap 'rm -f "$staged"' EXIT
+        install -m 0644 "$src" "$staged"
+        mv -T "$staged" "$artifact"
+    fi
+done
 sha256sum -c "$pin"
 
 # Check the actual installed package and protected configuration before selecting it.
@@ -29,13 +65,29 @@ systemd-run --quiet --wait --pipe --collect --uid=x-migrator \
     "$python" -IB "$app" --state-dir "$state" worker --config "$config" --report-only |
     python3 -c 'import json,sys; r=json.load(sys.stdin); sys.exit(0 if r["api_requests"] == r["outcome_unknown"] == 0 else 1)'
 
-install -m 0644 "$release/40-catalog-curation.conf" "$drop"
+staged=$(mktemp "${drop%/*}/.install.XXXXXXXX")
+trap 'rm -f "$staged"' EXIT
+cat > "$staged" <<EOF
+[Service]
+Environment=X_MIGRATOR_SCHEDULED_TARGET_FILE=/etc/openclaw-x-migrator/acceptance-post
+ExecStartPre=/usr/bin/sha256sum --status --check $pin
+ExecStart=
+ExecStart=$python -IB $runner $app $state $config
+EOF
+chmod 0644 "$staged"
+if [[ -e $drop ]]; then
+    cmp "$staged" "$drop"
+else
+    check_commands old
+    mv -T "$staged" "$drop"
+    trap 'rm -f "$drop"; systemctl daemon-reload; check_commands old' EXIT
+fi
 systemd-analyze verify "$unit"
 systemctl daemon-reload
-command=$(systemctl show "$unit" -p ExecStart --value)
-checks=$(systemctl show "$unit" -p ExecStartPre --value)
-[[ $command == *"$app $state $config"* && $checks == *"$guard"* && $checks == *"$pin"* ]]
+check_commands new
+[[ $(systemctl show "$unit" -p Environment --value) == *"X_MIGRATOR_SCHEDULED_TARGET_FILE=/etc/openclaw-x-migrator/acceptance-post"* ]]
 [[ $(systemctl show "$unit" -p RestrictSUIDSGID --value) == yes ]]
+trap 'rm -f "$staged"' EXIT
 
 # Reset only the known pre-discovery crash. Reruns leave newer work alone.
 runuser -u x-migrator -- "$python" -IB - "$app" "$state" <<'PY'
