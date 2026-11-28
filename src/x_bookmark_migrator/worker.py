@@ -417,7 +417,10 @@ class Worker:
         root = PublicationStore(child)
         # Fresh independent GET/hash readback; create_local tolerates identical crash remnants.
         restore_batch(self.drive, manifest["file_id"], root, manifest["sha256"], existing_ok=True)
-        incoming = build([(root.root, self.store.path(receipt_name))], self.catalog)
+        # Owner annotations refer to the full catalog, not this individual batch.
+        incoming = build(
+            [(root.root, self.store.path(receipt_name))], self.catalog, apply_curation=False
+        )
         merge_publication(self.catalog, incoming)
         rows = [
             json.loads(line) for line in publication_bytes(root.path("manifest.jsonl")).splitlines()
